@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  headless:
+    name: Headless (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup show
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Diagnostic
+        run: cargo run -p dalan-app --bin dalan-doctor --locked
+
+  desktop-macos:
+    name: macOS desktop build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup show
+      - name: Metal prerequisites
+        run: |
+          xcode-select -p
+          xcrun --find metal
+          xcrun --find metallib
+      - name: Check
+        run: cargo check -p dalan-app --bin dalan --features desktop --locked
+      - name: Lint
+        run: cargo clippy -p dalan-app --bin dalan --features desktop --locked -- -D warnings
+      - name: Build
+        run: cargo build -p dalan-app --bin dalan --features desktop --locked

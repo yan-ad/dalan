@@ -1,0 +1,12 @@
+pub const CHROME: u32 = 0x262729;
+pub const PANEL: u32 = 0x191a1c;
+pub const HEADER: u32 = 0x1f2022;
+pub const HOVER: u32 = 0x35373b;
+pub const SELECTION: u32 = 0x344c72;
+pub const TEXT: u32 = 0xe6e8eb;
+pub const MUTED: u32 = 0xaeb5bf;
+pub const DIVIDER: u32 = 0x35373b;
+pub const FOCUS: u32 = 0x8ab4f8;
+pub const TITLEBAR_HEIGHT: f32 = 38.0;
+pub const PANEL_HEADER_HEIGHT: f32 = 32.0;
+pub const STATUS_HEIGHT: f32 = 24.0;

@@ -1,0 +1,27 @@
+[workspace]
+members = ["crates/app", "crates/core", "crates/drivers", "crates/acp"]
+default-members = ["crates/app", "crates/core", "crates/drivers", "crates/acp"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+[workspace.dependencies]
+dalan-core = { path = "crates/core" }
+dalan-drivers = { path = "crates/drivers" }
+dalan-acp = { path = "crates/acp" }
+gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }
+agent-client-protocol = { version = "=2.2.0", default-features = false }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
