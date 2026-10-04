@@ -3,7 +3,7 @@ mod common;
 
 use dalan_drivers::{
     BrowseRequest, CellValue, DbEngine, FilterOperator, SourceProfile, TableFilter, TlsMode,
-    Transport, browse, columns, tables, test_connection,
+    Transport, browse, columns, discover_catalog, tables, test_connection,
 };
 
 fn configured(prefix: &str, engine: DbEngine) -> anyhow::Result<(SourceProfile, String)> {
@@ -44,6 +44,7 @@ async fn smoke(prefix: &str, mut profile: SourceProfile, password: String) -> an
         return Ok(());
     };
     assert!(report.databases.contains(&database));
+    common::full_catalog(&profile, &password, &database).await?;
     let table = std::env::var(format!("{prefix}_TABLE")).unwrap_or_else(|_| "contact".into());
     let catalog = tables(&profile, &password, &database).await?;
     assert!(
@@ -313,6 +314,14 @@ async fn http_connect_smoke(prefix: &str, engine: DbEngine) -> anyhow::Result<()
     profile.transport = proxy.transport();
     smoke(prefix, profile.clone(), password.clone()).await?;
     proxy.assert_healthy(18);
+    let before = proxy.connections.load(std::sync::atomic::Ordering::SeqCst);
+    let snapshot = discover_catalog(&profile, &password).await?;
+    assert!(snapshot.databases.len() > 1);
+    assert_eq!(
+        proxy.connections.load(std::sync::atomic::Ordering::SeqCst),
+        before + 1,
+        "Full discovery must reuse one native session/tunnel for all schemas"
+    );
     let denied = LoopbackProxy::start(&profile, true).await?;
     profile.transport = denied.transport();
     let error = test_connection(&profile, &password)

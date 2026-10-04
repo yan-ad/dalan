@@ -25,6 +25,16 @@ Filters bind values and quote verified identifiers. Operators are Contains, Equa
 
 Direct TCP, system SSH and anonymous HTTP/HTTPS CONNECT transports are implemented. VerifyIdentity is the default database TLS mode with optional CA file; no automatic insecure retry. The original database hostname survives a relay. SSH optionally selects an absolute existing known-host file, with strict checking and `GlobalKnownHostsFile=/dev/null` to make that file authoritative; absent/None keeps OpenSSH user/system known-host defaults. CONNECT is a wire-protocol proxy, not a database-query HTTP gateway; a gateway requires a named API and is not implemented. See [MySQL sources](mysql-sources.md) for source setup, credentials, SSH defaults and local relay risks.
 
+### Complete metadata snapshots
+
+`discover_catalog` returns `CatalogSnapshot { databases: Vec<DatabaseCatalog> }`, `DatabaseCatalog { name: String, tables: Vec<TableInfo> }`, and `TableInfo { name: String, kind: String }`. Database None means all account-visible schemas; a configured database restricts scope. It is a table/view-name and kind index, not columns, indexes, DDL or row data. Browse still discovers columns separately and rejects view execution.
+
+Complete discovery serializes metadata-only SQL on one owned native-protocol session and transport/tunnel, without per-database fan-out. Limits are 1,000 databases, 1,000 objects per database, 50,000 tables/views total (databases counted separately), 120 seconds overall and 20 seconds per connect/query step. Failure discards the incomplete discovery result; app persistence retains the prior snapshot. Startup reads the app cache without driver network or Keychain work. Successful Save and explicit source Refresh can fetch complete metadata, never automatically browse data.
+
+The app, not the network driver, owns `rusqlite 0.40.2` with only bundled SQLite enabled, 8 MiB encoded metadata and 128 MiB cache-file bounds, atomic publication and connection-identity/ticket checks. It does not add a user-facing SQLite driver, daemon, libSQL or cloud backend. See [architecture](architecture.md#persistent-metadata-cache-implemented) and [license notices](../THIRD_PARTY_NOTICES.md).
+
+All three disposable live scripts were rerun successfully: 7 direct/CONNECT/authentication, 10 TLS and 6 SSH cases, with full-catalog assertions across the supported fixture routes. Test-only serialized SSH configuration makes the fixture deterministic; production runtime/transport configuration is unchanged. Positive system-trusted HTTPS proxy and actual private VPN/edge connectivity remain unverified.
+
 ## Compatibility evidence
 
 | Case | Evidence |

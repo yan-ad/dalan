@@ -16,6 +16,14 @@ cargo doc --workspace --no-deps --locked
 
 On first checkout, rustup may download the pinned toolchain/components. Cargo downloads crates. Agent and database packages are not installed or started by these commands.
 
+## Embedded metadata storage
+
+The app pins `rusqlite = 0.40.2` with `default-features = false` and only `bundled`; SQLite is compiled through libsqlite3-sys, so a working target C toolchain is required even for headless app tests. No separately installed SQLite daemon, libSQL service, cloud account or new user database driver is required. The resolved registry package declares MIT, with its full notice and SQLite's public-domain dedication in [third-party notices](../THIRD_PARTY_NOTICES.md).
+
+Local profiles stay in version 1 `~/Library/Application Support/Dalan/sources.json`; passwords stay session-only or in native macOS Keychain. `metadata.sqlite3` beside that JSON stores only catalog names/kinds and connection identity, never credentials or rows. Private Unix directory/database permissions are not encryption; avoid committing or sharing real cache files. Startup restore does not need credentials or a network. The cache is disposable, but do not reset a foreign/unsupported file silently; use reported warnings for explicit local recovery. See [cache contracts](mysql-sources.md#persistent-offline-metadata).
+
+For this revision the scoped simulated UI suite passed 82 tests and the four Python bundle helpers passed. Final workspace formatting/tests/Clippy/debug-bundle checks remain pending owner verification, and the next main push must validate all hosted jobs including bundled SQLite on other platforms. Native Keychain was not rerun.
+
 ## macOS desktop
 
 ### Build and open a debug app bundle
@@ -95,7 +103,7 @@ Implement [roadmap](roadmap.md) vertical slices, MySQL/MariaDB first. The existi
 
 ## Disposable database fixtures
 
-Run `./scripts/test-databases` with a Docker-compatible runtime. It starts `mysql:8.4` and `mariadb:11.4` on random localhost ports, uses a SELECT-granted disposable fixture account and cleans up its own containers/volumes. It does not use production credentials or remove unrelated resources. See [testing](testing.md) and the [scope matrix](mysql-sources.md#scope-and-evidence-matrix). `./scripts/test-secure-transports` opts into trusted custom-CA database TLS direct/HTTP CONNECT and rejection fixtures; `./scripts/test-ssh-transport` opts into actual SSH reads and host-key/identity rejection. Both use generated disposable trust material and temporary directories, cleaning their owned containers/volumes; SSH also removes its dedicated network and generated SSH image, not pulled database images. They do not install OS CA roots or edit user SSH state. Optional selected SSH trust is authoritative; None still uses OpenSSH default user/system known-host reads. Native Keychain validation is separately opt-in: one generated-item round-trip passed with cleanup. Current evidence includes six database smoke, ten secure-transport and six SSH tests on MySQL 8.4.11/MariaDB 11.4.13. Trusted system-CA HTTPS proxy success remains unverified.
+Run `./scripts/test-databases` with a Docker-compatible runtime. It starts `mysql:8.4` and `mariadb:11.4` on random localhost ports, uses a SELECT-granted disposable fixture account and cleans up its own containers/volumes. It does not use production credentials or remove unrelated resources. See [testing](testing.md) and the [scope matrix](mysql-sources.md#scope-and-evidence-matrix). `./scripts/test-secure-transports` opts into trusted custom-CA database TLS direct/HTTP CONNECT and rejection fixtures; `./scripts/test-ssh-transport` opts into actual SSH reads and host-key/identity rejection. Both use generated disposable trust material and temporary directories, cleaning their owned containers/volumes; SSH also removes its dedicated network and generated SSH image, not pulled database images. They do not install OS CA roots or edit user SSH state. Optional selected SSH trust is authoritative; None still uses OpenSSH default user/system known-host reads. Native Keychain validation is separately opt-in: one generated-item round-trip passed with cleanup. Current metadata-revision live reruns include seven direct/CONNECT/authentication, ten secure-transport and six SSH tests on MySQL 8.4.11/MariaDB 11.4.13. Trusted system-CA HTTPS proxy success remains unverified.
 
 ## Later platforms
 

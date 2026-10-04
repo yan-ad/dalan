@@ -136,9 +136,17 @@ def main():
             # An inherited agent must not make bad-key controls pass by accident.
             env.pop("SSH_AUTH_SOCK", None)
             print("Testing real SSH to both engines, selected host trust and identity rejection; database TLS disabled.", flush=True)
+            # These are transport semantics tests, not a handshake load test.
+            # Each case opens several independent tunnels against one disposable
+            # sshd; serialize by default to avoid fixture startup contention.
+            # Allow an explicit override for investigating parallel failures.
+            test_args = sys.argv[1:]
+            if not any(arg == "--test-threads" or arg.startswith("--test-threads=")
+                       for arg in test_args):
+                test_args = ["--test-threads=1", *test_args]
             result = subprocess.run([
                 "cargo", "test", "-p", "dalan-drivers", "--test", "ssh_transport", "--locked",
-                "--", "--ignored", "--nocapture", *sys.argv[1:]
+                "--", "--ignored", "--nocapture", *test_args
             ], cwd=ROOT, env=env)
             return result.returncode
     finally:

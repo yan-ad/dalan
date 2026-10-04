@@ -36,6 +36,7 @@ async fn positive(engine: DbEngine) -> anyhow::Result<()> {
     let report = test_connection(&profile, &password).await?;
     assert!(!report.server_version.is_empty());
     assert!(report.databases.iter().any(|db| db == "dalan_fixture"));
+    common::full_catalog(&profile, &password, "dalan_fixture").await?;
     let metadata = columns(&profile, &password, "dalan_fixture", "contact").await?;
     let request = BrowseRequest {
         database: "dalan_fixture".into(),

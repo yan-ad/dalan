@@ -60,6 +60,26 @@ fn tree_row_id(key: &TreeKey) -> String {
     }
 }
 
+/// Snapshot state is not a persistent connection/online indicator.
+fn cached_status(loading: bool, offline: bool, failed: bool) -> Option<&'static str> {
+    if loading {
+        Some("Refreshing…")
+    } else if failed {
+        Some("Stale")
+    } else if offline {
+        Some("Cached")
+    } else {
+        None
+    }
+}
+
+fn refresh_disabled(model: &SourceModel) -> bool {
+    model.saving
+        || model.explorer_source.as_ref().is_none_or(|id| {
+            !model.profiles.iter().any(|profile| &profile.id == id) || model.refreshing_source(id)
+        })
+}
+
 struct TreeTooltip(String);
 impl Render for TreeTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -215,6 +235,37 @@ impl SourceExplorer {
             |key| key == &row.key,
         );
         let view = matches!(&row.key, TreeKey::Table { view: true, .. });
+        // Keep the full label even when a warning or a status is present.
+        let mut tooltip = row.label.clone();
+        let source_row = matches!(&row.key, TreeKey::Source(_));
+        let mut failed = false;
+        if source_row {
+            for (key, error) in &model.tree.errors {
+                if key.source() == row.key.source() {
+                    failed = true;
+                    tooltip.push_str(&format!("\n{error}"));
+                }
+            }
+            if let Some(timestamp) = model.cached_at.get(row.key.source()) {
+                tooltip.push_str(&format!(
+                    "\nLast successful schema snapshot: {timestamp} Unix seconds"
+                ));
+            }
+        } else if let Some(status) = &row.status {
+            tooltip.push_str(&format!("\n{status}"));
+        }
+        if view {
+            tooltip.push_str("\nRead-only views are unavailable");
+        }
+        let status_label = source_row
+            .then(|| {
+                cached_status(
+                    model.refreshing_source(row.key.source()),
+                    model.cached_offline.contains(row.key.source()),
+                    failed,
+                )
+            })
+            .flatten();
         let profile = model
             .profiles
             .iter()
@@ -319,12 +370,14 @@ impl SourceExplorer {
                 .id(gpui::SharedString::from(label_id.clone()))
                 .debug_selector(move || label_id.clone())
                 .flex_1()
-                .min_w(px(0.))
+                .min_w(px(if source_row { 80. } else { 0. }))
                 .text_color(rgb(if view { MUTED } else { TEXT }))
                 .text_ellipsis()
                 .child(row.label),
         );
-        if let Some(count) = row.count {
+        if let Some(count) = row.count
+            && status_label.is_none()
+        {
             element = element.child(
                 div()
                     .flex_shrink_0()
@@ -333,16 +386,32 @@ impl SourceExplorer {
                     .child(count.to_string()),
             );
         }
-        if let Some(status) = row.status {
-            element = element
-                .child(div().flex_shrink_0().text_color(rgb(0xf2bf76)).child("•"))
-                .tooltip(move |_, cx| cx.new(|_| TreeTooltip(status.clone())).into());
-        } else if view {
-            element = element.tooltip(|_, cx| {
-                cx.new(|_| super::ControlTooltip("Read-only views are unavailable"))
-                    .into()
-            });
+        if let Some(status) = status_label {
+            let status_id = format!("cached-status-{}", row.key.source());
+            element = element.child(
+                div()
+                    .id(gpui::SharedString::from(status_id.clone()))
+                    .debug_selector(move || status_id.clone())
+                    .flex_shrink_0()
+                    .text_size(px(10.))
+                    .text_color(rgb(if status == "Stale" { 0xf2bf76 } else { MUTED }))
+                    .child(status),
+            );
+            tooltip.push_str(&format!("\n{status}"));
+        } else if !source_row && row.status.is_some() {
+            element = element.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(10.))
+                    .text_color(rgb(0xf2bf76))
+                    .child(if model.tree.loading.contains(&row.key) {
+                        "Loading…"
+                    } else {
+                        "Stale"
+                    }),
+            );
         }
+        element = element.tooltip(move |_, cx| cx.new(|_| TreeTooltip(tooltip.clone())).into());
         element
     }
 }
@@ -354,7 +423,11 @@ impl Render for SourceExplorer {
             .explorer_source
             .as_ref()
             .or(model.selected_source.as_ref());
-        let disabled = target.is_none() || model.busy || model.saving;
+        let disabled = target.is_none_or(|id| !model.profiles.iter().any(|p| &p.id == id))
+            || model.busy
+            || model.saving;
+        let refresh_is_disabled = refresh_disabled(model);
+        let metadata_notice = model.metadata_notice.clone();
         let saving = model.saving;
         let busy = model.busy;
         let confirm = model.delete_confirm;
@@ -391,10 +464,16 @@ impl Render for SourceExplorer {
             .child(toolbar_button(
                 "refresh-source",
                 Icon::Refresh,
-                "Refresh selected source",
-                disabled,
+                "Refresh selected source schemas (keeps cached metadata on failure)",
+                refresh_is_disabled,
                 cx,
-                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.refresh_explorer(cx)),
+                |this: &mut Self, cx| {
+                    this.model.update(cx, |m, cx| {
+                        if !refresh_disabled(m) {
+                            m.refresh_explorer(cx);
+                        }
+                    })
+                },
             ))
             .child(toolbar_button(
                 "delete-source",
@@ -504,6 +583,20 @@ impl Render for SourceExplorer {
                                 },
                             )),
                     ),
+            );
+        }
+        if let Some(notice) = metadata_notice {
+            root = root.child(
+                div()
+                    .id("source-metadata-notice")
+                    .debug_selector(|| "source-metadata-notice".into())
+                    .h(px(22.))
+                    .flex_shrink_0()
+                    .px(px(6.))
+                    .text_ellipsis()
+                    .text_color(rgb(0xf2bf76))
+                    .child(notice.clone())
+                    .tooltip(move |_, cx| cx.new(|_| TreeTooltip(notice.clone())).into()),
             );
         }
         if let Some(error) = error {
@@ -1153,6 +1246,148 @@ mod tests {
         (model, cx)
     }
 
+    #[test]
+    fn snapshot_status_is_textual_and_loading_takes_precedence() {
+        assert_eq!(cached_status(false, true, false), Some("Cached"));
+        assert_eq!(cached_status(false, true, true), Some("Stale"));
+        assert_eq!(cached_status(true, true, true), Some("Refreshing…"));
+        assert_eq!(cached_status(false, false, false), None);
+    }
+
+    #[gpui::test]
+    fn refresh_requires_real_explicit_explorer_selection(cx: &mut TestAppContext) {
+        let model = cx.new(|_| {
+            let mut m = SourceModel::for_tests(vec![SourceProfile {
+                id: "refresh-guard".into(),
+                save_password: false,
+                ..SourceProfile::default()
+            }]);
+            m.selected_source = Some("refresh-guard".into());
+            m.cached_at.insert("refresh-guard".into(), u64::MAX);
+            m.tree
+                .databases
+                .insert("refresh-guard".into(), vec!["cached_db".into()]);
+            m
+        });
+        let (_, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        cx.refresh().unwrap();
+        click(cx, "refresh-source");
+        model.read_with(cx, |m, _| {
+            assert!(refresh_disabled(m));
+            assert!(m.tree.loading.is_empty());
+            assert!(m.explorer_source.is_none());
+            assert_eq!(m.cached_at["refresh-guard"], u64::MAX);
+            assert_eq!(m.tree.databases["refresh-guard"], ["cached_db"]);
+        });
+        // Disabled controls are excluded from tab traversal and ignore activation.
+        for _ in 0..8 {
+            cx.update(|window, _| window.focus_next());
+            cx.simulate_keystrokes("enter");
+            cx.simulate_keystrokes("space");
+            cx.run_until_parked();
+        }
+        model.update(cx, |m, cx| {
+            assert!(m.tree.loading.is_empty());
+            m.explorer_source = Some("phantom".into());
+            cx.notify();
+        });
+        click(cx, "refresh-source");
+        assert!(model.read_with(cx, |m, _| refresh_disabled(m) && m.tree.loading.is_empty()));
+        model.update(cx, |m, _| {
+            m.explorer_source = Some("refresh-guard".into());
+            m.busy = true;
+            assert!(
+                !refresh_disabled(m),
+                "page loading is independent of metadata"
+            );
+            m.saving = true;
+            assert!(refresh_disabled(m));
+            m.saving = false;
+            m.tree
+                .loading
+                .insert(TreeKey::Source("refresh-guard".into()));
+            assert!(refresh_disabled(m));
+        });
+    }
+
+    #[gpui::test]
+    fn offline_snapshot_browsing_and_notice_preserve_rows(cx: &mut TestAppContext) {
+        let model = cx.new(|_| {
+            let mut m = SourceModel::for_tests(vec![SourceProfile {
+                id: "offline".into(),
+                name: "Full cached source name".into(),
+                save_password: false,
+                ..SourceProfile::default()
+            }]);
+            m.cached_at.insert("offline".into(), 123);
+            m.cached_offline.insert("offline".into());
+            m.metadata_notice = Some("Local metadata cache is unavailable.".into());
+            m.tree.databases.insert("offline".into(), vec!["db".into()]);
+            m.tree.tables.insert(
+                ("offline".into(), "db".into()),
+                vec![dalan_drivers::TableInfo {
+                    name: "items".into(),
+                    kind: "BASE TABLE".into(),
+                }],
+            );
+            m.tree.expanded_sources.insert("offline".into());
+            m
+        });
+        let (explorer, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        cx.simulate_resize(gpui::size(px(240.), px(420.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("source-metadata-notice").is_some());
+        assert!(cx.debug_bounds("cached-status-offline").is_some());
+        let db = TreeKey::Database {
+            source: "offline".into(),
+            database: "db".into(),
+        };
+        click(cx, Box::leak(tree_row_id(&db).into_boxed_str()));
+        let group = TreeKey::Group {
+            source: "offline".into(),
+            database: "db".into(),
+            views: false,
+        };
+        click(cx, Box::leak(tree_row_id(&group).into_boxed_str()));
+        model.read_with(cx, |m, _| {
+            assert!(m.page.is_none());
+            assert!(!m.busy);
+            assert!(m.tree.loading.is_empty());
+            assert_eq!(
+                m.tree.tables[&("offline".into(), "db".into())][0].name,
+                "items"
+            );
+            assert_eq!(
+                cached_status(m.refreshing_source("offline"), true, false),
+                Some("Cached")
+            );
+        });
+        for loading in [false, true] {
+            model.update(cx, |m, cx| {
+                let key = TreeKey::Source("offline".into());
+                m.tree.errors.insert(
+                    key.clone(),
+                    "Refresh failed; keeping cached metadata".into(),
+                );
+                if loading {
+                    m.tree.loading.insert(key);
+                }
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("cached-status-offline").is_some());
+            explorer.read_with(cx, |view, _| assert_eq!(view.rows.len(), 5));
+            model.read_with(cx, |m, _| {
+                assert_eq!(
+                    cached_status(m.refreshing_source("offline"), true, true),
+                    Some(if loading { "Refreshing…" } else { "Stale" })
+                );
+                assert!(m.page.is_none());
+            });
+        }
+    }
+
     #[gpui::test]
     fn header_clicks_cycle_sort_and_switch_columns(cx: &mut TestAppContext) {
         let (model, cx) = sorting_fixture(cx);
@@ -1438,6 +1673,9 @@ mod tests {
                 "virtual-source".into(),
                 (0..1000).map(|i| format!("db{i:04}")).collect(),
             );
+            m.cached_at.insert("virtual-source".into(), 123);
+            m.cached_offline.insert("virtual-source".into());
+            m.metadata_notice = Some("Cached metadata warning".into());
             m.tree.expanded_sources.insert("virtual-source".into());
             m
         });

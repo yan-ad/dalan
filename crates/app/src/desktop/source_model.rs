@@ -1,13 +1,19 @@
-use std::{collections::HashMap, future::Future, sync::OnceLock};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    sync::{Arc, OnceLock},
+};
 
 use anyhow::{Result, anyhow};
 use dalan_app::explorer_tree::{ExplorerTree, TreeKey};
+use dalan_app::schema_cache::{CachedSchema, SchemaCache, connection_identity};
 use dalan_app::source_store::{NativeSecretStore, SecretStore, SourceRepository};
 use dalan_drivers::{
-    BrowseRequest, SortDirection, SourceProfile, TableFilter, TableInfo, TablePage, TableSort,
+    BrowseRequest, CatalogSnapshot, DatabaseCatalog, SortDirection, SourceProfile, TableFilter,
+    TableInfo, TablePage, TableSort, discover_catalog,
 };
 use gpui::Context;
-use tokio::{runtime::Runtime, task::AbortHandle};
+use tokio::{runtime::Runtime, sync::Mutex, task::AbortHandle};
 
 fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -20,7 +26,67 @@ fn runtime() -> &'static Runtime {
     })
 }
 
+/// Serialize ticket allocation, including blocking work outliving a canceled refresh.
+async fn admit_cache_work<T: Send + 'static>(
+    gate: Arc<Mutex<()>>,
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let guard = gate.lock_owned().await;
+    tokio::task::spawn_blocking(move || {
+        // The worker owns admission even while queued or after its waiter is aborted.
+        let _guard = guard;
+        work()
+    })
+    .await?
+}
+
+type StartupCatalog = (
+    Vec<SourceProfile>,
+    Vec<(String, CachedSchema)>,
+    Option<String>,
+);
+
+/// Settings remain usable even when the optional metadata store cannot be opened.
+fn load_profiles_and_cache(
+    repo: &SourceRepository,
+    cache: Option<&SchemaCache>,
+) -> Result<StartupCatalog> {
+    let profiles = repo.load()?;
+    let mut snapshots = Vec::new();
+    let mut warning = None;
+    if let Some(cache) = cache {
+        if cache.prune(&profiles).is_err() {
+            warning = Some("Some local metadata could not be restored.".into());
+        }
+        for profile in &profiles {
+            if cache.register(profile).is_err() {
+                warning = Some("Some local metadata could not be restored.".into());
+                continue;
+            }
+            match cache.load(profile) {
+                Ok(Some(snapshot)) => snapshots.push((profile.id.clone(), snapshot)),
+                Ok(None) => {}
+                Err(_) => warning = Some("Some local metadata could not be restored.".into()),
+            }
+        }
+    }
+    Ok((profiles, snapshots, warning))
+}
+
+struct RefreshOutcome {
+    snapshot: CatalogSnapshot,
+    password: String,
+    fetched_at: u64,
+    warning: Option<String>,
+}
+
 pub(super) struct SourceModel {
+    pub metadata_notice: Option<String>,
+    pub cached_at: HashMap<String, u64>,
+    pub cached_offline: HashSet<String>,
+    schema_cache: Option<SchemaCache>,
+    cache_admission: Arc<Mutex<()>>,
+    automatic_discovery: bool,
     pub profiles: Vec<SourceProfile>,
     pub tree: ExplorerTree,
     pub form_open: bool,
@@ -68,6 +134,146 @@ impl Drop for SourceModel {
 }
 
 impl SourceModel {
+    pub fn refreshing_source(&self, id: &str) -> bool {
+        self.tree.loading.contains(&TreeKey::Source(id.into()))
+    }
+
+    fn install_snapshot(
+        &mut self,
+        id: &str,
+        snapshot: &CatalogSnapshot,
+        captured_at: u64,
+        offline: bool,
+    ) {
+        let names: HashSet<_> = snapshot
+            .databases
+            .iter()
+            .map(|db| db.name.as_str())
+            .collect();
+        self.tree
+            .expanded_databases
+            .retain(|(source, db)| source != id || names.contains(db.as_str()));
+        self.tree.expanded_groups.retain(|(source, db, views)| {
+            source != id
+                || snapshot.databases.iter().any(|catalog| {
+                    catalog.name == *db
+                        && catalog
+                            .tables
+                            .iter()
+                            .any(|table| (table.kind != "BASE TABLE") == *views)
+                })
+        });
+        self.tree.tables.retain(|(source, _), _| source != id);
+        self.tree.errors.retain(|key, _| key.source() != id);
+        let databases: Vec<_> = snapshot
+            .databases
+            .iter()
+            .map(|db| db.name.clone())
+            .collect();
+        self.tree.databases.insert(id.into(), databases.clone());
+        for DatabaseCatalog { name, tables } in &snapshot.databases {
+            self.tree
+                .tables
+                .insert((id.into(), name.clone()), tables.clone());
+        }
+        self.tree.expanded_sources.insert(id.into());
+        self.cached_at.insert(id.into(), captured_at);
+        if offline {
+            self.cached_offline.insert(id.into());
+        } else {
+            self.cached_offline.remove(id);
+        }
+        if self.selected_source.as_deref() == Some(id) {
+            self.databases = databases;
+            if let Some(database) = &self.selected_database {
+                self.tables = self
+                    .tree
+                    .tables
+                    .get(&(id.into(), database.clone()))
+                    .cloned()
+                    .unwrap_or_default();
+            }
+        }
+        // The displayed row data and selected table are deliberately untouched.
+    }
+
+    pub fn refresh_schema(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.saving || self.refreshing_source(&id) {
+            return;
+        }
+        let Some(profile) = self.profiles.iter().find(|p| p.id == id).cloned() else {
+            return;
+        };
+        let cache = self.schema_cache.clone();
+        let cache_admission = self.cache_admission.clone();
+        let session = self.passwords.get(&id).cloned();
+        self.tree.expanded_sources.insert(id.clone());
+        self.run_catalog(
+            TreeKey::Source(id.clone()),
+            async move {
+                let mut warning = None;
+                let ticket = if let Some(cache) = cache.clone() {
+                    let profile = profile.clone();
+                    match admit_cache_work(cache_admission, move || cache.begin_refresh(&profile))
+                        .await
+                    {
+                        Ok(ticket) => Some(ticket),
+                        _ => {
+                            warning = Some(
+                                "Local metadata cache unavailable; snapshot is in-memory only."
+                                    .into(),
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    warning = Some(
+                        "Local metadata cache unavailable; snapshot is in-memory only.".into(),
+                    );
+                    None
+                };
+                let password = Self::resolve_password(&profile, session).await?;
+                let snapshot = discover_catalog(&profile, &password).await?;
+                let fetched_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs();
+                if let (Some(cache), Some(ticket)) = (cache, ticket) {
+                    let persisted = snapshot.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        cache.replace(&ticket, &persisted, fetched_at)
+                    })
+                    .await
+                    {
+                        Ok(Ok(true)) => {}
+                        Ok(Ok(false)) => {
+                            return Err(anyhow!(
+                                "Schema refresh superseded; old metadata retained."
+                            ));
+                        }
+                        _ => {
+                            warning = Some(
+                                "Live metadata loaded, but the local snapshot could not be saved."
+                                    .into(),
+                            )
+                        }
+                    }
+                }
+                Ok(RefreshOutcome {
+                    snapshot,
+                    password,
+                    fetched_at,
+                    warning,
+                })
+            },
+            cx,
+            move |this, outcome| {
+                this.passwords.insert(id.clone(), outcome.password);
+                this.install_snapshot(&id, &outcome.snapshot, outcome.fetched_at, false);
+                this.metadata_notice = outcome.warning;
+            },
+        );
+    }
+
     fn cancel_catalogs(&mut self, matches: impl Fn(&TreeKey) -> bool) {
         let keys: Vec<_> = self
             .tree_operations
@@ -80,6 +286,11 @@ impl SourceModel {
                 task.abort();
             }
             self.tree.loading.remove(&key);
+            if let TreeKey::Source(id) = &key
+                && self.cached_at.contains_key(id)
+            {
+                self.cached_offline.insert(id.clone());
+            }
         }
     }
 
@@ -135,6 +346,11 @@ impl SourceModel {
                 match result {
                     Ok(value) => done(this, value),
                     Err(error) => {
+                        if let TreeKey::Source(id) = &key
+                            && this.cached_at.contains_key(id)
+                        {
+                            this.cached_offline.insert(id.clone());
+                        }
                         this.tree.errors.insert(key, error.to_string());
                     }
                 }
@@ -149,7 +365,7 @@ impl SourceModel {
         if self.saving {
             return;
         }
-        let Some(profile) = self.profiles.iter().find(|p| p.id == id).cloned() else {
+        let Some(_) = self.profiles.iter().find(|p| p.id == id) else {
             return;
         };
         if self.tree.expanded_sources.remove(&id) {
@@ -166,24 +382,7 @@ impl SourceModel {
             cx.notify();
             return;
         }
-        let session = self.passwords.get(&id).cloned();
-        self.run_catalog(
-            TreeKey::Source(id.clone()),
-            async move {
-                let password = Self::resolve_password(&profile, session).await?;
-                let report = dalan_drivers::test_connection(&profile, &password).await?;
-                Ok((report.databases, password))
-            },
-            cx,
-            move |this, (databases, password)| {
-                this.passwords.insert(id.clone(), password);
-                let databases: Vec<_> = databases.into_iter().take(1000).collect();
-                if this.selected_source.as_ref() == Some(&id) {
-                    this.databases = databases.clone();
-                }
-                this.tree.databases.insert(id, databases);
-            },
-        );
+        self.refresh_schema(id, cx);
     }
 
     pub fn toggle_database(&mut self, source: String, database: String, cx: &mut Context<Self>) {
@@ -386,6 +585,12 @@ impl SourceModel {
 impl SourceModel {
     fn empty(repository: Option<SourceRepository>) -> Self {
         Self {
+            metadata_notice: None,
+            cached_at: HashMap::new(),
+            cached_offline: HashSet::new(),
+            schema_cache: None,
+            cache_admission: Arc::new(Mutex::new(())),
+            automatic_discovery: false,
             profiles: vec![],
             tree: ExplorerTree::default(),
             form_open: false,
@@ -424,20 +629,35 @@ impl SourceModel {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let repository = SourceRepository::default_path().map(SourceRepository::new);
         let mut model = Self::empty(repository.as_ref().ok().cloned());
+        model.automatic_discovery = true;
+        match SchemaCache::default_path() {
+            Ok(path) => model.schema_cache = Some(SchemaCache::new(path)),
+            Err(_) => model.metadata_notice = Some("Local metadata cache is unavailable.".into()),
+        }
         if let Err(error) = repository {
             model.error = Some(error.to_string());
             return model;
         }
         let repo = model.repository.clone().unwrap();
+        let cache = model.schema_cache.clone();
         model.busy = true;
         model.run(
-            async move { tokio::task::spawn_blocking(move || repo.load()).await? },
+            async move {
+                tokio::task::spawn_blocking(move || load_profiles_and_cache(&repo, cache.as_ref()))
+                    .await?
+            },
             cx,
             |this, result, cx| {
                 this.busy = false;
                 match result {
-                    Ok(profiles) => {
+                    Ok((profiles, snapshots, warning)) => {
                         this.profiles = profiles;
+                        for (id, cached) in snapshots {
+                            this.install_snapshot(&id, &cached.snapshot, cached.fetched_at, true);
+                        }
+                        if warning.is_some() {
+                            this.metadata_notice = warning;
+                        }
                         this.storage_ready = true;
                     }
                     Err(error) => this.error = Some(error.to_string()),
@@ -622,6 +842,13 @@ impl SourceModel {
             cx.notify();
             return;
         };
+        let identity_changed = self
+            .profiles
+            .iter()
+            .find(|old| old.id == profile.id)
+            .is_none_or(|old| connection_identity(old).ok() != connection_identity(&profile).ok());
+        self.cancel_catalogs(|key| key.source() == profile.id);
+        let cache = self.schema_cache.clone();
         self.invalidate();
         self.saving = true;
         self.form_busy = true;
@@ -650,17 +877,29 @@ impl SourceModel {
                 let restore = if credential_change { match old { Some(old) => store.set(&profile.id, &old), None => store.delete(&profile.id) } } else { Ok(()) };
                 return Err(if restore.is_err() { anyhow!("Settings save failed; restoring the Keychain credential also failed. Review this source before connecting.") } else { error });
             }
-            Ok(profiles)
+            let warning = cache.as_ref().and_then(|cache| cache.register(&profile).err())
+                .map(|_| "Profile saved, but local metadata registration failed.".to_string());
+            Ok((profiles, warning))
         }).await? }, cx, move |this, result, cx| {
             this.saving = false; this.form_busy = false;
             match result {
-                Ok(profiles) => { this.remove_tree_source(&saved_profile.id); this.profiles = profiles; this.passwords.insert(saved_profile.id.clone(), saved_password);
-                    this.explorer_source = Some(saved_profile.id.clone());
+                Ok((profiles, warning)) => {
+                    if identity_changed {
+                        this.remove_tree_source(&saved_profile.id);
+                        this.cached_at.remove(&saved_profile.id);
+                        this.cached_offline.remove(&saved_profile.id);
+                    }
+                    this.profiles = profiles;
+                    this.passwords.insert(saved_profile.id.clone(), saved_password);
+                    this.metadata_notice = warning;
                     if this.selected_source.as_ref() == Some(&saved_profile.id) || this.selected_source.is_none() {
-                        this.selected_source = Some(saved_profile.id); this.clear_data();
+                        this.selected_source = Some(saved_profile.id.clone());
+                        if identity_changed { this.clear_data(); }
                     }
                     this.form_open = false; this.form_profile = None;
-                    this.form_generation += 1; this.form_feedback = None; this.error = None; },
+                    this.form_generation += 1; this.form_feedback = None; this.error = None;
+                    if this.automatic_discovery { this.refresh_schema(saved_profile.id, cx); }
+                },
                 Err(error) => this.form_feedback = Some(format!("Not saved: {error}")),
             } cx.notify();
         });
@@ -776,15 +1015,10 @@ impl SourceModel {
         if self.saving {
             return;
         }
-        let Some(id) = self
-            .explorer_source
-            .clone()
-            .or_else(|| self.selected_source.clone())
-        else {
+        let Some(id) = self.explorer_source.clone() else {
             return;
         };
-        self.remove_tree_source(&id);
-        self.toggle_source(id, cx);
+        self.refresh_schema(id, cx);
     }
 
     pub fn request_delete_explorer(&mut self, cx: &mut Context<Self>) {
@@ -837,6 +1071,8 @@ impl SourceModel {
         ) else {
             return;
         };
+        self.cancel_catalogs(|key| key.source() == id);
+        let cache = self.schema_cache.clone();
         self.invalidate();
         self.saving = true;
         self.busy = true;
@@ -857,9 +1093,11 @@ impl SourceModel {
             let store = NativeSecretStore; let old = if credential_saved { store.get(&id)? } else { None };
             if credential_saved { store.delete(&id)?; }
             if let Err(error) = repo.save(&profiles) { if let Some(password) = old { store.set(&id, &password).map_err(|_| anyhow!("Settings removal failed and Keychain restore failed; review saved source."))?; } return Err(error); }
-            Ok(profiles)
+            let warning = cache.as_ref().and_then(|cache| cache.remove(&id).err())
+                .map(|_| "Profile removed, but local metadata cleanup failed.".to_string());
+            Ok((profiles, warning))
         }).await? }, cx, move |this, result, cx| { this.saving = false; this.busy = false;
-            match result { Ok(profiles) => { this.remove_tree_source(&removed_id); this.profiles = profiles; this.passwords.remove(&removed_id); this.pending_delete_source = None;
+            match result { Ok((profiles, warning)) => { this.metadata_notice = warning; this.cached_at.remove(&removed_id); this.cached_offline.remove(&removed_id); this.remove_tree_source(&removed_id); this.profiles = profiles; this.passwords.remove(&removed_id); this.pending_delete_source = None;
                     if this.selected_source.as_ref() == Some(&removed_id) { this.selected_source = None; this.clear_data(); }
                     if this.explorer_source.as_ref() == Some(&removed_id) { this.explorer_source = None; }
                     this.error = None; }, Err(error) => this.error = Some(format!("Not removed: {error}")) }; cx.notify(); });
@@ -879,6 +1117,292 @@ mod tests {
     use super::*;
     use dalan_drivers::{CellValue, FilterOperator, mysql::ColumnInfo};
     use gpui::{AppContext, TestAppContext};
+
+    fn snapshot(table: &str) -> CatalogSnapshot {
+        CatalogSnapshot {
+            databases: vec![
+                DatabaseCatalog {
+                    name: "inventory".into(),
+                    tables: vec![TableInfo {
+                        name: table.into(),
+                        kind: "BASE TABLE".into(),
+                    }],
+                },
+                DatabaseCatalog {
+                    name: "empty".into(),
+                    tables: vec![],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn cache_admission_survives_canceled_running_worker() {
+        let sandbox = ExportSandbox::new();
+        let cache = SchemaCache::new(sandbox.0.join("metadata.sqlite3"));
+        let profile = SourceProfile::default();
+        cache.register(&profile).unwrap();
+        runtime().block_on(async {
+            let gate = Arc::new(Mutex::new(()));
+            let (running_tx, running_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let (old_tx, old_rx) = tokio::sync::oneshot::channel();
+            let old_cache = cache.clone();
+            let old_profile = profile.clone();
+            let old_job = tokio::spawn(admit_cache_work(gate.clone(), move || {
+                running_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                let ticket = old_cache.begin_refresh(&old_profile)?;
+                old_tx.send(ticket.clone()).unwrap();
+                Ok(ticket)
+            }));
+            running_rx.await.unwrap();
+            old_job.abort();
+            assert!(old_job.await.unwrap_err().is_cancelled());
+
+            let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
+            let (entered_tx, mut entered_rx) = tokio::sync::oneshot::channel();
+            let new_cache = cache.clone();
+            let new_profile = profile.clone();
+            let new_job = tokio::spawn(async move {
+                let mut admission = Box::pin(admit_cache_work(gate, move || {
+                    entered_tx.send(()).unwrap();
+                    new_cache.begin_refresh(&new_profile)
+                }));
+                std::future::poll_fn(|cx| {
+                    assert!(admission.as_mut().poll(cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                pending_tx.send(()).unwrap();
+                admission.await
+            });
+            pending_rx.await.unwrap();
+            let blocked =
+                tokio::time::timeout(std::time::Duration::from_millis(20), &mut entered_rx)
+                    .await
+                    .is_err();
+            // Always release the blocking worker before asserting, even on failure.
+            release_tx.send(()).unwrap();
+            let old = old_rx.await.unwrap();
+            let new = new_job.await.unwrap().unwrap();
+            assert!(
+                blocked,
+                "new worker entered before the old allocation completed"
+            );
+            assert!(new.generation > old.generation);
+            assert!(cache.replace(&new, &snapshot("new"), 200).unwrap());
+            assert!(!cache.replace(&old, &snapshot("old"), 100).unwrap());
+            let loaded = cache.load(&profile).unwrap().unwrap();
+            assert_eq!(loaded.fetched_at, 200);
+            assert_eq!(
+                serde_json::to_value(loaded.snapshot).unwrap(),
+                serde_json::to_value(snapshot("new")).unwrap()
+            );
+        });
+    }
+
+    #[test]
+    fn canceled_pending_cache_admission_does_not_advance_clock() {
+        let sandbox = ExportSandbox::new();
+        let cache = SchemaCache::new(sandbox.0.join("metadata.sqlite3"));
+        let profile = SourceProfile::default();
+        cache.register(&profile).unwrap();
+        let before = cache.begin_refresh(&profile).unwrap();
+        runtime().block_on(async {
+            let gate = Arc::new(Mutex::new(()));
+            let guard = gate.clone().lock_owned().await;
+            let pending_gate = gate.clone();
+            let pending_cache = cache.clone();
+            let pending_profile = profile.clone();
+            let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
+            let job = tokio::spawn(async move {
+                let mut admission = Box::pin(admit_cache_work(pending_gate, move || {
+                    pending_cache.begin_refresh(&pending_profile)
+                }));
+                std::future::poll_fn(|cx| {
+                    assert!(admission.as_mut().poll(cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                pending_tx.send(()).unwrap();
+                admission.await
+            });
+            pending_rx.await.unwrap();
+            job.abort();
+            assert!(job.await.unwrap_err().is_cancelled());
+            drop(guard);
+            let new_cache = cache.clone();
+            let new_profile = profile.clone();
+            let after = admit_cache_work(gate, move || new_cache.begin_refresh(&new_profile))
+                .await
+                .unwrap();
+            assert_eq!(after.generation, before.generation + 1);
+        });
+    }
+
+    #[gpui::test]
+    fn startup_restores_complete_offline_catalog_without_passwords(cx: &mut TestAppContext) {
+        let sandbox = ExportSandbox::new();
+        let profile = SourceProfile::default();
+        let repo = SourceRepository::new(sandbox.0.join("sources.json"));
+        repo.save(std::slice::from_ref(&profile)).unwrap();
+        let cache = SchemaCache::new(sandbox.0.join("metadata.sqlite3"));
+        cache.register(&profile).unwrap();
+        let ticket = cache.begin_refresh(&profile).unwrap();
+        cache.replace(&ticket, &snapshot("items"), 123).unwrap();
+        let (profiles, restored, warning) = load_profiles_and_cache(&repo, Some(&cache)).unwrap();
+        assert!(warning.is_none());
+        let model = cx.new(|_| SourceModel::for_tests(profiles));
+        model.update(cx, |model, cx| {
+            for (id, cached) in restored {
+                model.install_snapshot(&id, &cached.snapshot, cached.fetched_at, true);
+            }
+            assert!(model.cached_offline.contains(&profile.id));
+            assert_eq!(model.cached_at[&profile.id], 123);
+            assert!(model.tree.expanded_databases.is_empty());
+            assert!(model.passwords.is_empty());
+            model.toggle_database(profile.id.clone(), "empty".into(), cx);
+            assert!(model.tree_operations.is_empty());
+            assert!(model.tree.tables[&(profile.id.clone(), "empty".into())].is_empty());
+        });
+    }
+
+    #[test]
+    fn startup_cache_failure_keeps_committed_profiles() {
+        let sandbox = ExportSandbox::new();
+        let repo = SourceRepository::new(sandbox.0.join("sources.json"));
+        let profile = SourceProfile::default();
+        repo.save(std::slice::from_ref(&profile)).unwrap();
+        let path = sandbox.0.join("metadata.sqlite3");
+        std::fs::write(&path, "not a SQLite database").unwrap();
+        let (profiles, cached, warning) =
+            load_profiles_and_cache(&repo, Some(&SchemaCache::new(path))).unwrap();
+        assert_eq!(profiles[0].id, profile.id);
+        assert!(cached.is_empty());
+        assert!(warning.is_some());
+    }
+
+    #[gpui::test]
+    fn failed_refresh_retains_offline_metadata_and_displayed_page(cx: &mut TestAppContext) {
+        let profile = SourceProfile::default();
+        let id = profile.id.clone();
+        let model = cx.new(|_| {
+            let mut model = loaded_model();
+            model.profiles = vec![profile];
+            model.selected_source = Some(id.clone());
+            model.install_snapshot(&id, &snapshot("items"), 20, false);
+            model
+        });
+        let page = model.read_with(cx, |model, _| serde_json::to_value(&model.page).unwrap());
+        model.update(cx, |model, cx| {
+            model.run_catalog::<()>(
+                TreeKey::Source(id.clone()),
+                async { Err(anyhow!("Offline")) },
+                cx,
+                |_, _| panic!("unexpected success"),
+            )
+        });
+        for _ in 0..100 {
+            cx.run_until_parked();
+            if model.read_with(cx, |model, _| model.tree_operations.is_empty()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        model.read_with(cx, |model, _| {
+            assert!(model.tree_operations.is_empty());
+            assert!(model.cached_offline.contains(&id));
+            assert_eq!(model.cached_at[&id], 20);
+            assert_eq!(
+                model.tree.tables[&(id.clone(), "inventory".into())][0].name,
+                "items"
+            );
+            assert_eq!(serde_json::to_value(&model.page).unwrap(), page);
+        });
+    }
+
+    #[gpui::test]
+    fn snapshot_replacement_preserves_other_source_page_and_valid_expansion(
+        cx: &mut TestAppContext,
+    ) {
+        let sandbox = ExportSandbox::new();
+        let profile = SourceProfile::default();
+        let id = profile.id.clone();
+        let cache = SchemaCache::new(sandbox.0.join("metadata.sqlite3"));
+        cache.register(&profile).unwrap();
+        let ticket = cache.begin_refresh(&profile).unwrap();
+        cache.replace(&ticket, &snapshot("old"), 1).unwrap();
+        let ticket = cache.begin_refresh(&profile).unwrap();
+        cache.replace(&ticket, &snapshot("new"), 2).unwrap();
+        let restored = cache.load(&profile).unwrap().unwrap();
+        let model = cx.new(|_| two_source_model());
+        model.update(cx, |model, _| {
+            let other = model.profiles[0].id.clone();
+            let page = model.page.clone().unwrap();
+            model.install_snapshot(&id, &snapshot("old"), 1, true);
+            model
+                .tree
+                .expanded_databases
+                .insert((id.clone(), "inventory".into()));
+            model
+                .tree
+                .expanded_databases
+                .insert((id.clone(), "removed".into()));
+            model.install_snapshot(&id, &restored.snapshot, restored.fetched_at, false);
+            assert!(
+                model
+                    .tree
+                    .expanded_databases
+                    .contains(&(id.clone(), "inventory".into()))
+            );
+            assert!(
+                !model
+                    .tree
+                    .expanded_databases
+                    .contains(&(id.clone(), "removed".into()))
+            );
+            assert_eq!(
+                model.tree.tables[&(id.clone(), "inventory".into())][0].name,
+                "new"
+            );
+            assert!(!model.cached_offline.contains(&id));
+            assert_displayed_a(model, &other, &page);
+            assert!(model.tree.databases.contains_key(&other));
+        });
+    }
+
+    #[gpui::test]
+    fn refresh_without_explicit_explorer_selection_is_inert(cx: &mut TestAppContext) {
+        let model = cx.new(|_| two_source_model());
+        model.update(cx, |model, cx| {
+            model.explorer_source = None;
+            let selected = model.selected_source.clone();
+            model.refresh_explorer(cx);
+            assert!(model.tree_operations.is_empty());
+            assert_eq!(model.selected_source, selected);
+        });
+    }
+
+    #[test]
+    fn connection_edit_invalidates_disk_but_presentation_edit_preserves_it() {
+        let sandbox = ExportSandbox::new();
+        let cache = SchemaCache::new(sandbox.0.join("metadata.sqlite3"));
+        let mut profile = SourceProfile::default();
+        cache.register(&profile).unwrap();
+        let ticket = cache.begin_refresh(&profile).unwrap();
+        cache.replace(&ticket, &snapshot("items"), 1).unwrap();
+        let identity = connection_identity(&profile).unwrap();
+        profile.name = "Renamed".into();
+        profile.color = Some("#112233".into());
+        assert_eq!(connection_identity(&profile).unwrap(), identity);
+        cache.register(&profile).unwrap();
+        assert!(cache.load(&profile).unwrap().is_some());
+        profile.host = "different.example".into();
+        cache.register(&profile).unwrap();
+        assert!(cache.load(&profile).unwrap().is_none());
+        assert!(!cache.replace(&ticket, &snapshot("stale"), 2).unwrap());
+    }
 
     fn loaded_model() -> SourceModel {
         let mut model = SourceModel::for_tests(vec![]);
@@ -1553,5 +2077,93 @@ mod tests {
             assert!(model.password(&id).is_empty());
         });
         assert!(repository.load().unwrap().is_empty());
+    }
+    #[gpui::test]
+    fn save_automatically_discovers_and_failed_fetch_keeps_last_snapshot(cx: &mut TestAppContext) {
+        struct Sandbox(std::path::PathBuf);
+        impl Drop for Sandbox {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = Sandbox(
+            std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("dalan-auto-cache-{}", uuid::Uuid::new_v4())),
+        );
+        let repository = SourceRepository::new(directory.0.join("sources.json"));
+        let cache = SchemaCache::new(directory.0.join("metadata.sqlite3"));
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let profile = SourceProfile {
+            host: "127.0.0.1".into(),
+            port,
+            tls: dalan_drivers::TlsMode::Disabled,
+            ..Default::default()
+        };
+        cache.register(&profile).unwrap();
+        let snapshot = CatalogSnapshot {
+            databases: vec![DatabaseCatalog {
+                name: "saved_database".into(),
+                tables: vec![TableInfo {
+                    name: "saved_table".into(),
+                    kind: "BASE TABLE".into(),
+                }],
+            }],
+        };
+        let ticket = cache.begin_refresh(&profile).unwrap();
+        assert!(cache.replace(&ticket, &snapshot, 123).unwrap());
+        repository.save(std::slice::from_ref(&profile)).unwrap();
+        let id = profile.id.clone();
+        let model = cx.new(|_| {
+            let mut model = SourceModel::for_tests(vec![profile.clone()]);
+            model.repository = Some(repository.clone());
+            model.schema_cache = Some(cache.clone());
+            model.automatic_discovery = true;
+            model.install_snapshot(&id, &snapshot, 123, true);
+            model
+        });
+        model.update(cx, |model, cx| {
+            model.save(profile.clone(), "session-only-fixture".into(), cx)
+        });
+        let mut accepted = false;
+        for _ in 0..200 {
+            cx.run_until_parked();
+            if let Ok((peer, _)) = socket.accept() {
+                accepted = true;
+                drop(peer);
+            }
+            if model.read_with(cx, |model, _| {
+                !model.saving && !model.refreshing_source(&id)
+            }) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            accepted,
+            "Save must initiate discovery without clicking Refresh"
+        );
+        model.read_with(cx, |model, _| {
+            assert!(!model.saving && !model.refreshing_source(&id));
+            assert!(!model.form_open);
+            assert!(
+                model.explorer_source.is_none(),
+                "Saving must not implicitly enable Refresh"
+            );
+            assert!(model.tree.errors.contains_key(&TreeKey::Source(id.clone())));
+            assert_eq!(model.tree.databases[&id], vec!["saved_database"]);
+            assert!(model.cached_offline.contains(&id));
+            assert_eq!(model.password(&id), "session-only-fixture");
+        });
+        assert_eq!(repository.load().unwrap().len(), 1);
+        assert_eq!(
+            cache.load(&profile).unwrap().unwrap().snapshot.databases[0].tables[0].name,
+            "saved_table"
+        );
+        let json = std::fs::read_to_string(directory.0.join("sources.json")).unwrap();
+        assert!(!json.contains("session-only-fixture"));
     }
 }

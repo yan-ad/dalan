@@ -10,7 +10,15 @@ Credentials, metadata, row data and local settings are sensitive. Server values 
 
 Source profiles have stable UUIDs in version 1 JSON at `~/Library/Application Support/Dalan/sources.json`, without passwords. Native macOS Keychain password saving is opt-in. Otherwise credentials are session-only; after restart, Edit and re-enter them. Keychain failure is visible, never a plaintext fallback. One generated native Keychain round-trip passed with item cleanup; this is not blanket locked/denied Keychain or OS input privacy validation. Session-only Save is tested without Keychain calls. The source file is limited to 1 MiB and 100 profiles; a failed load blocks saving over unreadable settings.
 
-JSON and Keychain changes are not an atomic cross-resource transaction. Compensation failures are reported and may require reconciliation. Confirmed Delete removes only profile settings and its Keychain entry, not a database. Test does not save; Save does not automatically connect. Avoid real credentials in fixtures, logs, crash reports, CLI arguments, exported files or agent context. Memory erasure cannot be guaranteed.
+JSON and Keychain changes are not an atomic cross-resource transaction. Compensation failures are reported and may require reconciliation. Confirmed Delete removes only profile settings and its Keychain entry, not a database. Test does not save; successful Save starts metadata-only discovery after commit, never automatic table browsing. Avoid real credentials in fixtures, logs, crash reports, CLI arguments, exported files or agent context. Memory erasure cannot be guaranteed.
+
+## Persistent metadata privacy
+
+`metadata.sqlite3` is a separate database/table/view-name and kind cache, not profile/credential/history/row storage. rusqlite 0.40.2 uses embedded bundled SQLite, no external daemon, libSQL/cloud library or remote cache. Passwords never enter SQLite; its allowlisted identity contains endpoint/account/database/transport/TLS/CA-path settings, so it is still sensitive. Unix directory `0700` and database `0600` permissions, synced creation and private DELETE journaling are not encryption or isolation from programs running as the same OS user. Recommend separate OS accounts and OS-encrypted disks for sensitive metadata.
+
+Startup restoration uses no network or Keychain call. Cache registration invalidates connection-setting changes, but passwords and cosmetic settings are excluded from identity. Password changes can alter grants: failed refresh keeps the previous metadata, marked Stale, which may reveal names formerly visible under older permissions. Cached names are not proof of current authorization and do not enable offline access to server rows. The bounded cache holds neither columns/indexes/DDL nor data rows. No metadata is automatically sent to AI context; the ACP panel remains disconnected.
+
+Full refresh replaces metadata transactionally only on success. Cache version/corruption failures warn without resetting foreign files or blocking valid profile JSON. Remove attempts cache deletion; failed deletion can leave orphaned metadata until startup prune and is reported, not a secure-erasure promise. Cancellation can allow a valid already-blocking write to finish, but ticket/identity guards prevent resurrecting removed profiles. Cache/JSON/Keychain are separate stores, not a shared atomic credential transaction. No production endpoint, account or private logs are evidence for this revision.
 
 ## Connectivity
 
@@ -56,7 +64,7 @@ Launch only an explicitly trusted executable, not a shell-expanded string. Absol
 
 ## Diagnostics and release gates
 
-No telemetry is implemented and no network telemetry is planned by default. Future crash reporting requires explicit opt-in and reviewed payloads. Do not persist rows by default. History/conversation/cache retention and deletion are future design work; source persistence does not imply history storage.
+No telemetry is implemented and no network telemetry is planned by default. Future crash reporting requires explicit opt-in and reviewed payloads. Do not persist rows by default. History/conversation retention and deletion remain future work; metadata cache deletion/pruning exists as described above, but source/cache persistence does not imply history storage or secure erasure.
 
 Test certificate/hostname failures and trusted success, credential denial/update/delete, secret-free diagnostics, stale/cancel behavior, oversize inputs, relay races/lifecycle and native interactions. Future execution adds classification-bypass, immutable approval and uncertain-outcome tests; future ACP adds trust, shutdown and consent tests. Dependency licenses/vulnerabilities, signing/notarization and updater design are separate release work. No updater exists.
 

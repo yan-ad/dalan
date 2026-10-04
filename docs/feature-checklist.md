@@ -18,7 +18,7 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 
 - [x] Compact explorer: no title header; one 32 px toolbar with six 28 px Add/Manage/Refresh/Remove/Expand Loaded/Collapse All icons, tooltips and selection/busy/save guards; bottom-left toggle unchanged; no rail or inactive advanced tools.
 - [x] Virtual lazy tree for large catalogs: 22 px rows, cached expansion, viewport-only rendering, readable ellipsized names/full-name tooltips, Tables/Views groups and unavailable view leaves.
-- [x] Selection-safe explorer actions independent of the current table page; UUID-pinned removal confirmation, source-root-only Refresh and per-branch catalog cancellation/errors.
+- [x] Selection-safe explorer actions independent of the current table page; UUID-pinned removal confirmation, complete-source metadata Refresh with retained old snapshot on failure and per-branch catalog cancellation/errors.
 - [x] Single-focus tree keyboard navigation and guarded toolbar Enter/Space activation; scoped 71-test simulated suite includes 1,000-database visible-range, scroll-to-900 and End regressions. No native smoothness/FPS claim.
 - [x] Compact-explorer local verification: 57 headless, 71 UI and four Python tests passed with formatting, strict lint and bundle verification; current hosted CI and native review remain pending. See [testing](testing.md#compact-lazy-explorer).
 - [x] Bottom-left 28 px panel-left toggle retaining the closed preference; Cmd-B and View/Layout alternatives unchanged. Both body sides have 6 px padding; 320 px preferred sidebar, 200–480 px bounds and 462 px maximum at 720 px retain main 240 px and compact ACP behavior.
@@ -32,6 +32,16 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 - [x] Dedicated resizable Data Sources · Dalan window (1040 × 760 initially, minimum 780 × 560), separate from the main browser/table workspace; one reused application-wide draft, Name focus, generation-aware refresh, discard/test cancellation and saving close guards. Not an OS modal sheet.
 - [x] Inline Host/Port rows and nonshrinking scrolling body/key-list layout, with draw-bound regressions at 1040 × 760 and 850 × 600. Local suites passed 54 headless, 63 simulated UI and four Python tests; native visual/accessibility review is not implied.
 - [x] Windows SSH-key fixture portability fix: control-character filenames are Unix-only; Windows metadata-discovery assertions and CI workflow remain intact. See [historical run and pending main verification](testing.md#hosted-ci-historical-failure-and-pending-main-verification).
+
+## Persistent metadata slice
+
+- [x] Separate version 1 embedded SQLite cache using pinned rusqlite 0.40.2 with only bundled enabled; normalized database/table/view names and kinds, no columns/indexes/DDL/rows or passwords. Profile JSON and native Keychain remain separate.
+- [x] Offline startup register/prune/restore without network or Keychain calls; cached-first expansion and textual Cached/Stale/Refreshing… timestamp/error feedback on unchanged virtual 22 px rows.
+- [x] Successful profile/credential commit closes the dialog before automatic full metadata-only discovery; all visible databases or explicit database scope, one serial owned connection/tunnel, no automatic data browse.
+- [x] Transactional bounded refresh, identity invalidation and globally monotonic ticket guards against stale/deleted/re-added/edit-away-back completions; old snapshots remain on refresh failure.
+- [x] Explicit explorer-selection-only Refresh, independent of table-page selection/paging; nonfatal disk-cache/save/delete warnings without suppressing profile JSON or inventing phantom sources.
+- [x] Scoped simulated suite passed 82 tests; four Python helper tests passed and disposable live suites reran 7 direct/auth/CONNECT + 10 TLS + 6 SSH cases. Full workspace/lint/build confirmation remains with the final verification owner.
+- [ ] Current-revision hosted CI including cross-platform bundled SQLite; native macOS offline/source-save/refresh/error/keyboard/accessibility review. No native Keychain rerun or production endpoint success is claimed.
 
 ## Next read-workflow slices, in order
 

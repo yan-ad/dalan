@@ -1,4 +1,5 @@
 pub mod explorer_tree;
+pub mod schema_cache;
 pub mod shell_state;
 pub mod source_store;
 pub mod ssh_keys;

@@ -14,6 +14,7 @@ const CELL_CAP: usize = 4096;
 const PAGE_CAP: usize = 2 * 1024 * 1024;
 const PACKET_CAP: usize = 8 * 1024 * 1024;
 const CATALOG_CAP: usize = 1000;
+const TOTAL_OBJECT_CAP: usize = 50_000;
 const COLUMN_CAP: usize = 512;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionReport {
@@ -34,6 +35,16 @@ pub enum SortDirection {
 pub struct TableInfo {
     pub name: String,
     pub kind: String,
+}
+/// Complete metadata-only discovery result. Failures never return a partial catalog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogSnapshot {
+    pub databases: Vec<DatabaseCatalog>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseCatalog {
+    pub name: String,
+    pub tables: Vec<TableInfo>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnInfo {
@@ -173,7 +184,7 @@ async fn bounded<T>(future: impl std::future::Future<Output = Result<T>>) -> Res
         .map_err(|_| anyhow!("Database operation timed out after 20 seconds"))?
 }
 struct Session {
-    conn: Conn,
+    conn: Option<Conn>,
     relay: Option<Relay>,
 }
 impl Session {
@@ -216,7 +227,13 @@ impl Session {
         if let Some(r) = &relay {
             r.check()?;
         }
-        Ok(Self { conn, relay })
+        Ok(Self {
+            conn: Some(conn),
+            relay,
+        })
+    }
+    fn conn(&mut self) -> &mut Conn {
+        self.conn.as_mut().expect("session owns its connection")
     }
     fn close_transport(&mut self) {
         self.relay.take();
@@ -229,40 +246,30 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.close_transport();
+        // Conn's default Drop drains pending results in a detached task. Instead,
+        // disconnect marks it disconnected before awaiting I/O, so cancellation
+        // closes the native socket without draining untrusted metadata/results.
+        if let Some(conn) = self.conn.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                let _ = tokio::time::timeout(Duration::from_secs(1), conn.disconnect()).await;
+            });
+        }
     }
 }
 pub async fn test_connection(profile: &SourceProfile, password: &str) -> Result<ConnectionReport> {
     bounded(async {
         let mut s = Session::connect(profile, password).await?;
         let version_row: mysql_async::Row = s
-            .conn
+            .conn()
             .query_first("SELECT VERSION()")
             .await
             .map_err(driver_error)?
             .ok_or_else(|| anyhow!("Server did not return its version"))?;
         let (server_version,): (String,) = mysql_async::from_row_opt(version_row)
             .map_err(|_| anyhow!("Invalid server version row"))?;
-        let databases = if let Some(db) = &profile.database {
-            vec![db.clone()]
-        } else {
-            let mut result = s
-                .conn
-                .query_iter("SHOW DATABASES")
-                .await
-                .map_err(driver_error)?;
-            let mut databases = Vec::new();
-            while let Some(row) = result.next().await.map_err(driver_error)? {
-                ensure!(
-                    databases.len() < CATALOG_CAP,
-                    "Too many databases (maximum 1000)"
-                );
-                let (name,): (String,) = mysql_async::from_row_opt(row)
-                    .map_err(|_| anyhow!("Invalid database metadata row"))?;
-                databases.push(name);
-            }
-            drop(result);
-            databases
-        };
+        let databases = database_names(s.conn(), profile.database.as_deref()).await?;
         s.finish().await?;
         Ok(ConnectionReport {
             server_version,
@@ -279,21 +286,95 @@ pub async fn tables(
     bounded(async {
         identifier(database)?;
         let mut s = Session::connect(profile, password).await?;
-        let mut result = s.conn.exec_iter(
-            "SELECT TABLE_NAME,TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? ORDER BY TABLE_NAME LIMIT 1001",
-            (database,),
-        ).await.map_err(driver_error)?;
-        let mut tables = Vec::new();
-        while let Some(row) = result.next().await.map_err(driver_error)? {
-            ensure!(tables.len() < CATALOG_CAP, "Too many tables (maximum 1000)");
-            let (name, kind): (String, String) = mysql_async::from_row_opt(row)
-                .map_err(|_| anyhow!("Invalid table metadata row"))?;
-            tables.push(TableInfo { name, kind });
-        }
-        drop(result);
+        let tables = table_names(s.conn(), database).await?;
         s.finish().await?;
         Ok(tables)
-    }).await
+    })
+    .await
+}
+
+fn push_database(databases: &mut Vec<String>, name: String) -> Result<()> {
+    ensure!(
+        databases.len() < CATALOG_CAP,
+        "Too many databases (maximum 1000)"
+    );
+    identifier(&name)?;
+    databases.push(name);
+    Ok(())
+}
+async fn database_names(conn: &mut Conn, selected: Option<&str>) -> Result<Vec<String>> {
+    let mut databases = Vec::new();
+    if let Some(name) = selected {
+        push_database(&mut databases, name.to_owned())?;
+    } else {
+        let mut result = conn
+            .query_iter("SHOW DATABASES")
+            .await
+            .map_err(driver_error)?;
+        while let Some(row) = result.next().await.map_err(driver_error)? {
+            let (name,): (String,) = mysql_async::from_row_opt(row)
+                .map_err(|_| anyhow!("Invalid database metadata row"))?;
+            push_database(&mut databases, name)?;
+        }
+    }
+    Ok(databases)
+}
+fn push_table(tables: &mut Vec<TableInfo>, name: String, kind: String) -> Result<()> {
+    ensure!(tables.len() < CATALOG_CAP, "Too many tables (maximum 1000)");
+    identifier(&name)?;
+    ensure!(
+        matches!(
+            kind.as_str(),
+            "BASE TABLE" | "VIEW" | "SYSTEM VIEW" | "SEQUENCE"
+        ),
+        "Invalid table type metadata"
+    );
+    tables.push(TableInfo { name, kind });
+    Ok(())
+}
+async fn table_names(conn: &mut Conn, database: &str) -> Result<Vec<TableInfo>> {
+    identifier(database)?;
+    let mut result = conn.exec_iter(
+        "SELECT TABLE_NAME,TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? ORDER BY TABLE_NAME LIMIT 1001",
+        (database,),
+    ).await.map_err(driver_error)?;
+    let mut tables = Vec::new();
+    while let Some(row) = result.next().await.map_err(driver_error)? {
+        let (name, kind): (String, String) =
+            mysql_async::from_row_opt(row).map_err(|_| anyhow!("Invalid table metadata row"))?;
+        push_table(&mut tables, name, kind)?;
+    }
+    Ok(tables)
+}
+fn add_object_count(total: &mut usize, count: usize) -> Result<()> {
+    ensure!(
+        count <= TOTAL_OBJECT_CAP.saturating_sub(*total),
+        "Too many catalog objects (maximum 50000)"
+    );
+    *total += count;
+    Ok(())
+}
+/// Discovers all visible schemas, or only the explicitly configured database.
+/// Uses one owned native-protocol session serially; never reads table/view data.
+/// Caps: 1000 schemas, 1000 objects/schema, 50000 objects total, 8 MiB packets.
+/// Each query/connect is limited to 20 seconds; the entire snapshot to 120 seconds.
+/// Any error or cancellation discards the whole snapshot and closes the session.
+pub async fn discover_catalog(profile: &SourceProfile, password: &str) -> Result<CatalogSnapshot> {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let mut session = bounded(Session::connect(profile, password)).await?;
+        let names = bounded(database_names(session.conn(), profile.database.as_deref())).await?;
+        let mut databases = Vec::with_capacity(names.len());
+        let mut total = 0;
+        for name in names {
+            let tables = bounded(table_names(session.conn(), &name)).await?;
+            add_object_count(&mut total, tables.len())?;
+            databases.push(DatabaseCatalog { name, tables });
+        }
+        session.finish().await?;
+        Ok(CatalogSnapshot { databases })
+    })
+    .await
+    .map_err(|_| anyhow!("Catalog discovery timed out after 120 seconds"))?
 }
 
 async fn metadata(conn: &mut Conn, database: &str, table: &str) -> Result<Vec<ColumnInfo>> {
@@ -338,7 +419,7 @@ pub async fn columns(
         identifier(database)?;
         identifier(table)?;
         let mut s = Session::connect(profile, password).await?;
-        let result = metadata(&mut s.conn, database, table).await?;
+        let result = metadata(s.conn(), database, table).await?;
         s.finish().await?;
         Ok(result)
     })
@@ -565,13 +646,17 @@ pub async fn browse(
             "Page limit must be 1 through 200"
         );
         let mut s = Session::connect(profile, password).await?;
-        s.conn
+        s.conn()
             .query_drop("START TRANSACTION READ ONLY")
             .await
             .map_err(driver_error)?;
-        let columns = metadata(&mut s.conn, &request.database, &request.table).await?;
+        let columns = metadata(s.conn(), &request.database, &request.table).await?;
         let (sql, params) = select(request, &columns)?;
-        let mut result = s.conn.exec_iter(sql, params).await.map_err(driver_error)?;
+        let mut result = s
+            .conn()
+            .exec_iter(sql, params)
+            .await
+            .map_err(driver_error)?;
         let binary = result
             .columns_ref()
             .iter()
@@ -623,6 +708,70 @@ pub async fn browse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn catalog_metadata_caps_and_names_are_checked_without_leaks() {
+        let mut databases = Vec::new();
+        for _ in 0..CATALOG_CAP {
+            push_database(&mut databases, "db".into()).unwrap();
+        }
+        assert!(push_database(&mut databases, "overflow".into()).is_err());
+        for invalid in [
+            String::new(),
+            " secret ".into(),
+            "secret\0".into(),
+            "x".repeat(65),
+            "界".repeat(65),
+        ] {
+            let error = push_database(&mut Vec::new(), invalid.clone()).unwrap_err();
+            if !invalid.is_empty() {
+                assert!(!error.to_string().contains(&invalid));
+            }
+            assert!(push_table(&mut Vec::new(), invalid, "BASE TABLE".into()).is_err());
+        }
+        for name in [
+            "schema with spaces",
+            "double\"quote",
+            "back`tick",
+            &"𐍈".repeat(64),
+        ] {
+            push_database(&mut Vec::new(), name.into()).unwrap();
+            push_table(&mut Vec::new(), name.into(), "VIEW".into()).unwrap();
+        }
+        let mut tables = Vec::new();
+        for _ in 0..CATALOG_CAP {
+            push_table(&mut tables, "t".into(), "BASE TABLE".into()).unwrap();
+        }
+        assert!(push_table(&mut tables, "overflow".into(), "VIEW".into()).is_err());
+        assert!(push_table(&mut Vec::new(), "t".into(), "secret invalid kind".into()).is_err());
+        for kind in ["VIEW", "SYSTEM VIEW", "SEQUENCE"] {
+            push_table(&mut Vec::new(), "t".into(), kind.into()).unwrap();
+        }
+        let mut total = 0;
+        for _ in 0..50 {
+            add_object_count(&mut total, 1000).unwrap();
+        }
+        assert_eq!(total, TOTAL_OBJECT_CAP);
+        add_object_count(&mut total, 0).unwrap();
+        assert!(add_object_count(&mut total, 1).is_err());
+        assert_eq!(total, TOTAL_OBJECT_CAP);
+        assert!(add_object_count(&mut total, usize::MAX).is_err());
+    }
+    #[test]
+    fn snapshot_serialization_has_metadata_only_contract() {
+        let snapshot = CatalogSnapshot {
+            databases: vec![DatabaseCatalog {
+                name: "fixture".into(),
+                tables: vec![TableInfo {
+                    name: "contact_view".into(),
+                    kind: "VIEW".into(),
+                }],
+            }],
+        };
+        let expected = serde_json::json!({"databases": [{"name": "fixture", "tables": [{"name": "contact_view", "kind": "VIEW"}]}]});
+        assert_eq!(serde_json::to_value(snapshot.clone()).unwrap(), expected);
+        let restored: CatalogSnapshot = serde_json::from_value(expected.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), expected);
+    }
     #[test]
     fn errors_classify_without_leaking_server_or_input_values() {
         use mysql_async::{DriverError as D, Error as E, IoError, ServerError};

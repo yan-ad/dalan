@@ -2,8 +2,9 @@ pub mod mysql;
 mod relay;
 pub mod sources;
 pub use mysql::{
-    BrowseRequest, CellValue, ColumnInfo, ConnectionReport, FilterOperator, SortDirection,
-    TableFilter, TableInfo, TablePage, TableSort, browse, columns, tables, test_connection,
+    BrowseRequest, CatalogSnapshot, CellValue, ColumnInfo, ConnectionReport, DatabaseCatalog,
+    FilterOperator, SortDirection, TableFilter, TableInfo, TablePage, TableSort, browse, columns,
+    discover_catalog, tables, test_connection,
 };
 pub use sources::{DbEngine, SourceProfile, TlsMode, Transport};
 

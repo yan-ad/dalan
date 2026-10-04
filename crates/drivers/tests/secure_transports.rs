@@ -3,8 +3,8 @@
 mod common;
 
 use dalan_drivers::{
-    BrowseRequest, CellValue, DbEngine, SourceProfile, TlsMode, Transport, browse, columns, tables,
-    test_connection,
+    BrowseRequest, CellValue, DbEngine, SourceProfile, TlsMode, Transport, browse, columns,
+    discover_catalog, tables, test_connection,
 };
 
 fn profile(engine: DbEngine) -> anyhow::Result<SourceProfile> {
@@ -44,6 +44,7 @@ async fn positive(engine: DbEngine, connect: bool) -> anyhow::Result<()> {
     );
     assert!(!report.server_version.is_empty());
     assert!(report.databases.iter().any(|d| d == "dalan_fixture"));
+    common::full_catalog(&profile, PASSWORD, "dalan_fixture").await?;
     let catalog = tables(&profile, PASSWORD, "dalan_fixture").await?;
     assert!(catalog.iter().any(|t| t.name == "contact"));
     let metadata = columns(&profile, PASSWORD, "dalan_fixture", "contact").await?;
@@ -102,6 +103,10 @@ async fn rejection(engine: DbEngine, kind: &str) -> anyhow::Result<()> {
     let error = test_connection(&profile, PASSWORD)
         .await
         .expect_err("verification must reject this fixture");
+    let catalog_error = discover_catalog(&profile, PASSWORD)
+        .await
+        .expect_err("catalog must not bypass TLS verification");
+    assert!(!format!("{catalog_error:#}").contains(PASSWORD));
     let message = format!("{error:#}");
     eprintln!("{} {kind} rejected: {message}", engine.display_name());
     let lower = message.to_lowercase();
