@@ -204,14 +204,16 @@ fn click(cx: &mut VisualTestContext, selector: &'static str) {
 }
 
 #[gpui::test]
-fn bottom_left_toggle_is_persistent_without_rail_or_header_minimize(cx: &mut TestAppContext) {
+fn titlebar_database_toggle_replaces_brand_without_duplicate_controls(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
     click(cx, "database-toggle");
     assert!(!state(&view, cx).database_visible);
     click(cx, "database-toggle");
     let button = cx.debug_bounds("database-toggle").unwrap();
-    assert!(button.origin.x <= px(12.0));
-    assert!(button.origin.y >= px(768.0));
+    assert_eq!(button.origin.x, px(84.0));
+    assert!(button.origin.y < px(TITLEBAR_HEIGHT));
+    assert_eq!(button.size.width, px(CONTROL_HEIGHT));
+    assert!(cx.debug_bounds("product-name").is_none());
     click(cx, "database-toggle");
     assert!(!state(&view, cx).database_visible);
     for id in [

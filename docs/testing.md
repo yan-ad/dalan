@@ -1,5 +1,10 @@
 # Test strategy and release evidence
 
+## Titlebar database shortcut
+
+The explorer toggle replaces the duplicate in-window Dalan label beside native macOS controls, without a bottom-left duplicate. A regression checks x = 84 px, 28 px width, titlebar placement, repeated toggling and absence of the old brand/rail/header controls. Existing Tab, Cmd-B, Layout popover and compact-pane tests pass. Local verification: 106 UI tests, strict UI Clippy, formatting, four Python bundle tests and signed debug bundle checks passed. Headless/database/Keychain suites were unchanged and not rerun for this placement-only iteration. Native visual verification and hosted CI require separate evidence.
+
+
 ## Icon-led chrome revision
 
 Current local validation passed **74 headless Rust tests**, **106 simulated GPUI tests**, and **four Python bundle-helper tests**. Formatting, both strict Clippy paths, debug build, plist lint and signature/resource checks passed. New coverage verifies compact icon controls, passive read-only status, cached empty states and Layout popover keyboard/click behavior. Hosted CI still requires this revision’s own run; native visual/accessibility verification is not claimed.

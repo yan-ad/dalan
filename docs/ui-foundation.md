@@ -10,7 +10,7 @@ Implemented scope: macOS desktop shell with the user-selected Zed-like compact *
 [ panel-left | spacer (Carbonfox - opaque tooltip) | bot-message-square ]
 ```
 
-- Native macOS traffic lights remain real OS controls. The native titlebar is integrated with the custom top bar; every GPUI window explicitly has an opaque background (no blur/transparency); its Dalan title region drags the window, and double-click requests the native zoom behavior.
+- Native macOS traffic lights remain real OS controls. The native titlebar is integrated with the custom top bar; every GPUI window explicitly has an opaque background (no blur/transparency); its empty titlebar region drags the window, and double-click requests the native zoom behavior.
 - A 34 px top bar, 28 px pane/table headers, single 28 px explorer toolbar without a title header, and 28 px status strip establish compact proportions. Main content has database browsing and bounded table results, but no SQL editor, welcome cards or gradients.
 - The single Database Explorer sidebar defaults to 320 px, bounded to 200–480 px. Opaque panes are square (0 px radius), with flush edges, no outer body padding, and a 4 px divider hit area around a 1 px visible line; no floating cards or reserved rail space. The optional scoped right ACP panel is initially closed; there is no Files rail.
 - System UI typography is a calm, dense 13 px, with 12 px secondary copy and an 11 px status strip. No font assets or logo are introduced.
@@ -18,7 +18,7 @@ Implemented scope: macOS desktop shell with the user-selected Zed-like compact *
 - Database Explorer shows real saved sources and discovered databases/tables. No fabricated sources or results.
 - The status strip has an empty spacer with a Carbonfox - opaque tooltip, not persistent theme/focus-help text or an extra Theme control. It does not imply a connected database or agent and offers no theme switch. Its bottom-right 28 px bot-message-square icon button, with AI · ACP tooltip, toggles the right panel. The panel says **Not connected**, with no ACP transport or agent launch implemented, no text prompt input yet, and no BYOK/provider settings.
 
-Database Explorer has only a 28 px toolbar with six 28 px icon actions: Add, Manage, Refresh, Remove, Expand Loaded and Collapse All. The Database Explorer title header is removed, as are the activity rail and header hide/minimise controls. The bottom-left 28 px panel-left toggle is unchanged; Cmd-B and native View/Layout alternatives remain. Closing the explorer retains that preference until toggled or reset. All six actions have action-specific tooltips; no inactive DDL, console or advanced-option icons are shown. Source rows show name and abstract Lucide database/MySQL or database-zap/MariaDB cue, not duplicate engine badges or vendor logos; tooltips identify the engine. Optional color affects only the small marker; selection/focus and names stay independently readable.
+Database Explorer has only a 28 px toolbar with six 28 px icon actions: Add, Manage, Refresh, Remove, Expand Loaded and Collapse All. The Database Explorer title header is removed, as are the activity rail and header hide/minimise controls. The 28 px database toggle now occupies the former in-window Dalan-label position beside the native traffic lights; no bottom-left duplicate remains; Cmd-B and native View/Layout alternatives remain. Closing the explorer retains that preference until toggled or reset. All six actions have action-specific tooltips; no inactive DDL, console or advanced-option icons are shown. Source rows show name and abstract Lucide database/MySQL or database-zap/MariaDB cue, not duplicate engine badges or vendor logos; tooltips identify the engine. Optional color affects only the small marker; selection/focus and names stay independently readable.
 
 With no sources, the main area centers a working Connect to a Source action, not a demo/trial welcome screen. It opens the same dedicated source dialog window by mouse, Enter or Space and remains available when Database Explorer is hidden. Loading and sanitized errors remain visible in the appropriate source/browse state.
 
@@ -34,7 +34,7 @@ With no sources, the main area centers a working Connect to a Source action, not
 | Explorer Expand Loaded / list-tree | Expand cached branches only; no network fan-out |
 | Explorer Collapse All / chevrons-down-up | Collapse branches and cancel their catalog work, preserving cached metadata |
 | Main Connect to a Source | With no sources, open/reuse the dedicated source dialog window by mouse or Enter/Space, even with explorer hidden |
-| Top-bar 28 px Layout / panel-left icon | Open/close the existing four-row layout popover; titlebar shows Dalan only |
+| Top-bar 28 px Layout / panel-left icon | Open/close the existing four-row layout popover; titlebar keeps the database toggle and native controls rather than duplicate branding |
 | Menu toggle row | Toggle Database Explorer; show requested Shown/Hidden preference |
 | Menu narrow/widen rows | Adjust Database Explorer preference by 32 px, bounded to 200–480 px |
 | Reset layout | Show Database Explorer, restore its 320 px width, close ACP |
@@ -61,11 +61,11 @@ Controls retain action-specific hover tooltips and a high-contrast focus border/
 
 The window minimum is 720 × 480. Compact layout clamps Database Explorer toward its 200 px minimum while reserving at least 240 px for main content. At 720 px with ACP closed, the maximum effective sidebar width is 476 px: 720 minus a 4 px divider hit area and 240 px content. The ACP panel prefers 300 px, capped by available space; its initial visibility is false. While ACP is visible, a compact window may temporarily hide Database Explorer. Database visibility and width preferences survive this temporary suppression and are restored after closing ACP or when space allows. Layout preferences are in-memory only; source profiles have separate versioned persistence.
 
-A pane toggle changes the user's visibility preference, independently of width clamping. The bottom-left toggle's selected state reflects actual visibility; the menu's Shown/Hidden text reflects the retained preference.
+A pane toggle changes the user's visibility preference, independently of width clamping. The titlebar toggle's selected state reflects actual visibility; the menu's Shown/Hidden text reflects the retained preference.
 
 ## About Dalan
 
-The native macOS application menu opens **About Dalan** in a separate 420 × 280 nonresizable GPUI window. It displays the Cargo package version, the name’s Javanese meaning “ways,” and database-workspace scope. It uses existing GPUI/native integration, not external libraries. The titlebar brand is capitalized **Dalan**; no brand/app icon artwork is introduced. Utility icons are distinct from app identity.
+The native macOS application menu opens **About Dalan** in a separate 420 × 280 nonresizable GPUI window. It displays the Cargo package version, the name’s Javanese meaning “ways,” and database-workspace scope. It uses existing GPUI/native integration, not external libraries. macOS application-menu, native window metadata and About naming remain **Dalan**, while the custom titlebar replaces its duplicate label with the database toggle; no brand/app icon artwork is introduced. Utility icons are distinct from app identity.
 
 ## Adopted Carbonfox - opaque tokens
 
@@ -214,3 +214,8 @@ Theme mapping/compositing and contrast tests, compact geometry, source-form boun
 
 
 Historical wide-grid verification passed 74 headless, 99 simulated UI and four bundle tests with formatting, strict lint and signed-bundle/resource checks. Display text is capped to 128 grapheme clusters plus ellipsis; underlying typed values and export remain unchanged. Overscan headers outside the viewport cannot receive Tab focus, and unpressed pointer moves cancel stale scrollbar drags. Current icon-led verification passed 74 headless, 106 simulated UI and four Python tests with strict lint and signed-bundle checks; see [testing](testing.md#icon-led-chrome-revision). Current hosted CI and native performance verification remain separate gates.
+
+
+### Titlebar database shortcut
+
+The existing explorer toggle is a 28 px database icon immediately after the native traffic-light reservation (x = 84 px), outside the draggable titlebar region. It remains available when the sidebar is hidden. Its tooltip, Cmd-B, keyboard focus/activation and View/Layout alternatives remain; the bottom-left duplicate and in-window brand text are removed. Local verification passed 106 UI tests, strict UI lint, four bundle tests and signed debug bundle checks. Native visual review and the new hosted CI run remain separate gates.

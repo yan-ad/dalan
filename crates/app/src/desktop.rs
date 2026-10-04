@@ -222,7 +222,7 @@ impl Shell {
             )
     }
 
-    fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn titlebar(&self, database_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("titlebar")
             .debug_selector(|| "titlebar".into())
@@ -232,6 +232,16 @@ impl Shell {
             .items_center()
             .bg(rgb(CHROME))
             .child(div().w(px(84.0)).h_full().flex_shrink_0())
+            .child(
+                self.button(
+                    "database-toggle",
+                    Control::ToggleDatabase,
+                    database_visible,
+                    cx,
+                )
+                .w(px(CONTROL_HEIGHT))
+                .child(icon(Icon::Database, TEXT)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -246,14 +256,7 @@ impl Shell {
                         } else {
                             window.start_window_move();
                         }
-                    })
-                    .child(
-                        div()
-                            .id("product-name")
-                            .debug_selector(|| "product-name".into())
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Dalan"),
-                    ),
+                    }),
             )
             .child(
                 self.button("layout-menu", Control::LayoutMenu, self.state.menu_open, cx)
@@ -448,7 +451,7 @@ impl Render for Shell {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.drag = None),
             )
-            .child(self.titlebar(cx))
+            .child(self.titlebar(layout.database.is_some(), cx))
             .child(
                 div()
                     .flex_1()
@@ -498,16 +501,6 @@ impl Render for Shell {
                     .text_size(px(11.0))
                     .text_color(rgb(MUTED))
                     .gap(px(8.0))
-                    .child(
-                        self.button(
-                            "database-toggle",
-                            Control::ToggleDatabase,
-                            layout.database.is_some(),
-                            cx,
-                        )
-                        .w(px(28.0))
-                        .child(icon(Icon::Layout, TEXT)),
-                    )
                     .child(
                         div()
                             .id("status-theme-hint")

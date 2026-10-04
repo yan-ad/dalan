@@ -92,7 +92,7 @@ Wheel/trackpad, Shift-wheel and grid-focused arrows/PageUp/PageDown/Home/End/Ctr
 
 ## Icon-led chrome
 
-The titlebar brand is only **Dalan**; a 28 px Layout icon opens the existing four-row popover with unchanged shortcuts/focus return. Bottom-left explorer and bottom-right ACP icons remain. Action labels live in tooltips, not persistent status help; visible focus outlines remain. No extra Theme button or debug status is introduced.
+The custom titlebar omits duplicate **Dalan** branding; the macOS application menu and About dialog retain the name, and a database toggle occupies that space beside the traffic lights; a 28 px Layout icon opens the existing four-row popover with unchanged shortcuts/focus return. The explorer toggle is in the titlebar, with no bottom-left duplicate; ACP remains bottom-right. Action labels live in tooltips, not persistent status help; visible focus outlines remain. No extra Theme button or debug status is introduced.
 
 Source rows show their glyph, marker and name, not a duplicate engine badge. Engine/full name and real known counts are in tooltips; Tables and Views keep their meaningful grouping labels. Fixed 18 px hard-drive, warning-triangle and static loader-circle markers mean Cached, Stale and Refreshing, with timestamp/sanitized error in tooltips. Important connection errors, stale-page feedback and cache warnings stay visible text.
 
