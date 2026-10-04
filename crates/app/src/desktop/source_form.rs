@@ -8,7 +8,11 @@ use gpui::{
 };
 
 use super::{
-    Dismiss, NextFocus, PreviousFocus, input::TextInput, source_model::SourceModel, theme::*,
+    Dismiss, NextFocus, PreviousFocus,
+    icons::{Icon, icon},
+    input::TextInput,
+    source_model::SourceModel,
+    theme::*,
 };
 
 /// A draft is kept separate from the persisted model until Save is activated.
@@ -27,6 +31,7 @@ pub(super) struct SourceForm {
     key_picker_open: bool,
     key_picker_busy: bool,
     key_picker_error: Option<String>,
+    ca_picker_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -95,6 +100,7 @@ impl SourceForm {
                 fields[14].1 = known_hosts_file.clone().unwrap_or_default();
                 1
             }
+
             Transport::HttpConnect { host, port, https } => {
                 fields[11].1 = host.clone();
                 fields[if *https { 13 } else { 12 }].1 = port.to_string();
@@ -145,6 +151,7 @@ impl SourceForm {
             "source-save",
             "source-cancel",
             "source-keys",
+            "source-ca-browse",
         ]
         .into_iter()
         .map(|id| (id, cx.focus_handle().tab_stop(true)))
@@ -164,6 +171,7 @@ impl SourceForm {
             key_picker_open: false,
             key_picker_busy: false,
             key_picker_error: None,
+            ca_picker_open: false,
             _subscriptions: subscriptions,
         }
     }
@@ -375,6 +383,175 @@ impl SourceForm {
         )
     }
 
+    fn checkbox(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let disabled = self.model.read(cx).saving;
+        div()
+            .id("source-save-password")
+            .debug_selector(|| "source-save-password".into())
+            .track_focus(&self.controls["source-save-password"])
+            .h(px(30.0))
+            .px(px(4.0))
+            .flex()
+            .items_center()
+            .gap(px(7.0))
+            .flex_shrink_0()
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(rgb(PANEL))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(HEADER)))
+            .focus(|style| style.border_color(rgb(FOCUS)))
+            .when(disabled, |style| style.opacity(0.5))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.controls["source-save-password"].focus(window);
+                this.activate("source-save-password", cx);
+            }))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "space" | "enter") {
+                    cx.stop_propagation();
+                    this.activate("source-save-password", cx);
+                }
+            }))
+            .child(
+                div()
+                    .id("keychain-checkbox-indicator")
+                    .debug_selector(|| "keychain-checkbox-indicator".into())
+                    .size(px(18.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.0))
+                    .border_1()
+                    .border_color(rgb(if self.save_password { FOCUS } else { MUTED }))
+                    .bg(rgb(if self.save_password { SELECTION } else { PANEL }))
+                    .when(self.save_password, |indicator| {
+                        indicator.child(
+                            div()
+                                .id("keychain-checkbox-check")
+                                .child(icon(Icon::Check, TEXT)),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .id("keychain-checkbox-label")
+                    .debug_selector(|| "keychain-checkbox-label".into())
+                    .text_size(px(12.0))
+                    .child("Save in Keychain"),
+            )
+    }
+
+    fn ca_picker_options() -> gpui::PathPromptOptions {
+        gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose a database CA certificate file".into()),
+        }
+    }
+
+    fn finish_ca_pick(
+        &mut self,
+        selection: Result<Option<Vec<std::path::PathBuf>>>,
+        original: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ca_picker_open = false;
+        if self.model.read(cx).saving || !self.model.read(cx).form_open {
+            cx.notify();
+            return;
+        }
+        match selection {
+            Ok(Some(paths)) if paths.len() == 1 => {
+                if self.inputs["source-ca"].read(cx).value() != original {
+                    self.model.update(cx, |model, cx| { model.form_feedback = Some("CA selection ignored because the path was edited while the dialog was open.".into()); cx.notify(); });
+                } else if let Some(path) = paths[0].to_str() {
+                    self.inputs["source-ca"]
+                        .update(cx, |input, cx| input.set_value(path.to_owned(), cx));
+                    self.last_values.insert("source-ca", path.to_owned());
+                    self.model.update(cx, |model, cx| model.edit_form(cx));
+                } else {
+                    self.model.update(cx, |model, cx| {
+                        model.form_feedback = Some(
+                            "The selected CA path is not UTF-8; enter another path manually."
+                                .into(),
+                        );
+                        cx.notify();
+                    });
+                }
+            }
+            Ok(None) => {}
+            Ok(Some(_)) => self.model.update(cx, |model, cx| {
+                model.form_feedback = Some("Choose one CA certificate file.".into());
+                cx.notify();
+            }),
+            Err(_) => self.model.update(cx, |model, cx| {
+                model.form_feedback = Some(
+                    "Could not open the CA file dialog. You can enter its path manually.".into(),
+                );
+                cx.notify();
+            }),
+        }
+        self.inputs["source-ca"]
+            .read(cx)
+            .focus_handle()
+            .focus(window);
+        cx.notify();
+    }
+
+    fn browse_ca(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ca_picker_open || self.model.read(cx).saving {
+            return;
+        }
+        self.ca_picker_open = true;
+        let original = self.inputs["source-ca"].read(cx).value();
+        let picker = cx.prompt_for_paths(Self::ca_picker_options());
+        cx.spawn_in(window, async move |this, cx| {
+            let selection = picker
+                .await
+                .map_err(|_| anyhow::anyhow!("File dialog stopped"))
+                .and_then(|result| result);
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.finish_ca_pick(selection, original, window, cx)
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn ca_browse_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id("source-ca-browse")
+            .debug_selector(|| "source-ca-browse".into())
+            .track_focus(&self.controls["source-ca-browse"])
+            .h(px(30.0))
+            .px(px(10.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .flex_shrink_0()
+            .border_1()
+            .border_color(rgb(CHROME))
+            .rounded(px(4.0))
+            .bg(rgb(CHROME))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(HOVER)))
+            .focus(|style| style.border_color(rgb(FOCUS)))
+            .when(self.ca_picker_open || self.model.read(cx).saving, |style| {
+                style.opacity(0.5)
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.browse_ca(window, cx)))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "space" | "enter") {
+                    cx.stop_propagation();
+                    this.browse_ca(window, cx);
+                }
+            }))
+            .child("Browse…")
+    }
+
     fn choose_key(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.model.read(cx).saving {
             return;
@@ -467,7 +644,25 @@ impl Render for SourceForm {
             .child(self.field("source-host", "Host", 4, cx))
             .child(self.field("source-port", "Port", 5, cx))
             .child(self.field("source-user", "User", 6, cx))
-            .child(self.field("source-password", "Password", 7, cx))
+            .child(
+                self.row(
+                    "Password",
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .id("source-password")
+                                .debug_selector(|| "source-password".into())
+                                .flex_1()
+                                .min_w(px(120.0))
+                                .child(self.inputs["source-password"].clone()),
+                        )
+                        .child(self.checkbox(cx)),
+                ),
+            )
             .child(self.field("source-database", "Database (optional)", 8, cx))
             .child(
                 self.row(
@@ -594,21 +789,24 @@ impl Render for SourceForm {
                     "Warning: database TLS is disabled. Traffic is not protected by database TLS.",
                 ))
             })
-            .child(self.field("source-ca", "CA file (optional)", 19, cx))
-            .child(self.row(
-                "Credentials",
-                self.button(
-                    "source-save-password",
-                    if self.save_password {
-                        "☑ Save password in Keychain"
-                    } else {
-                        "☐ Save password in Keychain"
-                    },
-                    self.save_password,
-                    20,
-                    cx,
+            .child(
+                self.row(
+                    "CA file (optional)",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .id("source-ca")
+                                .debug_selector(|| "source-ca".into())
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .child(self.inputs["source-ca"].clone()),
+                        )
+                        .child(self.ca_browse_button(cx)),
                 ),
-            ))
+            )
             .when_some(feedback, |body, feedback| {
                 body.child(
                     div()
@@ -646,16 +844,6 @@ impl Render for SourceForm {
                 cx.stop_propagation();
                 this.cancel(cx);
             }))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .p(px(16.))
-                    .bg(rgb(HEADER))
-                    .flex()
-                    .justify_between()
-                    .child("Data Source")
-                    .child(self.engine.display_name()),
-            )
             .child(
                 div()
                     .id("source-form-scroll")
@@ -906,10 +1094,22 @@ mod tests {
             assert_input_focus(&form, cx, id);
             if i + 1 < fields.len() {
                 cx.simulate_keystrokes("tab");
+                if *id == "source-password" {
+                    assert!(cx.update(|window, app| {
+                        form.read(app).controls["source-save-password"].is_focused(window)
+                    }));
+                    cx.simulate_keystrokes("tab");
+                }
             }
         }
         for id in fields.iter().rev().skip(1) {
             cx.simulate_keystrokes("shift-tab");
+            if *id == "source-password" {
+                assert!(cx.update(|window, app| {
+                    form.read(app).controls["source-save-password"].is_focused(window)
+                }));
+                cx.simulate_keystrokes("shift-tab");
+            }
             assert_input_focus(&form, cx, id);
         }
         for (i, id) in fields.iter().enumerate() {
@@ -1019,5 +1219,115 @@ mod tests {
             ""
         );
         assert_input_focus(&form, cx, "source-tunnel-key");
+    }
+    #[gpui::test]
+    fn checkbox_is_inline_clickable_and_keyboard_operable(cx: &mut TestAppContext) {
+        let (form, model, cx) = fixture(cx);
+        let password = cx.debug_bounds("source-password").unwrap();
+        let checkbox = cx.debug_bounds("source-save-password").unwrap();
+        assert!(checkbox.origin.x >= password.origin.x + password.size.width);
+        assert!((f32::from(checkbox.origin.y) - f32::from(password.origin.y)).abs() <= 2.0);
+        assert_eq!(
+            cx.debug_bounds("keychain-checkbox-indicator").unwrap().size,
+            gpui::size(px(18.0), px(18.0))
+        );
+        assert!(cx.debug_bounds("keychain-checkbox-label").is_some());
+        assert!(!form.read_with(cx, |form, _| form.save_password));
+        click(cx, "keychain-checkbox-label");
+        assert!(form.read_with(cx, |form, _| form.save_password));
+        assert!(cx.update(|_, app| form.read(app).profile(app).unwrap().save_password));
+        cx.simulate_keystrokes("space");
+        assert!(!form.read_with(cx, |form, _| form.save_password));
+        cx.simulate_keystrokes("enter");
+        assert!(form.read_with(cx, |form, _| form.save_password));
+        model.update(cx, |model, cx| {
+            model.saving = true;
+            cx.notify();
+        });
+        click(cx, "source-save-password");
+        cx.simulate_keystrokes("space");
+        assert!(form.read_with(cx, |form, _| form.save_password));
+    }
+
+    #[gpui::test]
+    fn ca_picked_path_stays_editable_and_cancel_preserves_manual_path(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        let options = SourceForm::ca_picker_options();
+        assert!(options.files && !options.directories && !options.multiple);
+        assert!(cx.debug_bounds("source-ca-browse").is_some());
+        let old = "/tmp/manual root.pem";
+        let picked = "/tmp/selected root.pem";
+        set(&form, cx, "source-ca", old);
+        form.update(cx, |form, _| form.ca_picker_open = true);
+        cx.update(|window, app| {
+            form.update(app, |form, cx| {
+                form.finish_ca_pick(Ok(Some(vec![picked.into()])), old.into(), window, cx)
+            })
+        });
+        assert_eq!(
+            form.read_with(cx, |form, app| form.inputs["source-ca"].read(app).value()),
+            picked
+        );
+        assert_input_focus(&form, cx, "source-ca");
+        cx.simulate_keystrokes("cmd-a");
+        cx.simulate_input(old);
+        assert_eq!(
+            form.read_with(cx, |form, app| form.inputs["source-ca"].read(app).value()),
+            old
+        );
+        cx.update(|window, app| {
+            form.update(app, |form, cx| {
+                form.finish_ca_pick(Ok(None), old.into(), window, cx)
+            })
+        });
+        assert_eq!(
+            form.read_with(cx, |form, app| form.inputs["source-ca"].read(app).value()),
+            old
+        );
+        assert!(!form.read_with(cx, |form, _| form.ca_picker_open));
+    }
+
+    #[gpui::test]
+    fn ca_picker_rejects_stale_selection_and_reports_dialog_errors(cx: &mut TestAppContext) {
+        let (form, model, cx) = fixture(cx);
+        set(&form, cx, "source-ca", "/tmp/newer.pem");
+        cx.update(|window, app| {
+            form.update(app, |form, cx| {
+                form.finish_ca_pick(
+                    Ok(Some(vec!["/tmp/picked.pem".into()])),
+                    "/tmp/old.pem".into(),
+                    window,
+                    cx,
+                )
+            })
+        });
+        assert_eq!(
+            form.read_with(cx, |form, app| form.inputs["source-ca"].read(app).value()),
+            "/tmp/newer.pem"
+        );
+        assert!(model.read_with(cx, |model, _| {
+            model.form_feedback.as_ref().unwrap().contains("edited")
+        }));
+        cx.update(|window, app| {
+            form.update(app, |form, cx| {
+                form.finish_ca_pick(
+                    Err(anyhow::anyhow!("fixture")),
+                    "/tmp/newer.pem".into(),
+                    window,
+                    cx,
+                )
+            })
+        });
+        assert!(model.read_with(cx, |model, _| {
+            model
+                .form_feedback
+                .as_ref()
+                .unwrap()
+                .contains("enter its path manually")
+        }));
+        assert_eq!(
+            form.read_with(cx, |form, app| form.inputs["source-ca"].read(app).value()),
+            "/tmp/newer.pem"
+        );
     }
 }

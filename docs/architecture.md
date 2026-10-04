@@ -22,7 +22,7 @@ Do not add a crate for each planned feature. Add modules inside these boundaries
 
 ## Icons and distribution notices
 
-The desktop entry point installs the embedded Lucide `IconAssets` source. Eight SVGs are pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`; no runtime fetch or icon font is required. BotMessageSquare denotes agent communication rather than decorative sparkle or app branding. Root [third-party notices](../THIRD_PARTY_NOTICES.md) contain the complete Lucide ISC/retained Feather MIT notices and adapted GPUI input Apache-2.0 attribution. macOS bundle Resources carry those notices and `lucide-LICENSE.txt`; none select Dalan's project license.
+The desktop entry point installs the embedded Lucide `IconAssets` source. Nine SVGs are pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`; no runtime fetch or icon font is required. BotMessageSquare denotes agent communication rather than decorative sparkle or app branding. Root [third-party notices](../THIRD_PARTY_NOTICES.md) contain the complete Lucide ISC/retained Feather MIT notices and adapted GPUI input Apache-2.0 attribution. macOS bundle Resources carry those notices and `lucide-LICENSE.txt`; none select Dalan's project license.
 
 ## UI and runtime ownership
 

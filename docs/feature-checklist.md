@@ -6,7 +6,7 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 
 - [x] Rust workspace and macOS GPUI dark shell, native titlebar/menu, Database Explorer visibility/resizing and keyboard controls.
 - [x] About Dalan and optional ACP panel with honest **Not connected** state. No agent process, transport, prompt or provider-key integration.
-- [x] Main open-source icon set: eight embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`. Bottom-right 28 px bot-message-square replaces text in the ACP trigger, retaining AI · ACP tooltip/focus help and Cmd-Shift-A. No new app/brand icon.
+- [x] Main open-source icon set: nine embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`. Bottom-right 28 px bot-message-square replaces text in the ACP trigger, retaining AI · ACP tooltip/focus help and Cmd-Shift-A. No new app/brand icon.
 - [x] Complete Lucide ISC and retained Feather MIT notices, with adapted GPUI input Apache-2.0 attribution in [third-party notices](../THIRD_PARTY_NOTICES.md), plus bundle resource wiring. Project license remains undecided.
 - [x] Experimental MySQL/MariaDB source form, version 1 password-free profile storage and optional database discovery. Test, Save and Connect remain separate actions.
 - [x] Session-only passwords and opt-in native macOS Keychain storage; explicit failure/compensation boundaries.

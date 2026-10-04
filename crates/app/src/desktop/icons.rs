@@ -12,6 +12,7 @@ pub enum Icon {
     SortAscending,
     SortDescending,
     Download,
+    Check,
 }
 
 impl Icon {
@@ -25,6 +26,7 @@ impl Icon {
             Self::SortAscending => "icons/arrow-up.svg",
             Self::SortDescending => "icons/arrow-down.svg",
             Self::Download => "icons/download.svg",
+            Self::Check => "icons/check.svg",
         }
     }
 }
@@ -35,6 +37,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "icons/database.svg",
         include_bytes!("../../assets/icons/database.svg"),
+    ),
+    (
+        "icons/check.svg",
+        include_bytes!("../../assets/icons/check.svg"),
     ),
     (
         "icons/panel-left.svg",
@@ -106,7 +112,7 @@ mod tests {
     fn embedded_icons_are_listed_and_loaded() {
         let assets = IconAssets;
         let paths = assets.list("icons/").unwrap();
-        assert_eq!(paths.len(), 8);
+        assert_eq!(paths.len(), 9);
         for path in paths {
             let bytes = assets.load(path.as_ref()).unwrap().unwrap();
             assert!(matches!(bytes, Cow::Borrowed(_)));

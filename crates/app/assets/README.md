@@ -4,7 +4,7 @@ The main UI icon set is [Lucide](https://github.com/lucide-icons/lucide), explic
 
 ## Provenance
 
-All eight SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
+All nine SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
 
 `500620a2e8123f8d1db191538886dc0c223f69a9`
 
@@ -20,6 +20,7 @@ The revision was resolved once using `https://api.github.com/repos/lucide-icons/
 | SortAscending | arrow-up.svg |
 | SortDescending | arrow-down.svg |
 | Download | download.svg |
+| Check | check.svg |
 
 `src/desktop/icons.rs` embeds these bytes with `include_bytes!` and exposes them through GPUI's `AssetSource`. The application must register `IconAssets` using `Application::new().with_assets(IconAssets)`. There are no additional npm/crate dependencies, runtime downloads, external resources, or icon fonts. GPUI renders SVG alpha masks with the requested text color; icons retain the upstream 24×24 viewBox and render at 16×16 UI pixels.
 

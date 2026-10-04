@@ -8,6 +8,8 @@ The user asked for a Rust + GPUI native tool with a Zed-like look and DataGrip-l
 
 Reason: references establish qualities to pursue, not permission to reproduce another product.
 
+Source setup begins directly with its Engine selector rather than repeating a Data Source title and selected engine in a separate header. The password row places a visible labeled Keychain checkbox on the right; the CA row pairs editable path text with a native Browse action. Both use the existing compact control sizes and keyboard focus treatment, not text-glyph approximations of controls.
+
 ## Adopted shell foundation
 
 The user subsequently supplied a dark DataGrip screenshot and requested its sidebar/top-bar feel, explicitly excluding main content. The implemented [shell foundation](docs/ui-foundation.md) uses graphite chrome, inset dark panes, native macOS traffic lights, one database rail, one collapsible/resizable Database Explorer sidebar, a main area now used for a source form and read-only table view, and an explicitly permitted optional database-focused ACP panel. Its bottom-right 28 px bot-message-square icon trigger, labeled AI · ACP by tooltip and focus help, opens an honest disconnected placeholder, not generic tool chrome or a working agent session. It does not copy the welcome screen, gradients, sample data sources, vendor assets, or unimplemented toolbar actions. Energy/rhythm/motion remain 1/1/1.
@@ -18,7 +20,7 @@ Generic Files explorer, code viewer, Git UI, build/run integrations, generic ter
 
 The initial blank-main shell is historical. Experimental MySQL/MariaDB source and browse controls now occupy that area; see [source scope](docs/mysql-sources.md). They do not copy reference advanced options, marketplace or visual tools. The input control adapts GPUI Apache-2.0 code with attribution; this does not select a project license.
 
-The main utility set is Lucide at revision `500620a2e8123f8d1db191538886dc0c223f69a9`: database, panel-left, chevron-down, minus, bot-message-square, arrow-up, arrow-down and download. The bot/message glyph communicates agent conversation instead of decorative sparkle; arrow direction is explicit. It is not a Dalan app or brand icon. SVGs are embedded, with no runtime asset download or icon font. Complete ISC and retained Feather MIT notices and adapted GPUI input Apache-2.0 attribution are in [third-party notices](THIRD_PARTY_NOTICES.md) and bundled resources. Calm, dense 13 pt UI typography remains the direction; no font asset is added.
+The main utility set is Lucide at revision `500620a2e8123f8d1db191538886dc0c223f69a9`: database, panel-left, chevron-down, minus, bot-message-square, arrow-up, arrow-down, download and check. The bot/message glyph communicates agent conversation instead of decorative sparkle; arrow direction is explicit. It is not a Dalan app or brand icon. SVGs are embedded, with no runtime asset download or icon font. Complete ISC and retained Feather MIT notices and adapted GPUI input Apache-2.0 attribution are in [third-party notices](THIRD_PARTY_NOTICES.md) and bundled resources. Calm, dense 13 pt UI typography remains the direction; no font asset is added.
 
 Dark shell tokens and control behavior are recorded in the foundation document. This iteration ships only the reference's dark direction, without a nonfunctional theme toggle. Light/system variants, scaled text, and actual assistive-technology validation remain first-release requirements.
 

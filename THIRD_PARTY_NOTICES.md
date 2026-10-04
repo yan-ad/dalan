@@ -8,7 +8,7 @@ Source: https://github.com/lucide-icons/lucide
 
 Pinned revision: `500620a2e8123f8d1db191538886dc0c223f69a9` (resolved once from the official GitHub `commits/main` endpoint).
 
-Vendored unchanged: `database`, `panel-left`, `chevron-down`, `minus`, `bot-message-square`, `arrow-up`, `arrow-down`, and `download`, under `crates/app/assets/icons/`. The AI conversation glyph is BotMessageSquare.
+Vendored unchanged: `database`, `panel-left`, `chevron-down`, `minus`, `bot-message-square`, `arrow-up`, `arrow-down`, `download`, and `check`, under `crates/app/assets/icons/`. The AI conversation glyph is BotMessageSquare.
 
 License: ISC for Lucide, with the retained MIT notice for Feather-derived icons. The complete upstream license is also stored at `crates/app/assets/lucide-LICENSE.txt` and must accompany distributions (including application bundle resources).
 
