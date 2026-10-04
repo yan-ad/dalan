@@ -337,3 +337,66 @@ Upstream dedication and licensing details: https://www.sqlite.org/copyright.html
 > All of the code and documentation in SQLite has been dedicated to the public domain by the authors. All code authors, and representatives of the companies they work for, have signed affidavits dedicating their contributions to the public domain and originals of those signed affidavits are stored in a firesafe at the main offices of Hwaci. All contributors are citizens of countries that allow creative works to be dedicated into the public domain. Anyone is free to copy, modify, publish, use, compile, sell, or distribute the original SQLite code, either in source code form or as a compiled binary, for any purpose, commercial or non-commercial, and by any means.
 
 SQLite's dedication applies to deliverable library code/documentation; upstream notes that some build-only scripts have other licenses and do not reach the shipped library. Organizations needing legal proof or operating in jurisdictions that do not recognize public-domain dedication can consult upstream's optional Warranty of Title.
+
+
+## Carbonfox - opaque theme
+
+The desktop theme tokens in `crates/app/src/desktop/theme.rs` are adapted from **Carbonfox - opaque** in [cange/nightfox.zed](https://github.com/cange/nightfox.zed), pinned at `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`. The complete selected variant is extracted unchanged (with added provenance metadata) into `crates/app/assets/themes/carbonfox-opaque.json` from [themes/nvim-nightfox.json](https://github.com/cange/nightfox.zed/blob/3511a6f1f665455c70a24d14fd5d2de0eaab58fa/themes/nvim-nightfox.json). Neutral control fills are composited to opaque RGB; readable muted labels and accessible focus/input borders are selected from the same upstream palette. Token mappings and adaptations are documented in `crates/app/assets/themes/README.md`.
+
+The Zed port derives from [EdenEast/nightfox.nvim](https://github.com/EdenEast/nightfox.nvim). Its original palette MIT notice is independently fetched at `4dacd3f0185a2227bdf3b6c0975a8f0bf87cac9a`; this is not a claim that the Zed port was generated from that revision. Both complete MIT licenses must accompany distributions; verbatim copies are also stored in `crates/app/assets/themes/nightfox-zed-LICENSE.txt` and `crates/app/assets/themes/nightfox-nvim-LICENSE.txt`. These notices do not select or change the project license.
+
+### Complete upstream nightfox.zed MIT license
+
+Source: https://github.com/cange/nightfox.zed/blob/3511a6f1f665455c70a24d14fd5d2de0eaab58fa/LICENSE
+
+```text
+MIT License
+
+Copyright (c) 2024 Christian Angermann
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Complete upstream nightfox.nvim MIT license
+
+Source: https://github.com/EdenEast/nightfox.nvim/blob/4dacd3f0185a2227bdf3b6c0975a8f0bf87cac9a/LICENSE
+
+```text
+MIT License
+
+Copyright (c) 2021 James Simpson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

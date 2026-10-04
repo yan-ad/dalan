@@ -318,10 +318,10 @@ fn separator_drag_keyboard_and_compact_resize(cx: &mut TestAppContext) {
         cx.update(|window, _| window.viewport_size().width),
         px(720.0)
     );
-    assert_eq!(state(&view, cx).database_width(720.0), Some(462.0));
+    assert_eq!(state(&view, cx).database_width(720.0), Some(476.0));
     assert_eq!(
         cx.debug_bounds("database-pane").unwrap().size.width,
-        px(462.0)
+        px(476.0)
     );
     assert!(cx.debug_bounds("main-content").unwrap().size.width >= px(240.0));
     cx.simulate_resize(size(px(1280.0), px(800.0)));
@@ -332,4 +332,23 @@ fn separator_drag_keyboard_and_compact_resize(cx: &mut TestAppContext) {
         px(480.0)
     );
     assert_eq!(state(&view, cx).requested_width(), 480.0);
+}
+
+#[gpui::test]
+fn carbonfox_shell_is_compact_and_flush(cx: &mut TestAppContext) {
+    let (_, cx) = fixture(cx);
+    let title = cx.debug_bounds("titlebar").unwrap();
+    let status = cx.debug_bounds("shell-status").unwrap();
+    let pane = cx.debug_bounds("database-pane").unwrap();
+    let content = cx.debug_bounds("main-content").unwrap();
+    assert_eq!(title.size.height, px(TITLEBAR_HEIGHT));
+    assert_eq!(status.size.height, px(STATUS_HEIGHT));
+    assert_eq!(pane.origin.x, px(0.0));
+    assert_eq!(pane.origin.y, title.size.height);
+    assert_eq!(content.origin.x, pane.size.width + px(PANE_GAP));
+    assert_eq!(content.origin.x + content.size.width, px(1280.0));
+    assert_eq!(content.origin.y + content.size.height, status.origin.y);
+    assert_eq!(status.size.height, px(28.0));
+    assert_eq!(TITLEBAR_HEIGHT, 34.0);
+    assert_eq!(NAME, "Carbonfox - opaque");
 }

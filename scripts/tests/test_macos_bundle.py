@@ -48,6 +48,9 @@ class BundleTests(unittest.TestCase):
             notices = (destination / "Contents/Resources/THIRD_PARTY_NOTICES.md").read_text()
             self.assertIn("Lucide", notices)
             self.assertIn("Apache", notices)
+            self.assertIn("Carbonfox - opaque", notices)
+            self.assertIn("Copyright (c) 2024 Christian Angermann", notices)
+            self.assertIn("Copyright (c) 2021 James Simpson", notices)
             self.assertIn("ISC License", (destination / "Contents/Resources/lucide-LICENSE.txt").read_text())
             binary = destination / "Contents/MacOS/Dalan"
             self.assertEqual(binary.read_bytes(), b"first build")

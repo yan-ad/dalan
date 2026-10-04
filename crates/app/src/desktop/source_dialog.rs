@@ -94,6 +94,7 @@ pub(super) fn show(model: Entity<SourceModel>, cx: &mut App) {
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(780.0), px(560.0))),
+            window_background: gpui::WindowBackgroundAppearance::Opaque,
             titlebar: Some(TitlebarOptions {
                 title: Some("Data Sources · Dalan".into()),
                 ..Default::default()

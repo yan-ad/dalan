@@ -345,7 +345,9 @@ impl SourceForm {
         _index: isize,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let disabled = matches!(id, "source-save" | "source-test") && self.model.read(cx).form_busy;
+        let disabled = self.model.read(cx).saving
+            || (matches!(id, "source-save" | "source-test") && self.model.read(cx).form_busy);
+        let primary = id == "source-save";
         div()
             .id(id)
             .debug_selector(move || id.into())
@@ -354,15 +356,45 @@ impl SourceForm {
             .items_center()
             .justify_center()
             .px(px(10.))
-            .h(px(30.))
-            .rounded(px(4.))
+            .h(px(CONTROL_HEIGHT))
+            .rounded(px(CONTROL_RADIUS))
             .border_1()
-            .border_color(rgb(if selected { FOCUS } else { CHROME }))
-            .bg(rgb(if selected { SELECTION } else { CHROME }))
-            .text_color(rgb(if disabled { MUTED } else { TEXT }))
-            .when(disabled, |el| el.opacity(0.5))
+            .border_color(rgb(if primary {
+                FOCUS
+            } else if selected {
+                SELECTION
+            } else {
+                PANEL
+            }))
+            .bg(rgb(if primary && !disabled {
+                FOCUS
+            } else if selected {
+                SELECTION
+            } else if id == "source-test" {
+                HEADER
+            } else {
+                PANEL
+            }))
+            .text_color(rgb(if disabled {
+                MUTED
+            } else if primary {
+                PANEL
+            } else if selected {
+                FOCUS
+            } else {
+                TEXT
+            }))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(HOVER)))
+            .when(disabled, |style| style.cursor_default())
+            .hover(move |style| {
+                style.bg(rgb(if primary && !disabled {
+                    FOCUS
+                } else if selected {
+                    SELECTION
+                } else {
+                    HOVER
+                }))
+            })
             .focus(|style| style.border_color(rgb(FOCUS)))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.controls[id].focus(window);
@@ -457,16 +489,19 @@ impl SourceForm {
                 .items_center()
                 .gap(px(5.))
                 .px(px(6.))
-                .h(px(30.))
-                .rounded(px(4.))
+                .h(px(CONTROL_HEIGHT))
+                .rounded(px(CONTROL_RADIUS))
                 .border_1()
-                .border_color(rgb(if selected { FOCUS } else { CHROME }))
+                .border_color(rgb(if selected { SELECTION } else { PANEL }))
                 .bg(rgb(if selected { SELECTION } else { PANEL }))
                 .text_size(px(12.))
+                .text_color(rgb(if selected { FOCUS } else { TEXT }))
                 .cursor_pointer()
                 .hover(|style| style.bg(rgb(HOVER)))
                 .focus(|style| style.border_color(rgb(FOCUS)))
-                .when(disabled, |style| style.opacity(0.5))
+                .when(disabled, |style| {
+                    style.text_color(rgb(MUTED)).cursor_default()
+                })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.controls[id].focus(window);
                     this.activate(id, cx);
@@ -485,7 +520,7 @@ impl SourceForm {
                     div()
                         .size(px(12.))
                         .flex_shrink_0()
-                        .rounded(px(3.))
+                        .rounded(px(CONTROL_RADIUS))
                         .border_1()
                         .border_color(rgb(swatch.unwrap_or(MUTED)))
                         .bg(rgb(swatch.unwrap_or(PANEL))),
@@ -516,19 +551,21 @@ impl SourceForm {
             .id("source-save-password")
             .debug_selector(|| "source-save-password".into())
             .track_focus(&self.controls["source-save-password"])
-            .h(px(30.0))
+            .h(px(CONTROL_HEIGHT))
             .px(px(4.0))
             .flex()
             .items_center()
             .gap(px(7.0))
             .flex_shrink_0()
-            .rounded(px(4.0))
+            .rounded(px(CONTROL_RADIUS))
             .border_1()
             .border_color(rgb(PANEL))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(HEADER)))
+            .hover(|style| style.bg(rgb(HOVER)))
             .focus(|style| style.border_color(rgb(FOCUS)))
-            .when(disabled, |style| style.opacity(0.5))
+            .when(disabled, |style| {
+                style.text_color(rgb(MUTED)).cursor_default()
+            })
             .on_click(cx.listener(|this, _, window, cx| {
                 this.controls["source-save-password"].focus(window);
                 this.activate("source-save-password", cx);
@@ -548,15 +585,15 @@ impl SourceForm {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(3.0))
+                    .rounded(px(CONTROL_RADIUS))
                     .border_1()
-                    .border_color(rgb(if self.save_password { FOCUS } else { MUTED }))
+                    .border_color(rgb(MUTED))
                     .bg(rgb(if self.save_password { SELECTION } else { PANEL }))
                     .when(self.save_password, |indicator| {
                         indicator.child(
                             div()
                                 .id("keychain-checkbox-check")
-                                .child(icon(Icon::Check, TEXT)),
+                                .child(icon(Icon::Check, FOCUS)),
                         )
                     }),
             )
@@ -660,14 +697,14 @@ impl SourceForm {
             .justify_center()
             .flex_shrink_0()
             .border_1()
-            .border_color(rgb(CHROME))
-            .rounded(px(4.0))
-            .bg(rgb(CHROME))
+            .border_color(rgb(PANEL))
+            .rounded(px(CONTROL_RADIUS))
+            .bg(rgb(PANEL))
             .cursor_pointer()
             .hover(|style| style.bg(rgb(HOVER)))
             .focus(|style| style.border_color(rgb(FOCUS)))
             .when(self.ca_picker_open || self.model.read(cx).saving, |style| {
-                style.opacity(0.5)
+                style.text_color(rgb(MUTED)).cursor_default()
             })
             .on_click(cx.listener(|this, _, window, cx| this.browse_ca(window, cx)))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -704,6 +741,7 @@ impl SourceForm {
         let id = id.into();
         let selector = id.clone();
         let keyboard_path = path.clone();
+        let disabled = self.model.read(cx).saving;
         div()
             .id(id)
             .debug_selector(move || selector.to_string())
@@ -715,13 +753,16 @@ impl SourceForm {
             .flex()
             .items_center()
             .px(px(8.0))
-            .rounded(px(4.0))
+            .rounded(px(CONTROL_RADIUS))
             .border_1()
-            .border_color(rgb(CHROME))
-            .bg(rgb(CHROME))
+            .border_color(rgb(PANEL))
+            .bg(rgb(PANEL))
             .cursor_pointer()
             .hover(|style| style.bg(rgb(HOVER)))
             .focus(|style| style.border_color(rgb(FOCUS)))
+            .when(disabled, |style| {
+                style.text_color(rgb(MUTED)).cursor_default()
+            })
             .on_click(
                 cx.listener(move |this, _, window, cx| this.choose_key(path.clone(), window, cx)),
             )
@@ -749,7 +790,7 @@ impl Render for SourceForm {
             .max_w(px(720.))
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(px(8.))
             .child(
                 self.row(
                     "Engine",
@@ -921,7 +962,7 @@ impl Render for SourceForm {
                 ),
             )
             .when(self.tls == TlsMode::Disabled, |body| {
-                body.child(div().text_color(rgb(0xf2bf76)).child(
+                body.child(div().text_color(rgb(WARNING)).child(
                     "Warning: database TLS is disabled. Traffic is not protected by database TLS.",
                 ))
             })
@@ -946,11 +987,20 @@ impl Render for SourceForm {
                 ),
             )
             .when_some(feedback, |body, feedback| {
+                let color = if feedback.starts_with("Connected:") {
+                    SUCCESS
+                } else if feedback.starts_with("Connection failed:")
+                    || feedback.starts_with("Not saved:")
+                {
+                    ERROR
+                } else {
+                    MUTED
+                };
                 body.child(
                     div()
                         .id("source-feedback")
                         .debug_selector(|| "source-feedback".into())
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(color))
                         .child(feedback),
                 )
             })
@@ -991,7 +1041,7 @@ impl Render for SourceForm {
                     .flex_1()
                     .min_h(px(0.))
                     .overflow_y_scroll()
-                    .p(px(20.))
+                    .p(px(16.))
                     .flex()
                     .flex_col()
                     .items_center()
@@ -1001,7 +1051,8 @@ impl Render for SourceForm {
                 div()
                     .debug_selector(|| "source-form-footer".into())
                     .flex_shrink_0()
-                    .p(px(16.))
+                    .py(px(8.))
+                    .px(px(16.))
                     .flex()
                     .justify_between()
                     .gap(px(8.))
@@ -1048,6 +1099,42 @@ mod tests {
         assert!(profile.validate().is_ok());
     }
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
+
+    #[test]
+    fn form_input_and_about_use_opaque_theme_tokens() {
+        for source in [
+            include_str!("source_form.rs"),
+            include_str!("input.rs"),
+            include_str!("about.rs"),
+        ] {
+            // User-owned color presets are data, not hardcoded semantic paint colors.
+            assert!(!source.contains(&["rgb(", "0x"].concat()));
+            assert!(!source.contains(&["rgba", "("].concat()));
+            assert!(!source.contains(&[".opacity", "("].concat()));
+        }
+        assert_eq!(CONTROL_HEIGHT, 28.0);
+        assert_eq!(CONTROL_RADIUS, 3.0);
+    }
+
+    #[gpui::test]
+    fn compact_footer_and_controls_fit_without_collapsing(cx: &mut TestAppContext) {
+        let (_, _, cx) = fixture(cx);
+        cx.simulate_resize(gpui::size(px(850.), px(600.)));
+        cx.run_until_parked();
+        let footer = cx.debug_bounds("source-form-footer").unwrap();
+        assert_eq!(footer.size.height, px(CONTROL_HEIGHT + 16.));
+        assert!(footer.bottom() <= px(600.));
+        for id in [
+            "source-engine-mysql",
+            "source-test",
+            "source-save",
+            "source-cancel",
+        ] {
+            let bounds = cx.debug_bounds(id).unwrap();
+            assert_eq!(bounds.size.height, px(CONTROL_HEIGHT), "{id}");
+            assert!(bounds.size.width > px(0.), "{id}");
+        }
+    }
 
     fn fixture(
         cx: &mut TestAppContext,

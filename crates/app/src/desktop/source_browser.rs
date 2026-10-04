@@ -333,7 +333,7 @@ impl SourceExplorer {
                                 } else {
                                     Icon::ChevronRight
                                 },
-                                MUTED,
+                                if selected { FOCUS } else { MUTED },
                             ))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
@@ -360,10 +360,15 @@ impl SourceExplorer {
                         .debug_selector(move || driver.clone())
                         .flex()
                         .flex_shrink_0()
-                        .child(icon(glyph, TEXT)),
+                        .child(icon(glyph, if selected { FOCUS } else { TEXT })),
                 );
         } else {
-            element = element.child(div().flex().flex_shrink_0().child(icon(glyph, MUTED)));
+            element = element.child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .child(icon(glyph, if selected { FOCUS } else { MUTED })),
+            );
         }
         element = element.child(
             div()
@@ -394,7 +399,7 @@ impl SourceExplorer {
                     .debug_selector(move || status_id.clone())
                     .flex_shrink_0()
                     .text_size(px(10.))
-                    .text_color(rgb(if status == "Stale" { 0xf2bf76 } else { MUTED }))
+                    .text_color(rgb(if status == "Stale" { WARNING } else { MUTED }))
                     .child(status),
             );
             tooltip.push_str(&format!("\n{status}"));
@@ -403,7 +408,7 @@ impl SourceExplorer {
                 div()
                     .flex_shrink_0()
                     .text_size(px(10.))
-                    .text_color(rgb(0xf2bf76))
+                    .text_color(rgb(WARNING))
                     .child(if model.tree.loading.contains(&row.key) {
                         "Loading…"
                     } else {
@@ -440,7 +445,7 @@ impl Render for SourceExplorer {
             .id("source-explorer-toolbar")
             .debug_selector(|| "source-explorer-toolbar".into())
             .flex_shrink_0()
-            .h(px(32.))
+            .h(px(TOOLBAR_HEIGHT))
             .px(px(6.))
             .flex()
             .items_center()
@@ -537,6 +542,9 @@ impl Render for SourceExplorer {
             .text_size(px(12.))
             .text_color(rgb(TEXT))
             .bg(rgb(PANEL))
+            .border_1()
+            .border_color(rgb(PANEL))
+            .focus(|style| style.border_color(rgb(FOCUS)))
             .child(toolbar);
         if self.rows.is_empty() {
             root = root.child(
@@ -594,7 +602,7 @@ impl Render for SourceExplorer {
                     .flex_shrink_0()
                     .px(px(6.))
                     .text_ellipsis()
-                    .text_color(rgb(0xf2bf76))
+                    .text_color(rgb(WARNING))
                     .child(notice.clone())
                     .tooltip(move |_, cx| cx.new(|_| TreeTooltip(notice.clone())).into()),
             );
@@ -608,7 +616,7 @@ impl Render for SourceExplorer {
                     .flex_shrink_0()
                     .px(px(6.))
                     .text_ellipsis()
-                    .text_color(rgb(0xf2bf76))
+                    .text_color(rgb(WARNING))
                     .child(error.clone())
                     .tooltip(move |_, cx| cx.new(|_| TreeTooltip(error.clone())).into()),
             );
@@ -737,7 +745,7 @@ impl Render for SourceBrowser {
                     el.child(div().text_color(rgb(MUTED)).child("Loading data sources…"))
                 })
                 .when_some(load_error, |el, error| {
-                    el.child(div().text_color(rgb(0xf2bf76)).child(error))
+                    el.child(div().text_color(rgb(WARNING)).child(error))
                 });
         }
         let busy = m.busy;
@@ -783,13 +791,15 @@ impl Render for SourceBrowser {
             .child(
                 div()
                     .flex_shrink_0()
-                    .p(px(12.))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .min_h(px(PANEL_HEADER_HEIGHT))
                     .bg(rgb(HEADER))
                     .flex()
                     .items_center()
                     .justify_between()
                     .gap(px(12.))
-                    .child(div().min_w(px(0.)).text_ellipsis().child(title.clone()))
+                    .child(div().flex_1().min_w(px(0.)).child(title.clone()))
                     .child(
                         div()
                             .flex_shrink_0()
@@ -811,7 +821,7 @@ impl Render for SourceBrowser {
                 div()
                     .px(px(12.))
                     .py(px(6.))
-                    .text_color(rgb(0xf2bf76))
+                    .text_color(rgb(ERROR))
                     .child(format!("{title}: {error}")),
             );
         }
@@ -844,12 +854,13 @@ impl Render for SourceBrowser {
             );
             body = body.child(
                 div()
-                    .p(px(10.))
+                    .px(px(10.))
+                    .py(px(6.))
                     .flex_shrink_0()
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(px(6.))
                     .child(button(
                         "filter-column",
                         column_label,
@@ -918,7 +929,7 @@ impl Render for SourceBrowser {
             grid = grid.child(
                 div()
                     .flex()
-                    .h(px(32.))
+                    .h(px(PANEL_HEADER_HEIGHT))
                     .flex_shrink_0()
                     .bg(rgb(HEADER))
                     .children(page.columns.iter().enumerate().map(|(index, column)| {
@@ -937,7 +948,11 @@ impl Render for SourceBrowser {
                             },
                         )
                         .w(px(180.0))
-                        .h(px(32.0))
+                        .h(px(PANEL_HEADER_HEIGHT))
+                        .rounded(px(0.))
+                        .bg(rgb(HEADER))
+                        .border_color(rgb(HEADER))
+                        .text_color(rgb(MUTED))
                         .flex_shrink_0()
                         .justify_start()
                         .child(div().flex_1().min_w(px(0.0)).text_ellipsis().child(format!(
@@ -952,7 +967,7 @@ impl Render for SourceBrowser {
                                     SortDirection::Ascending => Icon::SortAscending,
                                     SortDirection::Descending => Icon::SortDescending,
                                 },
-                                TEXT,
+                                FOCUS,
                             ))
                         })
                     })),
@@ -961,9 +976,9 @@ impl Render for SourceBrowser {
                 grid = grid.child(
                     div()
                         .flex()
-                        .h(px(26.))
+                        .h(px(GRID_ROW_HEIGHT))
                         .flex_shrink_0()
-                        .bg(rgb(if index % 2 == 0 { PANEL } else { HEADER }))
+                        .bg(rgb(if index % 2 == 0 { PANEL } else { BACKGROUND }))
                         .children((0..page.columns.len()).map(|index| {
                             let value = row.get(index);
                             cell(
@@ -1004,13 +1019,14 @@ impl Render for SourceBrowser {
             };
             body = body.child(
                 div()
-                    .p(px(10.))
+                    .px(px(10.))
+                    .py(px(4.))
                     .flex_shrink_0()
                     .flex()
                     .flex_wrap()
                     .items_center()
                     .justify_between()
-                    .gap(px(8.))
+                    .gap(px(6.))
                     .child(
                         div()
                             .text_color(rgb(MUTED))
@@ -1022,7 +1038,7 @@ impl Render for SourceBrowser {
                     .child(
                         div()
                             .flex()
-                            .gap(px(8.))
+                            .gap(px(6.))
                             .child(
                                 button(
                                     "export-loaded-page",
@@ -1105,29 +1121,30 @@ fn toolbar_button<T: 'static>(
     activate: impl Fn(&mut T, &mut Context<T>) + Clone + 'static,
 ) -> Stateful<Div> {
     button(id, "", false, disabled, cx, activate)
-        .w(px(28.))
-        .h(px(28.))
+        .w(px(CONTROL_HEIGHT))
+        .h(px(CONTROL_HEIGHT))
         .p(px(0.))
-        .border_0()
-        .rounded(px(0.))
+        .border_color(rgb(PANEL))
+        .rounded(px(CONTROL_RADIUS))
         .bg(rgb(PANEL))
         .flex_shrink_0()
         .justify_center()
-        .child(icon(glyph, TEXT))
+        .child(icon(glyph, if disabled { MUTED } else { TEXT }))
         .tooltip(move |_, cx| cx.new(|_| super::ControlTooltip(tooltip)).into())
 }
 
 fn cell(value: String, null: bool) -> Div {
     div()
         .w(px(180.))
-        .h(px(26.))
+        .h(px(GRID_ROW_HEIGHT))
         .flex_shrink_0()
         .px(px(8.))
-        .py(px(4.))
+        .flex()
+        .items_center()
         .overflow_hidden()
         .text_ellipsis()
         .border_r_1()
-        .border_color(rgb(CHROME))
+        .border_color(rgb(BORDER))
         .text_color(rgb(if null { MUTED } else { TEXT }))
         .child(value)
 }
@@ -1141,7 +1158,16 @@ fn button<T: 'static>(
     cx: &mut Context<T>,
     activate: impl Fn(&mut T, &mut Context<T>) + Clone + 'static,
 ) -> Stateful<Div> {
-    let id: gpui::SharedString = id.into().into();
+    let id: String = id.into();
+    let primary = id == "connect-empty-source";
+    let background = if primary && !disabled {
+        FOCUS
+    } else if selected {
+        SELECTION
+    } else {
+        PANEL
+    };
+    let id: gpui::SharedString = id.into();
     let label: String = label.into();
     let debug_id = id.clone();
     let click = activate.clone();
@@ -1154,15 +1180,24 @@ fn button<T: 'static>(
         .items_center()
         .min_w(px(0.))
         .px(px(8.))
-        .py(px(5.))
-        .rounded(px(3.))
+        .h(px(CONTROL_HEIGHT))
+        .flex_shrink_0()
+        .rounded(px(CONTROL_RADIUS))
         .border_1()
-        .border_color(rgb(if selected { FOCUS } else { CHROME }))
-        .bg(rgb(if selected { SELECTION } else { CHROME }))
-        .text_color(rgb(if disabled { MUTED } else { TEXT }))
-        .when(disabled, |el| el.opacity(0.5))
+        .border_color(rgb(background))
+        .bg(rgb(background))
+        .text_color(rgb(if disabled {
+            MUTED
+        } else if primary {
+            PANEL
+        } else if selected {
+            FOCUS
+        } else {
+            TEXT
+        }))
         .when(!disabled, |el| {
-            el.cursor_pointer().hover(|style| style.bg(rgb(HOVER)))
+            el.cursor_pointer()
+                .hover(move |style| style.bg(rgb(if primary { FOCUS } else { HOVER })))
         })
         .focus(|style| style.border_color(rgb(FOCUS)))
         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1621,14 +1656,17 @@ mod tests {
         cx.refresh().unwrap();
         cx.run_until_parked();
         let toolbar = cx.debug_bounds("source-explorer-toolbar").unwrap();
-        assert_eq!(toolbar.size.height, px(32.));
-        assert_eq!(toolbar.top(), px(0.));
+        assert_eq!(toolbar.size.height, px(TOOLBAR_HEIGHT));
+        // Reserve the explorer's keyboard-focus outline without shifting layout on focus.
+        assert_eq!(toolbar.top(), px(1.));
         let mut previous = toolbar.left();
         for id in [
             "add-source",
             "edit-source",
             "refresh-source",
             "delete-source",
+            "expand-loaded-tree",
+            "collapse-all-tree",
         ] {
             let bounds = cx.debug_bounds(id).unwrap();
             assert_eq!(bounds.size.width, px(28.));

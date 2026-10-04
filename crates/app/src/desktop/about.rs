@@ -25,7 +25,7 @@ impl Render for AboutWindow {
             .size_full()
             .flex()
             .flex_col()
-            .p(px(24.0))
+            .p(px(20.0))
             .gap(px(10.0))
             .bg(rgb(PANEL))
             .font_family(".SystemUIFont")
@@ -62,15 +62,15 @@ impl Render for AboutWindow {
                         .debug_selector(|| "about-done".into())
                         .track_focus(&self.focus)
                         .tab_stop(true)
-                        .h(px(28.0))
+                        .h(px(CONTROL_HEIGHT))
                         .px(px(14.0))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(4.0))
+                        .rounded(px(CONTROL_RADIUS))
                         .border_1()
-                        .border_color(rgb(MUTED))
-                        .bg(rgb(CHROME))
+                        .border_color(rgb(PANEL))
+                        .bg(rgb(PANEL))
                         .cursor_pointer()
                         .hover(|style| style.bg(rgb(HOVER)))
                         .focus(|style| style.border_color(rgb(FOCUS)))
@@ -100,6 +100,7 @@ pub(super) fn show_about(_: &ShowAbout, cx: &mut App) {
     if let Err(error) = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_background: gpui::WindowBackgroundAppearance::Opaque,
             titlebar: Some(TitlebarOptions {
                 title: Some(SharedString::from("About Dalan")),
                 ..Default::default()

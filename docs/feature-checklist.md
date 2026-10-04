@@ -16,12 +16,12 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 - [x] Loaded-page CSV with native save picker, fresh complete rows only, visible success/cancel/error and no overwrite. Default name `Dalan-loaded-page.csv`; no extension enforcement. UTF-8/CRLF/quoted fields, explicit NULL syntax, default spreadsheet-safe text protection and private same-filesystem hard-link publication. No full-query or whole-table export. See [exact export limits](mysql-sources.md#export-loaded-csv).
 - [x] Headless, simulated GPUI, bundle-helper and disposable live transport coverage. Historical icon/sorting/export results: 48 headless, 42 simulated UI, four bundle-helper, one generated Keychain and 22 live checks passed, including sorting on actual routes.
 
-- [x] Compact explorer: no title header; one 32 px toolbar with six 28 px Add/Manage/Refresh/Remove/Expand Loaded/Collapse All icons, tooltips and selection/busy/save guards; bottom-left toggle unchanged; no rail or inactive advanced tools.
+- [x] Compact explorer: no title header; one 28 px toolbar with six 28 px Add/Manage/Refresh/Remove/Expand Loaded/Collapse All icons, tooltips and selection/busy/save guards; bottom-left toggle unchanged; no rail or inactive advanced tools.
 - [x] Virtual lazy tree for large catalogs: 22 px rows, cached expansion, viewport-only rendering, readable ellipsized names/full-name tooltips, Tables/Views groups and unavailable view leaves.
 - [x] Selection-safe explorer actions independent of the current table page; UUID-pinned removal confirmation, complete-source metadata Refresh with retained old snapshot on failure and per-branch catalog cancellation/errors.
 - [x] Single-focus tree keyboard navigation and guarded toolbar Enter/Space activation; scoped 71-test simulated suite includes 1,000-database visible-range, scroll-to-900 and End regressions. No native smoothness/FPS claim.
 - [x] Compact-explorer local verification: 57 headless, 71 UI and four Python tests passed with formatting, strict lint and bundle verification; current hosted CI and native review remain pending. See [testing](testing.md#compact-lazy-explorer).
-- [x] Bottom-left 28 px panel-left toggle retaining the closed preference; Cmd-B and View/Layout alternatives unchanged. Both body sides have 6 px padding; 320 px preferred sidebar, 200–480 px bounds and 462 px maximum at 720 px retain main 240 px and compact ACP behavior.
+- [x] Bottom-left 28 px panel-left toggle retaining the closed preference; Cmd-B and View/Layout alternatives unchanged. Flush body edges have 0 px outer padding and a 4 px divider hit area/1 px visible line; 320 px preferred sidebar, 200–480 px bounds and 476 px maximum at 720 px retain main 240 px and compact ACP behavior.
 - [x] Source rows with readable name/engine labels and abstract Lucide database/MySQL and database-zap/MariaDB cues, not vendor logos. Optional marker color, manual hex and labeled Default/Blue/Green/Amber/Red/Purple form presets; no color-only risk meaning or arbitrary-color AA claim.
 - [x] Backward-compatible version 1 color metadata with absent None, case-preserving hex, unchanged password rejection and no automatic rewrite/Keychain migration. Scoped migration and malformed-color no-overwrite tests passed.
 - [x] Working centered no-source Connect to a Source action using the same dedicated source dialog window by mouse/Enter/Space, including with explorer hidden; no demo/trial welcome.
@@ -40,8 +40,19 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 - [x] Successful profile/credential commit closes the dialog before automatic full metadata-only discovery; all visible databases or explicit database scope, one serial owned connection/tunnel, no automatic data browse.
 - [x] Transactional bounded refresh, identity invalidation and globally monotonic ticket guards against stale/deleted/re-added/edit-away-back completions; old snapshots remain on refresh failure.
 - [x] Explicit explorer-selection-only Refresh, independent of table-page selection/paging; nonfatal disk-cache/save/delete warnings without suppressing profile JSON or inventing phantom sources.
-- [x] Scoped simulated suite passed 82 tests; four Python helper tests passed and disposable live suites reran 7 direct/auth/CONNECT + 10 TLS + 6 SSH cases. Full workspace/lint/build confirmation remains with the final verification owner.
-- [ ] Current-revision hosted CI including cross-platform bundled SQLite; native macOS offline/source-save/refresh/error/keyboard/accessibility review. No native Keychain rerun or production endpoint success is claimed.
+- [x] Historical metadata suites passed 67 headless, 83 simulated UI and four Python tests, formatting/lint/bundle checks and 7 direct/auth/CONNECT + 10 TLS + 6 SSH live cases. Commit `4c8af09` passed all five hosted jobs in [run 37201696519](https://github.com/yan-ad/dalan/actions/runs/37201696519).
+- [ ] Current Carbonfox-revision hosted CI; native macOS offline/source-save/refresh/error/keyboard/accessibility review. No native Keychain rerun or production endpoint success is claimed.
+
+## Carbonfox compact foundation
+
+- [x] User-selected **Carbonfox - opaque** default and compact Zed-like UI. DataGrip visual styling/button-heavy layout explicitly rejected; database UX/workflows only remain references.
+- [x] Full exact variant vendored from Nightfox Zed port commit `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`, with both full MIT licenses and separate original-project license provenance. Runtime uses compiled tokens, not JSON; no affiliation or other Zed source/editor asset import. See [theme record](../crates/app/assets/themes/README.md).
+- [x] Shared opaque main/source/About/input theme; alpha toolbar/selection/border composited over PANEL; no blur/transparency/toggle/fake light. Theme-name status retains focused-help override.
+- [x] Compact 34 px titlebar, 28 px headers/toolbars/status/controls, 22 px tree/grid, 3 px controls/0 px panes, flush 0 px outer padding and 4 px divider hit area/1 px line. System UI 13 px/data 12 px, no external font or implemented SQL monospace editor.
+- [x] Neutral controls/hover/selection, blue focus/active and Save/Connect primary with dark text; readable disabled MUTED labels without opacity; shared opaque input selection, cursor/placeholder and visible input borders. User source markers remain unchanged, separately labeled and not AA-guaranteed.
+- [x] Compact form gaps/scroll/footer styling while retaining source window size, APIs, focus/saving guards, 28 px inputs, 30 px endpoint parents/candidates and 18 px Keychain indicator. Compact table header/filter/footer without fake content; no DB/cache/SSH/password migration.
+- [x] Pure token mapping/compositing and contrast coverage; computed normal-state minima 13.04:1 primary, 7.22:1 secondary, 6.10:1 focus and 3.44:1 input boundary. Semantic labels supported on panel/input, not arbitrary hover controls. No native pixel/accessibility claim.
+- [ ] Final owner-run theme suite counts, formatting/lint/build/bundle verification, native screenshot/manual review and current-revision hosted CI. Historical 67/83/four totals are not final theme counts. See [testing](testing.md#carbonfox-opaque-revision).
 
 ## Next read-workflow slices, in order
 
@@ -53,12 +64,12 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 
 ## Remaining platform and release work
 
-- [ ] Verify all five CI jobs on the actual next main push. Historical run 37192402473 failed the Windows fixture; fix `3c4fdae` passed all five jobs in run 37194669634. The current compact-tree revision requires a separate run. Live database and generated Keychain reruns are not required for this window/layout/test-fixture-only change; their historical evidence remains preserved.
+- [ ] Verify all five CI jobs on the actual next main push. Historical run 37192402473 failed the Windows fixture; fix `3c4fdae` passed all five jobs in run 37194669634. Compact-tree `8dc3d27` passed run 37198333660 and metadata `4c8af09` passed run 37201696519; current Carbonfox needs its own run. Live database and generated Keychain reruns are not required for this window/layout/test-fixture-only change; their historical evidence remains preserved.
 - [ ] Native macOS source/browse/sort/save-picker keyboard and error/cancel interaction, visual review, VoiceOver and scaled text. Simulated tests do not close these gates.
 - [ ] Broader MySQL/MariaDB auth/TLS/server matrix and positive trusted HTTPS proxy fixture.
 - [ ] PostgreSQL adapter and workflow slice; Redis engine-native key/type/TTL/binary workflows. Neither adapter is working yet.
 - [ ] Real ACP suggestion/insertion lifecycle and context consent. External agents own authentication/billing; no application BYOK or autonomous database execution.
-- [ ] macOS release packaging, minimum OS/Intel decisions, signing/notarization, light/system themes and measured performance/accessibility gates.
+- [ ] macOS release packaging, minimum OS/Intel decisions, signing/notarization, measured performance/accessibility gates; light/system support is an unselected future proposal, not a shipped mode.
 - [ ] Linux second, Windows third, each with platform-specific GPUI, credential, input and distribution validation.
 - [ ] MongoDB/Compass-style workflows after the first release.
 - [ ] User-authorized commit and push, with actual revision/remote verification by the primary workflow. Documentation does not claim this has happened.

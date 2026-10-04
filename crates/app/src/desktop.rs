@@ -201,11 +201,11 @@ impl Shell {
             .justify_center()
             .h(px(28.0))
             .min_w(px(28.0))
-            .rounded(px(4.0))
+            .rounded(px(CONTROL_RADIUS))
             .border_1()
-            .border_color(rgb(if selected { FOCUS } else { CHROME }))
+            .border_color(rgb(if selected { SELECTION } else { CHROME }))
             .bg(rgb(if selected { SELECTION } else { CHROME }))
-            .text_color(rgb(TEXT))
+            .text_color(rgb(if selected { FOCUS } else { TEXT }))
             .cursor_pointer()
             .hover(|style| style.bg(rgb(HOVER)))
             .focus(|style| style.border_color(rgb(FOCUS)))
@@ -237,7 +237,7 @@ impl Shell {
                     .h_full()
                     .flex()
                     .items_center()
-                    .gap(px(14.0))
+                    .gap(px(10.0))
                     .window_control_area(gpui::WindowControlArea::Drag)
                     .on_mouse_down(MouseButton::Left, |event, window, _| {
                         if event.click_count == 2 {
@@ -276,7 +276,7 @@ impl Shell {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(px(6.0))
+            .rounded(px(PANE_RADIUS))
             .bg(rgb(PANEL))
             .child(
                 div()
@@ -297,6 +297,9 @@ impl Shell {
             .w(px(PANE_GAP))
             .h_full()
             .flex_shrink_0()
+            .flex()
+            .justify_center()
+            .bg(rgb(CHROME))
             .cursor_col_resize()
             .hover(|style| style.bg(rgb(FOCUS)))
             .focus(|style| style.bg(rgb(FOCUS)))
@@ -322,6 +325,7 @@ impl Shell {
                 cx.stop_propagation();
                 cx.notify();
             }))
+            .child(div().w(px(1.0)).h_full().bg(rgb(BORDER)))
     }
 
     fn layout_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -336,9 +340,9 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(2.0))
-            .rounded(px(6.0))
+            .rounded(px(CONTROL_RADIUS))
             .border_1()
-            .border_color(rgb(MUTED))
+            .border_color(rgb(BORDER))
             .bg(rgb(CHROME))
             .occlude()
             .on_mouse_down_out(
@@ -362,7 +366,7 @@ impl Shell {
                     _ => "",
                 };
                 self.button(control.id(), control, false, cx)
-                    .h(px(30.0))
+                    .h(px(CONTROL_HEIGHT))
                     .w_full()
                     .px(px(8.0))
                     .justify_between()
@@ -380,15 +384,15 @@ impl Shell {
         div().id("acp-panel").debug_selector(|| "acp-panel".into())
             .track_focus(&self.acp_focus).tab_stop(false)
             .w(px(width)).h_full().flex_shrink_0().flex().flex_col()
-            .overflow_hidden().rounded(px(6.0)).bg(rgb(PANEL))
+            .overflow_hidden().rounded(px(PANE_RADIUS)).bg(rgb(PANEL))
             .child(div().h(px(PANEL_HEADER_HEIGHT)).flex_shrink_0()
                 .flex().items_center().justify_between().pl(px(10.0)).pr(px(4.0)).bg(rgb(HEADER))
                 .child(div().font_weight(gpui::FontWeight::MEDIUM).child("AI · ACP"))
                 .child(self.button("acp-close", Control::ToggleAcp, false, cx)
                     .child(icon(Icon::Hide, MUTED))))
             .child(div().id("acp-empty").debug_selector(|| "acp-empty".into())
-                .flex_1().min_h(px(0.0)).overflow_y_scroll().p(px(16.0))
-                .flex().flex_col().gap(px(10.0))
+                .flex_1().min_h(px(0.0)).overflow_y_scroll().p(px(12.0))
+                .flex().flex_col().gap(px(8.0))
                 .child("Not connected")
                 .child(div().text_size(px(12.0)).text_color(rgb(MUTED))
                     .child("Agent Client Protocol connections are not implemented yet."))
@@ -404,7 +408,7 @@ impl Render for Shell {
             .controls
             .iter()
             .find(|(_, handle)| handle.is_focused(window))
-            .map_or("UI foundation", |(id, _)| control_label(id));
+            .map_or(NAME, |(id, _)| control_label(id));
         div()
             .id("shell")
             .track_focus(&self.root_focus)
@@ -457,7 +461,7 @@ impl Render for Shell {
                     .flex_1()
                     .min_h(px(0.0))
                     .flex()
-                    .pb(px(2.0))
+                    .pb(px(0.0))
                     .px(px(OUTER_PADDING))
                     .when_some(layout.database, |body, width| {
                         body.child(self.sidebar(width))
@@ -470,18 +474,28 @@ impl Render for Shell {
                             .flex_1()
                             .min_w(px(0.0))
                             .h_full()
-                            .rounded(px(6.0))
-                            .bg(rgb(PANEL))
+                            .rounded(px(PANE_RADIUS))
+                            .bg(rgb(BACKGROUND))
                             .overflow_hidden()
                             .child(self.workspace.clone()),
                     )
                     .when_some(layout.acp, |body, width| {
-                        body.child(div().w(px(PANE_GAP)).flex_shrink_0())
-                            .child(self.acp_panel(width, cx))
+                        body.child(
+                            div()
+                                .w(px(PANE_GAP))
+                                .h_full()
+                                .flex_shrink_0()
+                                .flex()
+                                .justify_center()
+                                .child(div().w(px(1.0)).h_full().bg(rgb(BORDER))),
+                        )
+                        .child(self.acp_panel(width, cx))
                     }),
             )
             .child(
                 div()
+                    .id("shell-status")
+                    .debug_selector(|| "shell-status".into())
                     .h(px(STATUS_HEIGHT))
                     .flex_shrink_0()
                     .flex()
@@ -583,6 +597,7 @@ pub fn run() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(720.0), px(480.0))),
+                    window_background: gpui::WindowBackgroundAppearance::Opaque,
                     titlebar: Some(TitlebarOptions {
                         title: Some(SharedString::from("Dalan")),
                         appears_transparent: true,

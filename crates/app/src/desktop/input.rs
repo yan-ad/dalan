@@ -6,9 +6,11 @@ use gpui::{
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
-    point, prelude::*, px, relative, rgb, rgba, size,
+    point, prelude::*, px, relative, rgb, size,
 };
 use unicode_segmentation::*;
+
+use super::theme::*;
 
 actions!(
     dalan_input,
@@ -524,7 +526,7 @@ impl Element for TextElement {
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), rgb(0x9298a2).into())
+            (input.placeholder.clone(), rgb(MUTED).into())
         } else {
             (content, style.color)
         };
@@ -590,7 +592,7 @@ impl Element for TextElement {
                         point(origin_x + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    rgb(0x8ab4f8),
+                    rgb(FOCUS),
                 )),
             )
         } else {
@@ -606,7 +608,7 @@ impl Element for TextElement {
                             bounds.bottom(),
                         ),
                     ),
-                    rgba(0x8ab4f850),
+                    rgb(TEXT_SELECTION),
                 )),
                 None,
             )
@@ -669,17 +671,17 @@ impl Render for TextInput {
             .flex()
             .items_center()
             .w_full()
-            .h(px(28.))
+            .h(px(CONTROL_HEIGHT))
             .px(px(7.))
             .border_1()
-            .rounded(px(4.))
+            .rounded(px(CONTROL_RADIUS))
             .border_color(rgb(if self.focus_handle.is_focused(window) {
-                0x8ab4f8
+                FOCUS
             } else {
-                0x4a4d53
+                INPUT_BORDER
             }))
-            .bg(rgb(0x191a1c))
-            .text_color(rgb(0xe6e8eb))
+            .bg(rgb(INPUT_BG))
+            .text_color(rgb(TEXT))
             .text_size(px(13.))
             .line_height(px(18.))
             .overflow_hidden()

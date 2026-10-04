@@ -1,5 +1,5 @@
-pub const PANE_GAP: f32 = 6.0;
-pub const OUTER_PADDING: f32 = 6.0;
+pub const PANE_GAP: f32 = 4.0;
+pub const OUTER_PADDING: f32 = 0.0;
 pub const MIN_CONTENT_WIDTH: f32 = 240.0;
 pub const MIN_SIDEBAR_WIDTH: f32 = 200.0;
 pub const MAX_SIDEBAR_WIDTH: f32 = 480.0;
@@ -146,7 +146,7 @@ mod tests {
     fn compact_layout_preserves_preference() {
         let mut state = ShellState::default();
         state.resize(480.0);
-        assert_eq!(state.database_width(720.0), Some(462.0));
+        assert_eq!(state.database_width(720.0), Some(476.0));
         assert_eq!(state.database_width(1_200.0), Some(480.0));
         assert_eq!(state.requested_width(), 480.0);
         assert_eq!(state.database_width(f32::NAN), None);
@@ -193,7 +193,7 @@ mod tests {
         );
         assert!(state.database_visible);
         state.apply(Control::ToggleAcp);
-        assert_eq!(state.layout(720.0).database, Some(462.0));
+        assert_eq!(state.layout(720.0).database, Some(476.0));
         assert_eq!(state.requested_width(), 480.0);
     }
 
