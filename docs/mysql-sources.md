@@ -91,6 +91,12 @@ NULL is distinct from empty text; binary data displays as hex, MySQL JSON as tex
 
 There is no arbitrary SQL console, write action, staged grid editing, or transaction-control UI. Generated browsing uses read-only transactions where server capabilities permit. This does not secure a broadly privileged account; use least-privilege server roles.
 
+### Wide tables and local scrolling
+
+The read-only data grid virtualizes both rows and columns (180 px fixed columns, 22 px rows, pinned 28 px header). Wheel/trackpad, Shift-wheel, keyboard viewport navigation and draggable/clickable two-axis scrollbars reach offscreen data without fetching another page. Only visible/overscan display strings are retained; on-screen strings use a maximum 128 grapheme clusters plus ellipsis while the typed values and CSV export remain unchanged; the full bounded typed page remains an immutable shared `Arc<TablePage>` in memory. This is not a persistent row cache, SQL/schema-cache change or reduction of the existing backend memory budget to an absolute process bound.
+
+A new page or target resets scrolling. Busy/saving/error state on the same page keeps the stale view and offsets with sorting disabled. Grid arrows/PageUp/PageDown/Home/End/Ctrl-or-Cmd-Home/End scroll, not select cells; column resizing and cell inspection/copy are not implemented. CSV still exports the complete fresh loaded page, not just the viewport. See [structural regression evidence](testing.md#wide-grid-performance-revision); disposable database and native Keychain suites were not rerun for this rendering-only change.
+
 ## Export loaded CSV
 
 Use **Export loaded CSV** (Lucide download) on a fresh, complete loaded page. It opens the native save picker with `Dalan-loaded-page.csv` as the default name and writes only the currently loaded UI page of up to 100 rows. It does not fetch more rows, export a whole table or rerun a query. Missing, stale, truncated or busy pages cannot be exported. Success, cancellation and errors are shown in the table view. The chosen filename is accepted as-is: output is CSV, but the native picker currently does not enforce a `.csv` extension.
@@ -108,7 +114,7 @@ A source/table/page generation change before the picker returns cancels without 
 | Capability | Current scope | Evidence / remaining gate |
 | --- | --- | --- |
 | Profile persistence | Version 1 JSON, stable UUID, no password; 1 MiB / 100 profiles | Headless persistence/failure tests and session-only Save without Keychain verified |
-| Offline metadata | Separate bounded SQLite database/table/view-name cache; no secrets or rows | Cache and simulated startup/selection/failure tests; native UI and cross-platform SQLite CI pending |
+| Offline metadata | Separate bounded SQLite database/table/view-name cache; no secrets or rows | Cache and simulated startup/selection/failure tests; native UI pending; metadata commit passed cross-platform headless CI (historical) |
 | Credentials | Opt-in native macOS Keychain, session-only alternative | One generated native Keychain round-trip passed, with item cleanup |
 | MySQL/MariaDB | Test, discovery, columns, BASE TABLE browsing, seven filters | MySQL 8.4.11 and MariaDB 11.4.13 verified on the same disposable fixture |
 | Column sorting | Ascending/descending/none, metadata validation, retained filter, offset reset, primary-key tie-breakers | Headless/generated-SQL and simulated UI coverage; live sorting rerun passed across direct, CONNECT, TLS and SSH routes |

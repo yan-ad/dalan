@@ -41,7 +41,7 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 - [x] Transactional bounded refresh, identity invalidation and globally monotonic ticket guards against stale/deleted/re-added/edit-away-back completions; old snapshots remain on refresh failure.
 - [x] Explicit explorer-selection-only Refresh, independent of table-page selection/paging; nonfatal disk-cache/save/delete warnings without suppressing profile JSON or inventing phantom sources.
 - [x] Historical metadata suites passed 67 headless, 83 simulated UI and four Python tests, formatting/lint/bundle checks and 7 direct/auth/CONNECT + 10 TLS + 6 SSH live cases. Commit `4c8af09` passed all five hosted jobs in [run 37201696519](https://github.com/yan-ad/dalan/actions/runs/37201696519).
-- [ ] Current Carbonfox-revision hosted CI; native macOS offline/source-save/refresh/error/keyboard/accessibility review. No native Keychain rerun or production endpoint success is claimed.
+- [ ] Current wide-grid-revision hosted CI; native macOS offline/source-save/refresh/error/keyboard/accessibility review. Historical theme CI is recorded below; no native Keychain rerun or production endpoint success is claimed.
 
 ## Carbonfox compact foundation
 
@@ -52,7 +52,18 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 - [x] Neutral controls/hover/selection, blue focus/active and Save/Connect primary with dark text; readable disabled MUTED labels without opacity; shared opaque input selection, cursor/placeholder and visible input borders. User source markers remain unchanged, separately labeled and not AA-guaranteed.
 - [x] Compact form gaps/scroll/footer styling while retaining source window size, APIs, focus/saving guards, 28 px inputs, 30 px endpoint parents/candidates and 18 px Keychain indicator. Compact table header/filter/footer without fake content; no DB/cache/SSH/password migration.
 - [x] Pure token mapping/compositing and contrast coverage; computed normal-state minima 13.04:1 primary, 7.22:1 secondary, 6.10:1 focus and 3.44:1 input boundary. Semantic labels supported on panel/input, not arbitrary hover controls. No native pixel/accessibility claim.
-- [ ] Final owner-run theme suite counts, formatting/lint/build/bundle verification, native screenshot/manual review and current-revision hosted CI. Historical 67/83/four totals are not final theme counts. See [testing](testing.md#carbonfox-opaque-revision).
+- [x] Historical theme verification: 67 headless, 88 simulated UI and four Python tests, formatting/lint/build/bundle checks. Theme commit `0ca0221` passed all five hosted jobs in [run 37204370849](https://github.com/yan-ad/dalan/actions/runs/37204370849). This is historical evidence for that commit; the wide-grid revision needs its own next-main CI run.
+- [ ] Native screenshot/manual/accessibility review remains open; simulated contrast/layout checks do not close it.
+
+## Wide-grid rendering slice
+
+- [x] Retained separate GPUI `DataGrid`: both-axis viewport virtualization with two-cell overscan, fixed 180 px columns/22 px rows, pinned 28 px header sharing horizontal offset; no eager full-page cell elements or formatting.
+- [x] Shared immutable `Option<Arc<TablePage>>` for model/grid/counters/export; no deep page copy on redraw. New snapshot/target resets scroll/cache; same-page busy/saving/error updates retain stale scroll and disable sorting. No persisted row cache, SQL/schema-cache/password change or new crate.
+- [x] Wheel/trackpad/Shift-wheel, grid-focused arrows/PageUp/PageDown/Home/End/Ctrl-or-Cmd-Home/End, two visible draggable/clickable tracks with minimum 20 px thumbs. Visible/overscan header Tab sorting remains guarded; this is not active-cell selection or screen-reader completion.
+- [x] Visible cell/header `SharedString` caches with bounded eviction and snapshot invalidation; changed-bounds-only deferred canvas measurement, no frame callback dependency or stable-wheel bounds updates.
+- [x] Combined simulated workspace subset passed: 1,000 databases, 100 × 512 cells, 950 × 574.5 viewport at 1280 × 720, 310/51,200 materialized cells (~0.61%), 32 sidebar rows, projection rebuild delta 0 and same page pointer. Sidebar scrolling leaves grid/model unchanged; not native FPS/latency evidence.
+- [x] Wide-grid verification: 74 headless, 99 simulated UI and four Python tests passed, including bounded text reuse, visible-only header focus and released-drag cancellation; formatting/lint/bundle checks passed. Hosted CI remains a separate gate. See [evidence](testing.md#wide-grid-performance-revision).
+- [ ] Native user retry, screenshot/manual review and high-DPI/GPU profiling on the latest macOS runtime-shader build; current-revision hosted CI, release/offline-Metal and accessibility gates remain open. Column resizing and cell inspection/copy remain next, not completed.
 
 ## Next read-workflow slices, in order
 
@@ -64,7 +75,7 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 
 ## Remaining platform and release work
 
-- [ ] Verify all five CI jobs on the actual next main push. Historical run 37192402473 failed the Windows fixture; fix `3c4fdae` passed all five jobs in run 37194669634. Compact-tree `8dc3d27` passed run 37198333660 and metadata `4c8af09` passed run 37201696519; current Carbonfox needs its own run. Live database and generated Keychain reruns are not required for this window/layout/test-fixture-only change; their historical evidence remains preserved.
+- [ ] Verify all five CI jobs on the actual next main push. Historical run 37192402473 failed the Windows fixture; fix `3c4fdae` passed all five jobs in run 37194669634. Compact-tree `8dc3d27` passed run 37198333660 and metadata `4c8af09` passed run 37201696519; theme `0ca0221` passed all five jobs in run 37204370849. Current wide-grid needs its own run. Live database and generated Keychain reruns are not required for this rendering/shared-snapshot-only change; their historical evidence remains preserved.
 - [ ] Native macOS source/browse/sort/save-picker keyboard and error/cancel interaction, visual review, VoiceOver and scaled text. Simulated tests do not close these gates.
 - [ ] Broader MySQL/MariaDB auth/TLS/server matrix and positive trusted HTTPS proxy fixture.
 - [ ] PostgreSQL adapter and workflow slice; Redis engine-native key/type/TTL/binary workflows. Neither adapter is working yet.

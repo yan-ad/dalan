@@ -104,7 +104,8 @@ pub(super) struct SourceModel {
     pub selected_database: Option<String>,
     pub tables: Vec<TableInfo>,
     pub selected_table: Option<String>,
-    pub page: Option<TablePage>,
+    /// Immutable loaded-page snapshot shared by the browser and export workers.
+    pub page: Option<Arc<TablePage>>,
     pub delete_confirm: bool,
     pub sort: Option<TableSort>,
     pub export_busy: bool,
@@ -977,7 +978,7 @@ impl SourceModel {
             |this, result, cx| {
                 this.busy = false;
                 match result {
-                    Ok(page) => this.page = Some(page),
+                    Ok(page) => this.page = Some(Arc::new(page)),
                     Err(error) => this.error = Some(error.to_string()),
                 };
                 cx.notify();
@@ -1408,7 +1409,7 @@ mod tests {
         let mut model = SourceModel::for_tests(vec![]);
         model.selected_database = Some("inventory".into());
         model.selected_table = Some("items".into());
-        model.page = Some(TablePage {
+        model.page = Some(Arc::new(TablePage {
             columns: ["id", "name"]
                 .into_iter()
                 .map(|name| ColumnInfo {
@@ -1429,9 +1430,59 @@ mod tests {
             next_offset: Some(42),
             has_more: true,
             truncated: false,
-        });
+        }));
         // No selected source: sorting must not contact a database.
         model
+    }
+
+    #[test]
+    fn loaded_page_snapshots_share_all_row_storage() {
+        let mut model = loaded_model();
+        model.page = Some(Arc::new(TablePage {
+            rows: (0..100)
+                .map(|_| (0..128).map(|_| CellValue::Text("x".repeat(64))).collect())
+                .collect(),
+            ..model.page.as_deref().unwrap().clone()
+        }));
+        let original = model.page.clone().unwrap();
+        let rows = original.rows.as_ptr();
+        for _ in 0..100 {
+            let snapshot = model.page.clone().unwrap();
+            assert!(Arc::ptr_eq(&original, &snapshot));
+            assert_eq!(rows, snapshot.rows.as_ptr());
+            assert_eq!(original.rows[0].as_ptr(), snapshot.rows[0].as_ptr());
+        }
+        // Replacing the model snapshot does not invalidate its previous readers.
+        model.page = None;
+        assert_eq!(original.rows.len(), 100);
+        assert_eq!(original.rows[0].len(), 128);
+    }
+
+    #[gpui::test]
+    fn explorer_notifications_preserve_shared_page_snapshot(cx: &mut TestAppContext) {
+        let model = cx.new(|_| two_source_model());
+        let page = model.read_with(cx, |model, _| model.page.clone().unwrap());
+        let observed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = observed.clone();
+        let expected = page.clone();
+        let _observer = cx.new(|cx| {
+            cx.observe(&model, move |_: &mut (), model, cx| {
+                assert!(Arc::ptr_eq(
+                    &expected,
+                    model.read(cx).page.as_ref().unwrap()
+                ));
+                count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+            .detach();
+        });
+        model.update(cx, |model, cx| model.collapse_tree(cx));
+        cx.run_until_parked();
+        model.update(cx, |model, cx| model.expand_loaded_tree(cx));
+        cx.run_until_parked();
+        assert!(observed.load(std::sync::atomic::Ordering::Relaxed) >= 2);
+        model.read_with(cx, |model, _| {
+            assert!(Arc::ptr_eq(&page, model.page.as_ref().unwrap()));
+        });
     }
 
     struct ExportSandbox(std::path::PathBuf);
@@ -1792,7 +1843,10 @@ mod tests {
             model.cycle_sort("id".into(), cx);
             model.saving = false;
             model.cycle_sort("not_a_column".into(), cx);
-            model.page.as_mut().unwrap().columns.clear();
+            model.page = Some(Arc::new(TablePage {
+                columns: vec![],
+                ..model.page.as_deref().unwrap().clone()
+            }));
             model.cycle_sort("id".into(), cx);
             model.page = None;
             model.cycle_sort("id".into(), cx);
@@ -1896,7 +1950,12 @@ mod tests {
             let model = cx.new(|_| {
                 let mut model = loaded_model();
                 match state {
-                    0 => model.page.as_mut().unwrap().truncated = true,
+                    0 => {
+                        model.page = Some(Arc::new(TablePage {
+                            truncated: true,
+                            ..model.page.as_deref().unwrap().clone()
+                        }));
+                    }
                     1 => model.error = Some("stale page after failed reload".into()),
                     2 => model.busy = true,
                     3 => model.saving = true,

@@ -2,6 +2,40 @@
 
 Status: headless and simulated UI tests exist, plus verified disposable MySQL/MariaDB live fixtures. Current recorded suites and generated native Keychain validation passed as detailed below. Agent transport, full release and actual accessibility suites remain future work.
 
+## Wide-grid performance revision
+
+The reported 100-row/100+-column lag identified three structural costs: eager elements for every row/column, display-string allocation for all cells and a deep `TablePage` clone on browser redraw. That is 10,000 cells at 100 columns and exactly 51,200 at 512. The retained `DataGrid` now virtualizes both axes, shares immutable `Arc<TablePage>` with the model/counters/export and caches only visible/overscan `SharedString` cells/headers. Backend typed values, limits, SQL, SQLite catalog metadata, profiles/passwords and CSV scope are unchanged. `serde`'s `rc` feature supports shared snapshot serialization tests, not row persistence; there are no new crates or license changes.
+
+### Structural evidence
+
+The combined simulated workspace regression passed with **1,000 databases and 100 × 512 cells** at **1280 × 720**. Its emitted counts were a **950 × 574.5 body viewport**, **310/51,200 materialized cells (~0.61%)**, **32 sidebar rows** and **projection rebuild delta 0**. Scrolling to row 50/column 200 kept headers aligned with cells. A subsequent 20,000 px sidebar wheel reached distant database rows without changing the grid viewport or shared model page pointer, rebuilding the explorer projection, starting catalog tasks or making the model busy. The page remained the same `Arc`.
+
+The narrower isolated 730 × 258 fixture has a 720 × 220 body viewport and materializes **112 cells** after scrolling to row 50/column 200 in a 200-row snapshot. Seven pure geometry tests cover range bounds/overscan, partial and empty viewports, resizing/shrinking/reset and minimum-thumb edge/monotonic mapping. Grid tests cover both axes, header alignment, focus/keyboard sorting guards, page-versus-status reset behavior, track/drag/resize, mounted-header Tab traversal and empty pages. The text-cache regression checks zero newly formatted cells for small wheel movement within unchanged ranges, bounded eviction and fresh text after snapshot replacement. Model tests check shared-reader/export snapshots and serialization.
+
+These are structural operation counts per simulated frame, **not native FPS, latency or a measured millisecond improvement**. Cargo wall-clock time includes compilation and is not a grid benchmark. Layout measurement runs in canvas prepaint with deferred updates only on changed bounds; stable wheel events schedule no bounds update. Initial layout does not depend on a future native frame callback that GPUI's test platform does not provide.
+
+### Commands and remaining gates
+
+```sh
+cargo test -p dalan-app --lib --locked grid_viewport::tests
+cargo test -p dalan-app --bin dalan --features runtime-shaders,ui-tests --locked data_grid::tests
+# Prints the integrated operation counts:
+cargo test -p dalan-app --bin dalan --features runtime-shaders,ui-tests --locked integrated_scrolling_keeps_shared_snapshot_and_projection_stable -- --nocapture
+# Final owner-run totals and regression gates:
+cargo test --workspace --locked
+cargo test -p dalan-app --bin dalan --features runtime-shaders,ui-tests --locked
+python3 -m unittest discover -s scripts/tests -v
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy -p dalan-app --bin dalan --features runtime-shaders,ui-tests --all-targets --locked -- -D warnings
+```
+
+**Current verification passed: 74 headless tests, 99 simulated UI tests and four Python bundle-helper tests**, plus formatting, both strict Clippy paths, debug bundle build, plist lint, ad-hoc signature and bundled-license checks. New regressions cover viewport geometry, both-axis scrolling, shared snapshot identity, text reuse, pinned headers/sorting, visible-only header focus, missed mouse-up cancellation, and the combined explorer/grid fixture. Native Keychain/database transport suites were not rerun for this rendering-only change. The new revision still needs its own hosted CI run.
+
+Display-only cell previews are capped at 128 Unicode grapheme clusters plus an ellipsis, bounding text shaping for long strings/blobs. The immutable typed values and CSV export are unchanged. Fully clipped overscan headers are not tab stops; scrollbar dragging is canceled when pointer moves without a pressed button. GPUI retains some previous debug-bound entries, so virtualization assertions use current ranges and materialization counters rather than absence of stale entries.
+
+Disposable database/transport fixtures and native Keychain were not rerun for this UI/shared-snapshot-only change; their historical results remain unchanged. Native window screenshot capture remains unavailable. User retry of the latest rebuilt macOS app, real wide-table scroll/resize/keyboard behavior, high-DPI/GPU frame profiling, native visual review, VoiceOver and release/offline-Metal validation remain open. Do not change OS permissions or profile/secrets, or retain private fixture content, for capture. The synthetic `database_0` fixture is not production data. Cell inspection/copy, column resizing and active-cell selection are not implemented; mounted-header focus tests do not establish screen-reader readiness.
+
 ## Carbonfox opaque revision
 
 The user selects compact Zed-like UI and explicitly rejects DataGrip visual styling; DataGrip informs database UX/workflows only. Tests reference the complete [vendored variant](../crates/app/assets/themes/carbonfox-opaque.json) and [compiled tokens](../crates/app/src/desktop/theme.rs) from Nightfox's Zed port commit `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`. Both full MIT notices are retained; see [provenance](../crates/app/assets/themes/README.md). Runtime does not load the JSON; `include_str!` is test-only.
@@ -10,11 +44,11 @@ New coverage checks exact upstream mappings and opaque compositing of toolbar/se
 
 Compact checks cover a 34 px titlebar, 28 px toolbar/headers/status/controls, 22 px tree/grid rows, 3 px control radius, square flush panes, 0 px outer padding, 4 px divider hit area/1 px line, and 476 px explorer maximum at 720 px with 240 px main content. Source-form regressions retain native 1040 × 760 and minimum 780 × 560, 28 px inputs, 30 px endpoint parents/candidates, 18 px Keychain indicator and existing APIs/focus guards, with 8 px gaps, 16 px scroll padding and footer padding 8 px/16 px. Input selection is opaque and cursor/placeholder use shared tokens. Main/source/About backgrounds are explicitly opaque, with no blur/transparency/toggle; normal theme-name status retains focus-help override behavior.
 
-**Current local verification passed: 67 headless Rust tests, 88 simulated UI tests and four Python bundle-helper tests.** Formatting, both strict Clippy paths, debug bundle build, plist lint and ad-hoc signature verification passed. Bundle tests verify both complete theme MIT notices in Resources; raw reference JSON and standalone theme-license files are not required at runtime. Database/transport and native Keychain suites were not rerun for this styling-only revision.
+**Historical theme local verification passed: 67 headless Rust tests, 88 simulated UI tests and four Python bundle-helper tests.** Formatting, both strict Clippy paths, debug bundle build, plist lint and ad-hoc signature verification passed. Bundle tests verify both complete theme MIT notices in Resources; raw reference JSON and standalone theme-license files are not required at runtime. Database/transport and native Keychain suites were not rerun for this styling-only revision.
 
-The updated Dalan.app was reopened after quitting the old instance; macOS confirmed its bundle executable. A window-only screenshot was attempted without changing permissions and failed with `could not create image from window`. Native visual comparison, manual click-through, VoiceOver and scaled-text verification remain unclaimed. The app was left open. Current hosted CI still requires the new revision’s own run.
+The updated Dalan.app was reopened after quitting the old instance; macOS confirmed its bundle executable. A window-only screenshot was attempted without changing permissions and failed with `could not create image from window`. Native visual comparison, manual click-through, VoiceOver and scaled-text verification remain unclaimed. The app was left open. Theme commit `0ca0221` passed all five hosted jobs in [run 37204370849](https://github.com/yan-ad/dalan/actions/runs/37204370849). This is historical evidence for that commit; the wide-grid revision needs its own next-main CI run.
 
-No new native screenshot capture, visual pass, measured pixel matching, VoiceOver, scaled-text or performance result is claimed. Unit/simulated geometry and contrast are not native evidence. Database/cache/SSH/password persistence and Keychain semantics are unchanged; no native Keychain rerun is claimed. Historical metadata commit `4c8af09` passed all five hosted jobs in [run 37201696519](https://github.com/yan-ad/dalan/actions/runs/37201696519); current theme CI awaits its own push/run.
+No new native screenshot capture, visual pass, measured pixel matching, VoiceOver, scaled-text or performance result is claimed. Unit/simulated geometry and contrast are not native evidence. Database/cache/SSH/password persistence and Keychain semantics are unchanged; no native Keychain rerun is claimed. Historical metadata commit `4c8af09` passed all five hosted jobs in [run 37201696519](https://github.com/yan-ad/dalan/actions/runs/37201696519); the wide-grid revision awaits its own push/run.
 
 ## Current tests and evidence
 
@@ -30,7 +64,7 @@ Historical source-slice results: **37 default headless Rust tests passed** (4 AC
 
 The simulated GPUI suite passed **83 tests**, and **four Python bundle-helper tests** passed. All three disposable live scripts were rerun successfully: **7 direct/CONNECT/authentication**, **10 TLS**, **6 SSH** (23 unique cases, including uncached SHA2/RSA authentication). Full-catalog fixture assertions now cover direct/CONNECT, TLS success/rejection and SSH routes. More metadata requests/assertions do not add unique test cases. The SSH fixture uses serialized test-only configuration for determinism; production configuration is unchanged. No production VPN/edge endpoint success or private logs are claimed.
 
-Final local verification passed **67 headless tests** (4 ACP, 34 app, 5 core, 24 driver), **83 simulated UI tests** and **four Python bundle-helper tests**, plus formatting, both strict Clippy paths, debug build, plist lint, ad-hoc signature and bundled-license checks. App coverage includes eight SQLite cache tests and a real loopback Save-to-discovery failure regression that preserves the last snapshot. One native Keychain test remains opt-in and was not rerun. Metadata commit `4c8af09` passed all five hosted jobs in [run 37201696519](https://github.com/yan-ad/dalan/actions/runs/37201696519), including bundled SQLite headless checks. This is historical evidence for that commit, not a current Carbonfox-revision pass.
+Final local verification passed **67 headless tests** (4 ACP, 34 app, 5 core, 24 driver), **83 simulated UI tests** and **four Python bundle-helper tests**, plus formatting, both strict Clippy paths, debug build, plist lint, ad-hoc signature and bundled-license checks. App coverage includes eight SQLite cache tests and a real loopback Save-to-discovery failure regression that preserves the last snapshot. One native Keychain test remains opt-in and was not rerun. Metadata commit `4c8af09` passed all five hosted jobs in [run 37201696519](https://github.com/yan-ad/dalan/actions/runs/37201696519), including bundled SQLite headless checks. This is historical evidence for that commit, not a current wide-grid-revision pass.
 
 Cache tests cover atomic replacement/rollback, version and corrupt-cache rejection without destructive reset, private filesystem handling, stale ticket/identity checks, deleted/re-added UUIDs and edit-away/back guards, byte/count limits, and the separate database versus table/view boundary (50 × 1,000 objects plus 1,000 empty databases in the relevant fixtures). Simulated model/browser tests cover startup restore without credentials/network, cache warnings while source JSON still loads, refresh failure retaining rows/tree, explicit-selection-only Refresh independent of table paging, cached status/timestamp labels and nonfatal metadata notices. These tests do not prove native credential save-to-network end-to-end behavior or production UI autosave timing; automatic metadata refresh is a scoped implementation contract, not native E2E evidence.
 

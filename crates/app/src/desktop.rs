@@ -1,4 +1,5 @@
 mod about;
+mod data_grid;
 mod icons;
 mod input;
 mod source_browser;

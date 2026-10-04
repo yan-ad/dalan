@@ -168,6 +168,17 @@ The table view uses 28 px headers and 22 px grid rows, 12 px data-browse typogra
 
 The input control adapts GPUI Apache-2.0 code with attribution. Lucide SVGs are explicitly permitted open-source utility assets pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`. Complete ISC and retained Feather MIT notices are in [third-party notices](../THIRD_PARTY_NOTICES.md), alongside GPUI input Apache-2.0 attribution. The bundle includes the root notices (including both full Nightfox MIT texts) and Lucide license in Resources. Theme reference JSON and standalone theme license files are not runtime-loaded or separately required bundle resources. The bot/message glyph represents chat-agent communication, not app branding. No reference advanced-options panel, marketplace, visual tools or vendor-brand artwork are copied. Dependency attribution does not choose a project license; that remains undecided.
 
+## Two-axis data grid
+
+`SourceBrowser` retains a separate `DataGrid` entity rather than eager cell elements. The data viewport uses fixed 180 px columns, 22 px rows, a vertically pinned 28 px header and shared horizontal header/body offset. Actual layout bounds determine visible ranges with two-cell overscan; text/header caches retain only these ranges. New page snapshots or selected targets reset scroll. Busy, saving or error state with the same page preserves the stale view and scroll; stale sorting stays disabled.
+
+- Wheel/trackpad scroll both axes; Shift-wheel supplies horizontal scrolling.
+- With the grid itself focused, Left/Right move one column and Up/Down one row. PageUp/PageDown move one body viewport vertically. Home/End reach horizontal edges; Ctrl/Cmd-Home/End reach both-axis edges.
+- Both visible scrollbar tracks accept thumb dragging (minimum 20 px thumb) and track clicks, with clamped offsets through resize and content edges.
+- Tab traversal includes only mounted visible/overscan headers. Click or Enter/Space retains the existing sorting cycle and guards; grid scrolling does not hijack focused header activation.
+
+This is viewport navigation, **not** active-cell selection or cell inspection/copy. Offscreen headers are not hundreds of focus stops; no screen-reader readiness is claimed. Typed values and loaded-page CSV remain unchanged. Simulated header/cell pixel alignment and bounded materialization are recorded in [testing](testing.md#wide-grid-performance-revision); native smoothness, high-DPI, visual and accessibility checks still require a user retry of the latest macOS build.
+
 ## Database Explorer redesign validation
 
 Color (optional) sits below Name, with manual `#RRGGBB` entry and labeled Default, Blue, Green, Amber, Red and Purple swatches. Default stores None. Color is a marker, not a production/risk classification; custom colors are not guaranteed AA. Version 1 JSON uses an optional `color` field with `serde(default)` for legacy profiles. Legacy load produces None without automatic rewrite, preserves exact mixed-case hex on round-trip, and does not touch Keychain. The source-field whitelist accepts color while password rejection and failed-load overwrite protection remain unchanged.
@@ -194,3 +205,6 @@ Current gate: verify all five hosted jobs on the next main push, verify system-t
 ## Carbonfox revision verification boundary
 
 Theme mapping/compositing and contrast tests, compact geometry, source-form bounds and shared input colors are unit/simulated checks. Current results: 67 headless, 88 simulated UI and four Python bundle tests passed, plus formatting, strict lint, build, plist/signature and bundled-license checks. The preceding 67/83/four totals remain metadata history. The rebuilt app was reopened; window-only capture was blocked by macOS without permission changes. No native visual/accessibility pass, database/cache/SSH/password change or Keychain rerun is claimed. Hosted CI for this revision remains a separate gate.
+
+
+Current wide-grid verification passed 74 headless, 99 simulated UI and four bundle tests with formatting, strict lint and signed-bundle/resource checks. Display text is capped to 128 grapheme clusters plus ellipsis; underlying typed values and export remain unchanged. Overscan headers outside the viewport cannot receive Tab focus, and unpressed pointer moves cancel stale scrollbar drags. Current hosted CI and native performance verification remain separate gates.

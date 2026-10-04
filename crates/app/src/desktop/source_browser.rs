@@ -2,11 +2,12 @@
 use dalan_app::explorer_tree::{TreeKey, TreeRow};
 use dalan_drivers::{
     DbEngine,
-    mysql::{CellValue, FilterOperator, SortDirection, TableFilter},
+    mysql::{FilterOperator, TableFilter},
 };
 use gpui::{Context, Div, Entity, Stateful, Subscription, Window, div, prelude::*, px, rgb};
 
 use super::{
+    data_grid::DataGrid,
     icons::{Icon, icon},
     input::TextInput,
     source_model::SourceModel,
@@ -23,6 +24,8 @@ pub(super) struct SourceExplorer {
     scroll: gpui::UniformListScrollHandle,
     #[cfg(test)]
     last_rendered_row_count: usize,
+    #[cfg(test)]
+    projection_rebuilds: usize,
     _subscription: Subscription,
 }
 
@@ -100,6 +103,10 @@ impl SourceExplorer {
             model.tree.flatten(&model.profiles)
         };
         let subscription = cx.observe(&model, |this, model, cx| {
+            #[cfg(test)]
+            {
+                this.projection_rebuilds += 1;
+            }
             let model = model.read(cx);
             let rows = model.tree.flatten(&model.profiles);
             // If a selected descendant disappeared through collapse, keep focus
@@ -128,6 +135,8 @@ impl SourceExplorer {
             scroll: gpui::UniformListScrollHandle::new(),
             #[cfg(test)]
             last_rendered_row_count: 0,
+            #[cfg(test)]
+            projection_rebuilds: 0,
             _subscription: subscription,
         }
     }
@@ -627,6 +636,7 @@ impl Render for SourceExplorer {
 
 pub(super) struct SourceBrowser {
     model: Entity<SourceModel>,
+    grid: Entity<DataGrid>,
     value: Entity<TextInput>,
     column: usize,
     operator: usize,
@@ -646,6 +656,7 @@ const OPERATORS: [(FilterOperator, &str); 7] = [
 
 impl SourceBrowser {
     pub(super) fn new(model: Entity<SourceModel>, cx: &mut Context<Self>) -> Self {
+        let grid = cx.new(|cx| DataGrid::new(model.clone(), cx));
         let value = cx.new(|cx| {
             let mut input = TextInput::new("", "Filter value", false, cx);
             input.set_tab_order(20);
@@ -677,6 +688,7 @@ impl SourceBrowser {
         ];
         Self {
             model,
+            grid,
             value,
             column: 0,
             operator: 0,
@@ -752,7 +764,6 @@ impl Render for SourceBrowser {
         let error = m.error.clone();
         let stale = busy || error.is_some();
         let page = m.page.clone();
-        let sort = m.sort.clone();
         let export_busy = m.export_busy;
         let export_feedback = m.export_feedback.clone();
         let source = m
@@ -922,90 +933,7 @@ impl Render for SourceBrowser {
                         },
                     )),
             );
-            let mut grid = div()
-                .flex()
-                .flex_col()
-                .w(px(page.columns.len().max(1) as f32 * 180.));
-            grid = grid.child(
-                div()
-                    .flex()
-                    .h(px(PANEL_HEADER_HEIGHT))
-                    .flex_shrink_0()
-                    .bg(rgb(HEADER))
-                    .children(page.columns.iter().enumerate().map(|(index, column)| {
-                        let active = sort.as_ref().filter(|sort| sort.column == column.name);
-                        let direction = active.map(|sort| sort.direction);
-                        let name = column.name.clone();
-                        button(
-                            format!("sort-column-{index}"),
-                            "",
-                            active.is_some(),
-                            stale,
-                            cx,
-                            move |this, cx| {
-                                this.model
-                                    .update(cx, |model, cx| model.cycle_sort(name.clone(), cx))
-                            },
-                        )
-                        .w(px(180.0))
-                        .h(px(PANEL_HEADER_HEIGHT))
-                        .rounded(px(0.))
-                        .bg(rgb(HEADER))
-                        .border_color(rgb(HEADER))
-                        .text_color(rgb(MUTED))
-                        .flex_shrink_0()
-                        .justify_start()
-                        .child(div().flex_1().min_w(px(0.0)).text_ellipsis().child(format!(
-                            "{}{} · {}",
-                            if column.is_primary_key { "PK " } else { "" },
-                            column.name,
-                            column.data_type
-                        )))
-                        .when_some(direction, |header, direction| {
-                            header.child(icon(
-                                match direction {
-                                    SortDirection::Ascending => Icon::SortAscending,
-                                    SortDirection::Descending => Icon::SortDescending,
-                                },
-                                FOCUS,
-                            ))
-                        })
-                    })),
-            );
-            for (index, row) in page.rows.iter().take(100).enumerate() {
-                grid = grid.child(
-                    div()
-                        .flex()
-                        .h(px(GRID_ROW_HEIGHT))
-                        .flex_shrink_0()
-                        .bg(rgb(if index % 2 == 0 { PANEL } else { BACKGROUND }))
-                        .children((0..page.columns.len()).map(|index| {
-                            let value = row.get(index);
-                            cell(
-                                value.map(CellValue::display).unwrap_or_default(),
-                                matches!(value, Some(CellValue::Null)),
-                            )
-                        })),
-                );
-            }
-            if page.rows.is_empty() {
-                grid = grid.child(
-                    div()
-                        .p(px(12.))
-                        .text_color(rgb(MUTED))
-                        .child("No matching rows"),
-                );
-            }
-            body = body.child(
-                div()
-                    .id("table-grid-scroll")
-                    .debug_selector(|| "table-grid-scroll".into())
-                    .flex_1()
-                    .min_h(px(0.))
-                    .min_w(px(0.))
-                    .overflow_scroll()
-                    .child(grid),
-            );
+            body = body.child(self.grid.clone());
             let count = page.rows.len().min(100);
             let summary = if count == 0 {
                 format!("0 rows · offset {}", page.offset)
@@ -1133,22 +1061,6 @@ fn toolbar_button<T: 'static>(
         .tooltip(move |_, cx| cx.new(|_| super::ControlTooltip(tooltip)).into())
 }
 
-fn cell(value: String, null: bool) -> Div {
-    div()
-        .w(px(180.))
-        .h(px(GRID_ROW_HEIGHT))
-        .flex_shrink_0()
-        .px(px(8.))
-        .flex()
-        .items_center()
-        .overflow_hidden()
-        .text_ellipsis()
-        .border_r_1()
-        .border_color(rgb(BORDER))
-        .text_color(rgb(if null { MUTED } else { TEXT }))
-        .child(value)
-}
-
 /// GPUI creates a focus handle for tab-indexed elements; IDs keep it stable across renders.
 fn button<T: 'static>(
     id: impl Into<String>,
@@ -1226,7 +1138,10 @@ fn button<T: 'static>(
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests {
     use super::*;
-    use dalan_drivers::{SourceProfile, TablePage, mysql::ColumnInfo};
+    use dalan_drivers::{
+        SourceProfile, TablePage,
+        mysql::{CellValue, ColumnInfo, SortDirection},
+    };
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
 
     fn click(cx: &mut VisualTestContext, id: &'static str) {
@@ -1271,7 +1186,7 @@ mod tests {
             let mut model = SourceModel::for_tests(vec![SourceProfile::default()]);
             model.selected_database = Some("inventory".into());
             model.selected_table = Some("items".into());
-            model.page = Some(page());
+            model.page = Some(std::sync::Arc::new(page()));
             model
         });
         let (_, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
@@ -1279,6 +1194,189 @@ mod tests {
         cx.refresh().unwrap();
         cx.run_until_parked();
         (model, cx)
+    }
+
+    /// Exercise both virtualized views in the same window and shared model.
+    struct ScrollingWorkspace {
+        explorer: Entity<SourceExplorer>,
+        browser: Entity<SourceBrowser>,
+    }
+
+    impl Render for ScrollingWorkspace {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .child(
+                    div()
+                        .w(px(320.))
+                        .h_full()
+                        .flex_shrink_0()
+                        .child(self.explorer.clone()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h_full()
+                        .child(self.browser.clone()),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn integrated_scrolling_keeps_shared_snapshot_and_projection_stable(cx: &mut TestAppContext) {
+        use dalan_app::grid_viewport::{COLUMN_WIDTH, ROW_HEIGHT};
+        use gpui::{ScrollDelta, ScrollWheelEvent, point};
+        use std::sync::Arc;
+
+        let source = "00000000-0000-4000-8000-000000000001";
+        let snapshot = Arc::new(TablePage {
+            columns: (0..512)
+                .map(|column| ColumnInfo {
+                    name: format!("column_{column}"),
+                    data_type: "VARCHAR".into(),
+                    nullable: true,
+                    is_primary_key: false,
+                })
+                .collect(),
+            rows: (0..100)
+                .map(|row| {
+                    (0..512)
+                        .map(|column| CellValue::Text(format!("{row}:{column}")))
+                        .collect()
+                })
+                .collect(),
+            has_more: false,
+            next_offset: None,
+            offset: 0,
+            truncated: false,
+        });
+        let model = cx.new(|_| {
+            let mut model = SourceModel::for_tests(vec![SourceProfile {
+                id: source.into(),
+                name: "Scrolling fixture".into(),
+                save_password: false,
+                ..SourceProfile::default()
+            }]);
+            model.tree.databases.insert(
+                source.into(),
+                (0..1000)
+                    .map(|database| format!("database_{database}"))
+                    .collect(),
+            );
+            model.tree.tables.insert(
+                (source.into(), "database_0".into()),
+                vec![dalan_drivers::TableInfo {
+                    name: "wide".into(),
+                    kind: "BASE TABLE".into(),
+                }],
+            );
+            model.tree.expand_loaded();
+            model.cached_at.insert(source.into(), 123);
+            model.selected_source = Some(source.into());
+            model.explorer_source = Some(source.into());
+            model.selected_database = Some("database_0".into());
+            model.selected_table = Some("wide".into());
+            model.page = Some(Arc::clone(&snapshot));
+            model
+        });
+        let (workspace, cx) = cx.add_window_view(|_, cx| ScrollingWorkspace {
+            explorer: cx.new(|cx| SourceExplorer::new(model.clone(), cx)),
+            browser: cx.new(|cx| SourceBrowser::new(model.clone(), cx)),
+        });
+        cx.simulate_resize(gpui::size(px(1280.), px(720.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        let (explorer, browser) = workspace.read_with(cx, |workspace, _| {
+            (workspace.explorer.clone(), workspace.browser.clone())
+        });
+        let grid = browser.read_with(cx, |browser, _| browser.grid.clone());
+        let rebuilds = explorer.read_with(cx, |explorer, _| {
+            assert!(explorer.rows.len() >= 1002);
+            assert!(explorer.last_rendered_row_count > 0);
+            assert!(explorer.last_rendered_row_count <= 60);
+            explorer.projection_rebuilds
+        });
+        assert!(cx.debug_bounds("cell-0-0").is_some());
+        assert!(cx.debug_bounds("cell-50-200").is_none());
+        let grid_bounds = cx.debug_bounds("table-grid-scroll").unwrap();
+        cx.simulate_event(ScrollWheelEvent {
+            position: grid_bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(-200. * COLUMN_WIDTH), px(-50. * ROW_HEIGHT))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        let viewport = grid.read_with(cx, |grid, _| grid.test_viewport());
+        assert_eq!(
+            (viewport.x, viewport.y),
+            (200. * COLUMN_WIDTH, 50. * ROW_HEIGHT)
+        );
+        let header = cx.debug_bounds("sort-column-200").unwrap();
+        let cell = cx.debug_bounds("cell-50-200").unwrap();
+        assert_eq!(header.left(), cell.left());
+        assert_eq!(header.size.width, px(COLUMN_WIDTH));
+        assert_eq!(header.size.width, cell.size.width);
+        let materialized = grid.read_with(cx, |grid, _| grid.test_materialized_cells());
+        assert_eq!(
+            materialized,
+            viewport.rows(100).len() * viewport.columns(512).len()
+        );
+        assert!(materialized > 0 && materialized <= 400);
+        assert!(materialized < snapshot.rows.len() * snapshot.columns.len() / 100);
+        explorer.read_with(cx, |explorer, _| {
+            assert_eq!(explorer.projection_rebuilds, rebuilds)
+        });
+
+        // A native wheel event over the sidebar must not reach the data grid or
+        // notify the shared model. At 22px/row this advances hundreds of rows.
+        let sidebar_bounds = cx.debug_bounds("source-explorer-scroll").unwrap();
+        cx.simulate_event(ScrollWheelEvent {
+            position: sidebar_bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-20_000.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        explorer.read_with(cx, |explorer, _| {
+            assert_eq!(explorer.projection_rebuilds, rebuilds);
+            assert!(explorer.last_rendered_row_count > 0);
+            assert!(explorer.last_rendered_row_count <= 60);
+        });
+        let scroll_offset = explorer.read_with(cx, |explorer, _| {
+            explorer.scroll.0.borrow().base_handle.offset()
+        });
+        assert!(scroll_offset.y <= px(-850.0 * 22.0));
+        assert!(
+            (850..1000).any(|database| {
+                let id = tree_row_id(&TreeKey::Database {
+                    source: source.into(),
+                    database: format!("database_{database}"),
+                });
+                cx.debug_bounds(Box::leak(id.into_boxed_str())).is_some()
+            }),
+            "sidebar wheel must paint a distant database, not just repaint the initial rows"
+        );
+        assert_eq!(grid.read_with(cx, |grid, _| grid.test_viewport()), viewport);
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.test_materialized_cells()),
+            materialized
+        );
+        model.read_with(cx, |model, _| {
+            assert!(Arc::ptr_eq(model.page.as_ref().unwrap(), &snapshot));
+            assert_eq!(model.selected_source.as_deref(), Some(source));
+            assert_eq!(model.explorer_source.as_deref(), Some(source));
+            assert_eq!(model.selected_database.as_deref(), Some("database_0"));
+            assert_eq!(model.selected_table.as_deref(), Some("wide"));
+            assert!(!model.busy);
+            assert!(model.tree.loading.is_empty());
+            assert_eq!(model.tree.databases[source].len(), 1000);
+        });
+        let painted_tree_rows =
+            explorer.read_with(cx, |explorer, _| explorer.last_rendered_row_count);
+        println!(
+            "integrated scrolling: 1000 databases, 100x512 cells, grid viewport {}x{}, materialized {materialized}/51200 cells, sidebar {painted_tree_rows} rows, projection rebuild delta 0, shared page Arc preserved",
+            viewport.width, viewport.height,
+        );
     }
 
     #[test]
@@ -1531,7 +1629,9 @@ mod tests {
             model.update(cx, |model, cx| {
                 model.busy = state == 0;
                 model.error = (state == 1).then(|| "failed reload; old page".into());
-                model.page.as_mut().unwrap().truncated = state == 2;
+                let mut snapshot = model.page.as_ref().unwrap().as_ref().clone();
+                snapshot.truncated = state == 2;
+                model.page = Some(std::sync::Arc::new(snapshot));
                 cx.notify();
             });
             click(cx, "export-loaded-page");
@@ -1548,7 +1648,7 @@ mod tests {
             // No selected source means Apply cannot launch a database task.
             model.selected_database = Some("inventory".into());
             model.selected_table = Some("items".into());
-            model.page = Some(page());
+            model.page = Some(std::sync::Arc::new(page()));
             model
         });
         let (browser, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
