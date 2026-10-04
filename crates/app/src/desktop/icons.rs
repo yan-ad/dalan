@@ -12,6 +12,11 @@ pub enum Icon {
     Remove,
     Layout,
     Chevron,
+    ChevronRight,
+    Folder,
+    Table,
+    ExpandTree,
+    CollapseTree,
     Hide,
     Ai,
     SortAscending,
@@ -31,6 +36,11 @@ impl Icon {
             Self::Remove => "icons/trash-2.svg",
             Self::Layout => "icons/panel-left.svg",
             Self::Chevron => "icons/chevron-down.svg",
+            Self::ChevronRight => "icons/chevron-right.svg",
+            Self::Folder => "icons/folder.svg",
+            Self::Table => "icons/table.svg",
+            Self::ExpandTree => "icons/list-tree.svg",
+            Self::CollapseTree => "icons/chevrons-down-up.svg",
             Self::Hide => "icons/minus.svg",
             Self::Ai => "icons/bot-message-square.svg",
             Self::SortAscending => "icons/arrow-up.svg",
@@ -44,6 +54,26 @@ impl Icon {
 // Embedded assets work independently of the process's working directory and
 // require neither a runtime download nor an external icon/font dependency.
 const ASSETS: &[(&str, &[u8])] = &[
+    (
+        "icons/chevron-right.svg",
+        include_bytes!("../../assets/icons/chevron-right.svg"),
+    ),
+    (
+        "icons/folder.svg",
+        include_bytes!("../../assets/icons/folder.svg"),
+    ),
+    (
+        "icons/table.svg",
+        include_bytes!("../../assets/icons/table.svg"),
+    ),
+    (
+        "icons/list-tree.svg",
+        include_bytes!("../../assets/icons/list-tree.svg"),
+    ),
+    (
+        "icons/chevrons-down-up.svg",
+        include_bytes!("../../assets/icons/chevrons-down-up.svg"),
+    ),
     (
         "icons/database.svg",
         include_bytes!("../../assets/icons/database.svg"),
@@ -139,10 +169,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_fourteen_embedded_icons_are_listed_and_loaded() {
+    fn all_nineteen_embedded_icons_are_listed_and_loaded() {
         let assets = IconAssets;
         let paths = assets.list("icons/").unwrap();
-        assert_eq!(paths.len(), 14);
+        assert_eq!(paths.len(), 19);
         for path in paths {
             let bytes = assets.load(path.as_ref()).unwrap().unwrap();
             assert!(matches!(bytes, Cow::Borrowed(_)));
@@ -169,6 +199,53 @@ mod tests {
         assert!(assets.list("missing/").unwrap().is_empty());
         assert!(assets.load("icons/missing.svg").unwrap().is_none());
         assert!(assets.load("../icons/database.svg").unwrap().is_none());
+    }
+
+    #[test]
+    fn tree_icons_load_the_expected_assets() {
+        for (kind, path, expected) in [
+            (
+                Icon::Chevron,
+                "icons/chevron-down.svg",
+                include_bytes!("../../assets/icons/chevron-down.svg").as_slice(),
+            ),
+            (
+                Icon::ChevronRight,
+                "icons/chevron-right.svg",
+                include_bytes!("../../assets/icons/chevron-right.svg").as_slice(),
+            ),
+            (
+                Icon::Database,
+                "icons/database.svg",
+                include_bytes!("../../assets/icons/database.svg").as_slice(),
+            ),
+            (
+                Icon::Folder,
+                "icons/folder.svg",
+                include_bytes!("../../assets/icons/folder.svg").as_slice(),
+            ),
+            (
+                Icon::Table,
+                "icons/table.svg",
+                include_bytes!("../../assets/icons/table.svg").as_slice(),
+            ),
+            (
+                Icon::ExpandTree,
+                "icons/list-tree.svg",
+                include_bytes!("../../assets/icons/list-tree.svg").as_slice(),
+            ),
+            (
+                Icon::CollapseTree,
+                "icons/chevrons-down-up.svg",
+                include_bytes!("../../assets/icons/chevrons-down-up.svg").as_slice(),
+            ),
+        ] {
+            assert_eq!(kind.path(), path);
+            assert_eq!(
+                IconAssets.load(kind.path()).unwrap().unwrap().as_ref(),
+                expected
+            );
+        }
     }
 
     #[test]

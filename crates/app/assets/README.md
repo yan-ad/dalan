@@ -4,7 +4,7 @@ The main UI icon set is [Lucide](https://github.com/lucide-icons/lucide), explic
 
 ## Provenance
 
-All fourteen SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
+All nineteen SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
 
 `500620a2e8123f8d1db191538886dc0c223f69a9`
 
@@ -20,12 +20,19 @@ The revision was resolved once using `https://api.github.com/repos/lucide-icons/
 | Remove | trash.svg (vendored as trash-2.svg) |
 | Layout | panel-left.svg |
 | Chevron | chevron-down.svg |
+| ChevronRight | chevron-right.svg |
+| Folder | folder.svg |
+| Table | table.svg |
+| ExpandTree | list-tree.svg |
+| CollapseTree | chevrons-down-up.svg |
 | Hide | minus.svg |
 | Ai | bot-message-square.svg |
 | SortAscending | arrow-up.svg |
 | SortDescending | arrow-down.svg |
 | Download | download.svg |
 | Check | check.svg |
+
+The compact explorer reuses **Database** for schema/database children, **Folder** for the Tables group, and **Table** for table children. **ExpandTree** denotes expanding loaded nodes and **CollapseTree** denotes collapsing all nodes. The upstream `icons/table.svg` exists at this revision and is vendored under the same filename; no table alias or substitution is needed.
 
 MySQL uses the abstract **Database** glyph; MariaDB uses the distinct abstract **DatabaseZap** glyph. These are not vendor logos or trademark artwork. Keep the visible engine name as the primary identifier; the glyph is a supplementary cue.
 

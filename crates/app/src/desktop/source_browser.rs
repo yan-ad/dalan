@@ -1,4 +1,5 @@
 //! Read-only source explorer and bounded table browser.
+use dalan_app::explorer_tree::{TreeKey, TreeRow};
 use dalan_drivers::{
     DbEngine,
     mysql::{CellValue, FilterOperator, SortDirection, TableFilter},
@@ -12,284 +13,514 @@ use super::{
     theme::*,
 };
 
+/// Only the flattened projection is retained by the view. Wheel/keyboard repaint
+/// never clones a catalog or rebuilds the projection.
 pub(super) struct SourceExplorer {
     model: Entity<SourceModel>,
+    rows: Vec<TreeRow>,
+    active_key: Option<TreeKey>,
+    tree_focus: gpui::FocusHandle,
+    scroll: gpui::UniformListScrollHandle,
+    #[cfg(test)]
+    last_rendered_row_count: usize,
     _subscription: Subscription,
+}
+
+/// Hex-encoded components avoid collisions between sources and names,
+/// including names containing quotes, separators, or non-ASCII characters.
+fn tree_row_id(key: &TreeKey) -> String {
+    fn encode(value: &str) -> String {
+        value
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+    match key {
+        TreeKey::Source(source) => format!("connect-source-{source}"),
+        TreeKey::Database { source, database } => {
+            format!("select-database-{}-{}", encode(source), encode(database))
+        }
+        TreeKey::Group {
+            source,
+            database,
+            views,
+        } => format!("tree-group-{}-{}-{views}", encode(source), encode(database)),
+        TreeKey::Table {
+            source,
+            database,
+            table,
+            view,
+        } => format!(
+            "select-table-{}-{}-{}-{view}",
+            encode(source),
+            encode(database),
+            encode(table)
+        ),
+    }
+}
+
+struct TreeTooltip(String);
+impl Render for TreeTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(360.))
+            .p(px(8.))
+            .bg(rgb(CHROME))
+            .text_size(px(12.))
+            .text_color(rgb(TEXT))
+            .child(self.0.clone())
+    }
 }
 
 impl SourceExplorer {
     pub(super) fn new(model: Entity<SourceModel>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&model, |_, _, cx| cx.notify());
+        let rows = {
+            let model = model.read(cx);
+            model.tree.flatten(&model.profiles)
+        };
+        let subscription = cx.observe(&model, |this, model, cx| {
+            let model = model.read(cx);
+            let rows = model.tree.flatten(&model.profiles);
+            // If a selected descendant disappeared through collapse, keep focus
+            // on its closest still-visible ancestor instead of losing selection.
+            if let Some(key) = &this.active_key
+                && !rows.iter().any(|row| &row.key == key)
+                && let Some(index) = this.rows.iter().position(|row| &row.key == key)
+            {
+                this.active_key = this.rows[..index]
+                    .iter()
+                    .rev()
+                    .find(|old| {
+                        old.depth < this.rows[index].depth
+                            && rows.iter().any(|row| row.key == old.key)
+                    })
+                    .map(|row| row.key.clone());
+            }
+            this.rows = rows;
+            cx.notify();
+        });
         Self {
             model,
+            rows,
+            active_key: None,
+            tree_focus: cx.focus_handle().tab_stop(true).tab_index(20),
+            scroll: gpui::UniformListScrollHandle::new(),
+            #[cfg(test)]
+            last_rendered_row_count: 0,
             _subscription: subscription,
         }
+    }
+
+    fn select_key(&mut self, key: TreeKey, cx: &mut Context<Self>) {
+        let source = key.source().to_owned();
+        self.active_key = Some(key);
+        self.model.update(cx, |model, cx| {
+            if model.explorer_source.as_ref() != Some(&source) {
+                model.explorer_source = Some(source);
+                cx.notify();
+            }
+        });
+        cx.notify();
+    }
+
+    fn toggle_key(&mut self, key: TreeKey, cx: &mut Context<Self>) {
+        self.select_key(key.clone(), cx);
+        self.model.update(cx, |model, cx| match key {
+            TreeKey::Source(source) => model.toggle_source(source, cx),
+            TreeKey::Database { source, database } => model.toggle_database(source, database, cx),
+            TreeKey::Group {
+                source,
+                database,
+                views,
+            } => model.toggle_group(source, database, views, cx),
+            TreeKey::Table {
+                source,
+                database,
+                table,
+                view: false,
+            } => model.open_tree_table(source, database, table, cx),
+            TreeKey::Table { view: true, .. } => {}
+        });
+    }
+
+    fn keyboard(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let index = self
+            .active_key
+            .as_ref()
+            .and_then(|key| self.rows.iter().position(|row| &row.key == key))
+            .unwrap_or(0);
+        let row = self.rows[index].clone();
+        let next = match event.keystroke.key.as_str() {
+            "up" => Some(index.saturating_sub(1)),
+            "down" => Some((index + 1).min(self.rows.len() - 1)),
+            "home" => Some(0),
+            "end" => Some(self.rows.len() - 1),
+            "right" if row.expandable && !row.expanded => {
+                self.toggle_key(row.key, cx);
+                None
+            }
+            "right"
+                if row.expanded
+                    && index + 1 < self.rows.len()
+                    && self.rows[index + 1].depth > row.depth =>
+            {
+                Some(index + 1)
+            }
+            "left" if row.expanded => {
+                self.toggle_key(row.key, cx);
+                None
+            }
+            "left" => self.rows[..index]
+                .iter()
+                .rposition(|parent| parent.depth < row.depth),
+            "enter" => {
+                self.toggle_key(row.key, cx);
+                None
+            }
+            "space" if row.expandable => {
+                self.toggle_key(row.key, cx);
+                None
+            }
+            _ => return,
+        };
+        cx.stop_propagation();
+        if let Some(index) = next {
+            self.select_key(self.rows[index].key.clone(), cx);
+            self.scroll
+                .scroll_to_item(index, gpui::ScrollStrategy::Center);
+        }
+        cx.notify();
+    }
+
+    fn render_row(&mut self, row: TreeRow, cx: &mut Context<Self>) -> Stateful<Div> {
+        let model = self.model.read(cx);
+        let selected = self.active_key.as_ref().map_or_else(
+            || match &row.key {
+                TreeKey::Table {
+                    source,
+                    database,
+                    table,
+                    view: false,
+                } => {
+                    model.selected_source.as_ref() == Some(source)
+                        && model.selected_database.as_ref() == Some(database)
+                        && model.selected_table.as_ref() == Some(table)
+                }
+                _ => false,
+            },
+            |key| key == &row.key,
+        );
+        let view = matches!(&row.key, TreeKey::Table { view: true, .. });
+        let profile = model
+            .profiles
+            .iter()
+            .find(|profile| profile.id == row.key.source());
+        let glyph = match &row.key {
+            TreeKey::Source(_) => match profile.map(|p| p.engine) {
+                Some(DbEngine::MariaDb) => Icon::MariaDb,
+                _ => Icon::Database,
+            },
+            TreeKey::Database { .. } => Icon::Database,
+            TreeKey::Group { .. } => Icon::Folder,
+            TreeKey::Table { .. } => Icon::Table,
+        };
+        let color = source_color(profile.and_then(|p| p.color.as_deref()));
+        let id = tree_row_id(&row.key);
+        let debug_id = id.clone();
+        let label_id = format!("tree-label-{id}");
+        let disclosure_id = format!("tree-disclosure-{id}");
+        let key = row.key.clone();
+        let disclosure_key = key.clone();
+        let mut element = div()
+            .id(gpui::SharedString::from(id))
+            .debug_selector(move || debug_id.clone())
+            .tab_stop(false)
+            .h(px(22.))
+            .w_full()
+            .min_w(px(0.))
+            .flex_shrink_0()
+            .pl(px(2. + row.depth as f32 * 12.))
+            .pr(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(3.))
+            .overflow_hidden()
+            .text_color(rgb(if view { MUTED } else { TEXT }))
+            .when(selected, |el| el.bg(rgb(SELECTION)))
+            .hover(|style| style.bg(rgb(HOVER)))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, _| this.tree_focus.focus(window)),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.select_key(key.clone(), cx);
+                match &key {
+                    TreeKey::Table { view: false, .. } => this.toggle_key(key.clone(), cx),
+                    _ if row.expandable && !row.expanded => this.toggle_key(key.clone(), cx),
+                    _ => {}
+                }
+            }))
+            .child(
+                div()
+                    .id(gpui::SharedString::from(disclosure_id.clone()))
+                    .debug_selector(move || disclosure_id.clone())
+                    .w(px(18.))
+                    .h(px(18.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(row.expandable, |el| {
+                        el.cursor_pointer()
+                            .child(icon(
+                                if row.expanded {
+                                    Icon::Chevron
+                                } else {
+                                    Icon::ChevronRight
+                                },
+                                MUTED,
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_key(disclosure_key.clone(), cx);
+                            }))
+                    }),
+            );
+        if let TreeKey::Source(source) = &row.key {
+            let marker = format!("color-indicator-{source}");
+            let driver = format!("driver-glyph-{source}");
+            element = element
+                .child(
+                    div()
+                        .id(gpui::SharedString::from(marker.clone()))
+                        .debug_selector(move || marker.clone())
+                        .w(px(3.))
+                        .h(px(14.))
+                        .flex_shrink_0()
+                        .bg(rgb(color)),
+                )
+                .child(
+                    div()
+                        .id(gpui::SharedString::from(driver.clone()))
+                        .debug_selector(move || driver.clone())
+                        .flex()
+                        .flex_shrink_0()
+                        .child(icon(glyph, TEXT)),
+                );
+        } else {
+            element = element.child(div().flex().flex_shrink_0().child(icon(glyph, MUTED)));
+        }
+        element = element.child(
+            div()
+                .id(gpui::SharedString::from(label_id.clone()))
+                .debug_selector(move || label_id.clone())
+                .flex_1()
+                .min_w(px(0.))
+                .text_color(rgb(if view { MUTED } else { TEXT }))
+                .text_ellipsis()
+                .child(row.label),
+        );
+        if let Some(count) = row.count {
+            element = element.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(10.))
+                    .text_color(rgb(MUTED))
+                    .child(count.to_string()),
+            );
+        }
+        if let Some(status) = row.status {
+            element = element
+                .child(div().flex_shrink_0().text_color(rgb(0xf2bf76)).child("•"))
+                .tooltip(move |_, cx| cx.new(|_| TreeTooltip(status.clone())).into());
+        } else if view {
+            element = element.tooltip(|_, cx| {
+                cx.new(|_| super::ControlTooltip("Read-only views are unavailable"))
+                    .into()
+            });
+        }
+        element
     }
 }
 
 impl Render for SourceExplorer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let model = self.model.read(cx);
-        let profiles = model.profiles.clone();
-        let selected_source = model.selected_source.clone();
-        let selected_database = model.selected_database.clone();
-        let selected_table = model.selected_table.clone();
-        let databases = model.databases.clone();
-        let tables = model.tables.clone();
-        let busy = model.busy;
+        let target = model
+            .explorer_source
+            .as_ref()
+            .or(model.selected_source.as_ref());
+        let disabled = target.is_none() || model.busy || model.saving;
         let saving = model.saving;
-        let selected_disabled = selected_source.is_none() || busy || saving;
-        let add_disabled = saving;
-        let error = model.error.clone();
+        let busy = model.busy;
         let confirm = model.delete_confirm;
-        let source_name = profiles
-            .iter()
-            .find(|p| Some(&p.id) == selected_source.as_ref())
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "Data sources".into());
-        let mut entries = div()
-            .id("source-explorer-scroll")
-            .debug_selector(|| "source-explorer-scroll".into())
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .p(px(8.))
+        let error = model.error.clone();
+        let name = model
+            .removal_source_name()
+            .unwrap_or("Data source")
+            .to_owned();
+        let toolbar = div()
+            .id("source-explorer-toolbar")
+            .debug_selector(|| "source-explorer-toolbar".into())
+            .flex_shrink_0()
+            .h(px(32.))
+            .px(px(6.))
             .flex()
-            .flex_col()
-            .gap(px(6.));
-        if profiles.is_empty() {
-            entries = entries.child(
-                div()
-                    .p(px(8.))
-                    .text_color(rgb(MUTED))
-                    .child("No data sources yet. Add a MySQL or MariaDB source to begin."),
-            );
-        }
-        for profile in profiles {
-            let selected = Some(&profile.id) == selected_source.as_ref();
-            let id = profile.id.clone();
-            let glyph = match profile.engine {
-                DbEngine::MySql => Icon::Database,
-                DbEngine::MariaDb => Icon::MariaDb,
-            };
-            let glyph_id = format!("driver-glyph-{id}");
-            let color_id = format!("color-indicator-{id}");
-            let row = button(
-                format!("connect-source-{id}"),
-                "",
-                selected,
-                busy || saving,
+            .items_center()
+            .gap(px(2.))
+            .child(toolbar_button(
+                "add-source",
+                Icon::Add,
+                "Add data source",
+                saving,
                 cx,
-                move |this, cx| {
-                    this.model
-                        .update(cx, |model, cx| model.connect(id.clone(), cx));
-                },
-            )
-            .w_full()
-            .p(px(4.))
-            .justify_start()
-            .gap(px(6.))
-            .child(
-                div()
-                    .id(gpui::SharedString::from(color_id.clone()))
-                    .debug_selector(move || color_id.clone())
-                    .w(px(3.))
-                    .h(px(16.))
-                    .flex_shrink_0()
-                    .bg(rgb(source_color(profile.color.as_deref()))),
-            )
-            .child(
-                div()
-                    .id(gpui::SharedString::from(glyph_id.clone()))
-                    .debug_selector(move || glyph_id.clone())
-                    .flex()
-                    .child(icon(glyph, TEXT)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .text_ellipsis()
-                    .child(profile.name.clone()),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(11.))
-                    .text_color(rgb(MUTED))
-                    .child(profile.engine.display_name()),
-            );
-            let mut group = div().flex().flex_col().gap(px(4.)).child(row);
-            if selected {
-                if confirm {
-                    group = group.child(
-                        div()
-                            .p(px(6.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.))
-                            .child(format!(
-                                "Remove {}? This removes the saved source, not its databases.",
-                                profile.name
-                            ))
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(px(4.))
-                                    .child(button(
-                                        "confirm-delete",
-                                        "Remove",
-                                        false,
-                                        busy,
-                                        cx,
-                                        |this, cx| {
-                                            this.model.update(cx, |m, cx| m.confirm_delete(cx))
-                                        },
-                                    ))
-                                    .child(button(
-                                        "cancel-delete",
-                                        "Cancel",
-                                        false,
-                                        false,
-                                        cx,
-                                        |this, cx| {
-                                            this.model.update(cx, |m, cx| m.request_delete(cx))
-                                        },
-                                    )),
-                            ),
-                    );
+                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.new_source(cx)),
+            ))
+            .child(toolbar_button(
+                "edit-source",
+                Icon::Manage,
+                "Manage selected source",
+                disabled,
+                cx,
+                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.edit_explorer_source(cx)),
+            ))
+            .child(toolbar_button(
+                "refresh-source",
+                Icon::Refresh,
+                "Refresh selected source",
+                disabled,
+                cx,
+                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.refresh_explorer(cx)),
+            ))
+            .child(toolbar_button(
+                "delete-source",
+                Icon::Remove,
+                "Remove saved source (not its databases)",
+                disabled,
+                cx,
+                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.request_delete_explorer(cx)),
+            ))
+            .child(toolbar_button(
+                "expand-loaded-tree",
+                Icon::ExpandTree,
+                "Expand loaded metadata only (no network requests)",
+                false,
+                cx,
+                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.expand_loaded_tree(cx)),
+            ))
+            .child(toolbar_button(
+                "collapse-all-tree",
+                Icon::CollapseTree,
+                "Collapse all",
+                false,
+                cx,
+                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.collapse_tree(cx)),
+            ));
+        let entries = gpui::uniform_list(
+            "source-explorer-scroll",
+            self.rows.len(),
+            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                #[cfg(test)]
+                {
+                    this.last_rendered_row_count = range.len();
                 }
-                let mut hierarchy = div().pl(px(12.)).flex().flex_col().gap(px(4.));
-                for database in &databases {
-                    let selected = Some(database) == selected_database.as_ref();
-                    let db = database.clone();
-                    hierarchy = hierarchy.child(button(
-                        format!("select-database-{db}"),
-                        db.clone(),
-                        selected,
-                        busy,
-                        cx,
-                        move |this, cx| {
-                            this.model
-                                .update(cx, |m, cx| m.select_database(db.clone(), cx));
-                        },
-                    ));
-                    if selected {
-                        let mut table_list = div().pl(px(12.)).flex().flex_col().gap(px(3.));
-                        for table in &tables {
-                            if table.kind == "BASE TABLE" {
-                                let name = table.name.clone();
-                                table_list = table_list.child(button(
-                                    format!("select-table-{database}-{name}"),
-                                    name.clone(),
-                                    Some(&name) == selected_table.as_ref(),
-                                    busy,
-                                    cx,
-                                    move |this, cx| {
-                                        this.model
-                                            .update(cx, |m, cx| m.select_table(name.clone(), cx));
-                                    },
-                                ));
-                            } else {
-                                table_list = table_list.child(
-                                    div().px(px(8.)).py(px(5.)).text_color(rgb(MUTED)).child(
-                                        format!("{} · {} (unavailable)", table.name, table.kind),
-                                    ),
-                                );
-                            }
-                        }
-                        if tables.is_empty() && !busy {
-                            table_list = table_list
-                                .child(div().text_color(rgb(MUTED)).child("No tables available"));
-                        }
-                        hierarchy = hierarchy.child(table_list);
-                    }
-                }
-                group = group.child(hierarchy);
-            }
-            entries = entries.child(group);
-        }
-        if busy {
-            entries = entries.child(
-                div()
-                    .text_color(rgb(MUTED))
-                    .child(format!("Loading {source_name}…")),
-            );
-        }
-        if let Some(error) = error {
-            entries = entries.child(
-                div()
-                    .id("source-load-error")
-                    .debug_selector(|| "source-load-error".into())
-                    .text_color(rgb(0xf2bf76))
-                    .child(format!("{source_name}: {error}")),
-            );
-        }
-        div()
+                // Clone only the requested viewport, never the entire projection.
+                let rows = this.rows[range].to_vec();
+                rows.into_iter()
+                    .map(|row| this.render_row(row, cx))
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .debug_selector(|| "source-explorer-scroll".into())
+        .h_full()
+        .flex_1()
+        .min_h(px(0.))
+        .min_w(px(0.))
+        .track_scroll(self.scroll.clone());
+        let mut root = div()
             .id("source-explorer")
             .debug_selector(|| "source-explorer".into())
+            .track_focus(&self.tree_focus)
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                if this.tree_focus.is_focused(window) {
+                    this.keyboard(event, cx);
+                }
+            }))
             .size_full()
+            .min_w(px(0.))
             .flex()
             .flex_col()
+            .overflow_hidden()
             .text_size(px(12.))
             .text_color(rgb(TEXT))
             .bg(rgb(PANEL))
-            .child(
+            .child(toolbar);
+        if self.rows.is_empty() {
+            root = root.child(
                 div()
-                    .id("source-explorer-header")
-                    .debug_selector(|| "source-explorer-header".into())
+                    .p(px(8.))
+                    .text_color(rgb(MUTED))
+                    .child("No data sources yet. Add a source to begin."),
+            );
+        }
+        root = root.child(entries);
+        if confirm {
+            root = root.child(
+                div()
                     .flex_shrink_0()
-                    .h(px(32.))
-                    .pl(px(10.))
-                    .bg(rgb(HEADER))
+                    .p(px(6.))
                     .flex()
-                    .items_center()
-                    .child("Database Explorer"),
-            )
-            .child(
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(format!(
+                        "Remove {name}? Saved source only; databases are not removed."
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(4.))
+                            .child(button(
+                                "confirm-delete",
+                                "Remove",
+                                false,
+                                busy,
+                                cx,
+                                |this: &mut Self, cx| {
+                                    this.model.update(cx, |m, cx| m.confirm_delete_explorer(cx))
+                                },
+                            ))
+                            .child(button(
+                                "cancel-delete",
+                                "Cancel",
+                                false,
+                                false,
+                                cx,
+                                |this: &mut Self, cx| {
+                                    this.model.update(cx, |m, cx| m.request_delete_explorer(cx))
+                                },
+                            )),
+                    ),
+            );
+        }
+        if let Some(error) = error {
+            root = root.child(
                 div()
-                    .id("source-explorer-toolbar")
-                    .debug_selector(|| "source-explorer-toolbar".into())
+                    .id("source-load-error")
+                    .debug_selector(|| "source-load-error".into())
+                    .h(px(22.))
                     .flex_shrink_0()
-                    .h(px(32.))
                     .px(px(6.))
-                    .flex()
-                    .items_center()
-                    .gap(px(2.))
-                    .child(toolbar_button(
-                        "add-source",
-                        Icon::Add,
-                        "Add data source",
-                        add_disabled,
-                        cx,
-                        |this: &mut Self, cx| this.model.update(cx, |m, cx| m.new_source(cx)),
-                    ))
-                    .child(toolbar_button(
-                        "edit-source",
-                        Icon::Manage,
-                        "Manage selected source",
-                        selected_disabled,
-                        cx,
-                        |this: &mut Self, cx| this.model.update(cx, |m, cx| m.edit_source(cx)),
-                    ))
-                    .child(toolbar_button(
-                        "refresh-source",
-                        Icon::Refresh,
-                        "Refresh selected source",
-                        selected_disabled,
-                        cx,
-                        |this: &mut Self, cx| this.model.update(cx, |m, cx| m.refresh(cx)),
-                    ))
-                    .child(toolbar_button(
-                        "delete-source",
-                        Icon::Remove,
-                        "Remove saved source (not its databases)",
-                        selected_disabled,
-                        cx,
-                        |this: &mut Self, cx| this.model.update(cx, |m, cx| m.request_delete(cx)),
-                    )),
-            )
-            .child(entries)
+                    .text_ellipsis()
+                    .text_color(rgb(0xf2bf76))
+                    .child(error.clone())
+                    .tooltip(move |_, cx| cx.new(|_| TreeTooltip(error.clone())).into()),
+            );
+        }
+        root
     }
 }
 
@@ -784,6 +1015,9 @@ fn toolbar_button<T: 'static>(
         .w(px(28.))
         .h(px(28.))
         .p(px(0.))
+        .border_0()
+        .rounded(px(0.))
+        .bg(rgb(PANEL))
         .flex_shrink_0()
         .justify_center()
         .child(icon(glyph, TEXT))
@@ -849,13 +1083,16 @@ fn button<T: 'static>(
                 activate(this, cx);
             }
         }))
-        .child(
-            div()
-                .min_w(px(0.))
-                .overflow_hidden()
-                .text_ellipsis()
-                .child(label),
-        )
+        .when(!label.is_empty(), |el| {
+            el.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(label),
+            )
+        })
 }
 
 #[cfg(all(test, feature = "ui-tests"))]
@@ -1148,11 +1385,9 @@ mod tests {
         cx.simulate_resize(gpui::size(px(320.), px(600.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
-        let header = cx.debug_bounds("source-explorer-header").unwrap();
         let toolbar = cx.debug_bounds("source-explorer-toolbar").unwrap();
-        assert_eq!(header.size.height, px(32.));
         assert_eq!(toolbar.size.height, px(32.));
-        assert_eq!(toolbar.top(), header.bottom());
+        assert_eq!(toolbar.top(), px(0.));
         let mut previous = toolbar.left();
         for id in [
             "add-source",
@@ -1188,6 +1423,159 @@ mod tests {
         for invalid in ["ff0000", "#fff", "#zzzzzz", "#1000000"] {
             assert_eq!(source_color(Some(invalid)), MUTED);
         }
+    }
+
+    #[gpui::test]
+    fn virtual_tree_paints_only_viewport_and_scrolls_to_end(cx: &mut TestAppContext) {
+        let profile = SourceProfile {
+            id: "virtual-source".into(),
+            name: "quoted `名字' ASCII".into(),
+            ..SourceProfile::default()
+        };
+        let model = cx.new(|_| {
+            let mut m = SourceModel::for_tests(vec![profile]);
+            m.tree.databases.insert(
+                "virtual-source".into(),
+                (0..1000).map(|i| format!("db{i:04}")).collect(),
+            );
+            m.tree.expanded_sources.insert("virtual-source".into());
+            m
+        });
+        let (explorer, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        cx.simulate_resize(gpui::size(px(200.), px(420.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        explorer.read_with(cx, |view, _| {
+            assert_eq!(view.rows.len(), 1001);
+            assert_eq!(view.rows[0].label, "quoted `名字' ASCII");
+            assert!(view.last_rendered_row_count > 0);
+            assert!(view.last_rendered_row_count <= 40);
+        });
+        let label = cx
+            .debug_bounds("tree-label-connect-source-virtual-source")
+            .unwrap();
+        assert!(label.size.width > px(80.));
+        let row = cx.debug_bounds("connect-source-virtual-source").unwrap();
+        assert_eq!(row.size.height, px(22.));
+        explorer.update(cx, |view, cx| {
+            view.scroll
+                .scroll_to_item_strict(901, gpui::ScrollStrategy::Top);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let label_id = format!(
+            "tree-label-{}",
+            tree_row_id(&TreeKey::Database {
+                source: "virtual-source".into(),
+                database: "db0900".into(),
+            })
+        );
+        assert!(
+            cx.debug_bounds(Box::leak(label_id.into_boxed_str()))
+                .unwrap()
+                .size
+                .width
+                > px(80.)
+        );
+        explorer.read_with(cx, |view, _| assert!(view.last_rendered_row_count <= 40));
+        let focus = explorer.read_with(cx, |view, _| view.tree_focus.clone());
+        cx.update(|window, _| focus.focus(window));
+        cx.simulate_keystrokes("end");
+        cx.run_until_parked();
+        explorer.read_with(cx, |view, _| {
+            assert_eq!(
+                view.active_key,
+                Some(TreeKey::Database {
+                    source: "virtual-source".into(),
+                    database: "db0999".into(),
+                })
+            );
+            assert!(view.last_rendered_row_count <= 40);
+        });
+        click(cx, "collapse-all-tree");
+        explorer.read_with(cx, |view, _| assert_eq!(view.rows.len(), 1));
+        model.read_with(cx, |model, _| {
+            assert_eq!(model.tree.databases["virtual-source"].len(), 1000)
+        });
+        click(cx, "expand-loaded-tree");
+        explorer.read_with(cx, |view, _| assert_eq!(view.rows.len(), 1001));
+        model.read_with(cx, |model, _| assert!(model.tree.loading.is_empty()));
+    }
+
+    #[gpui::test]
+    fn cached_tree_groups_keyboard_and_unicode_labels(cx: &mut TestAppContext) {
+        let model = cx.new(|_| {
+            let mut m = SourceModel::for_tests(vec![SourceProfile {
+                id: "cached".into(),
+                name: "名前 `source'".into(),
+                ..SourceProfile::default()
+            }]);
+            m.tree
+                .databases
+                .insert("cached".into(), vec!["库存 `db'".into()]);
+            m.tree.tables.insert(
+                ("cached".into(), "库存 `db'".into()),
+                vec![
+                    dalan_drivers::TableInfo {
+                        name: "明細 `items'".into(),
+                        kind: "BASE TABLE".into(),
+                    },
+                    dalan_drivers::TableInfo {
+                        name: "read view".into(),
+                        kind: "VIEW".into(),
+                    },
+                ],
+            );
+            m.tree.expand_loaded();
+            m
+        });
+        let (explorer, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        cx.simulate_resize(gpui::size(px(240.), px(420.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        explorer.read_with(cx, |view, _| {
+            assert_eq!(view.rows.len(), 6);
+            assert_eq!(view.rows[3].label, "明細 `items'");
+            assert_eq!(view.rows[5].label, "read view");
+            assert!(view.rows.iter().all(|row| !row.label.is_empty()));
+        });
+        let table = TreeKey::Table {
+            source: "cached".into(),
+            database: "库存 `db'".into(),
+            table: "明細 `items'".into(),
+            view: false,
+        };
+        let label_id = format!("tree-label-{}", tree_row_id(&table));
+        assert!(
+            cx.debug_bounds(Box::leak(label_id.into_boxed_str()))
+                .unwrap()
+                .size
+                .width
+                > px(80.)
+        );
+        explorer.update(cx, |view, cx| {
+            view.select_key(table, cx);
+        });
+        let focus = explorer.read_with(cx, |view, _| view.tree_focus.clone());
+        cx.update(|window, _| focus.focus(window));
+        cx.simulate_keystrokes("left");
+        cx.run_until_parked();
+        explorer.read_with(cx, |view, _| {
+            assert!(matches!(
+                view.active_key,
+                Some(TreeKey::Group { views: false, .. })
+            ))
+        });
+        cx.simulate_keystrokes("left");
+        cx.run_until_parked();
+        explorer.read_with(cx, |view, _| assert_eq!(view.rows.len(), 5));
+        cx.simulate_keystrokes("right");
+        cx.run_until_parked();
+        explorer.read_with(cx, |view, _| assert_eq!(view.rows.len(), 6));
+        model.read_with(cx, |model, _| {
+            assert!(model.tree.loading.is_empty());
+            assert!(model.selected_table.is_none());
+        });
     }
 
     #[gpui::test]

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, future::Future, sync::OnceLock};
 
 use anyhow::{Result, anyhow};
+use dalan_app::explorer_tree::{ExplorerTree, TreeKey};
 use dalan_app::source_store::{NativeSecretStore, SecretStore, SourceRepository};
 use dalan_drivers::{
     BrowseRequest, SortDirection, SourceProfile, TableFilter, TableInfo, TablePage, TableSort,
@@ -21,6 +22,7 @@ fn runtime() -> &'static Runtime {
 
 pub(super) struct SourceModel {
     pub profiles: Vec<SourceProfile>,
+    pub tree: ExplorerTree,
     pub form_open: bool,
     pub form_profile: Option<SourceProfile>,
     pub form_generation: u64,
@@ -31,6 +33,8 @@ pub(super) struct SourceModel {
     pub busy: bool,
     pub databases: Vec<String>,
     pub selected_source: Option<String>,
+    pub explorer_source: Option<String>,
+    pending_delete_source: Option<String>,
     pub selected_database: Option<String>,
     pub tables: Vec<TableInfo>,
     pub selected_table: Option<String>,
@@ -43,6 +47,8 @@ pub(super) struct SourceModel {
     filter: Option<TableFilter>,
     generation: u64,
     operation: Option<AbortHandle>,
+    tree_generation: u64,
+    tree_operations: HashMap<TreeKey, (u64, AbortHandle)>,
     repository: Option<SourceRepository>,
     storage_ready: bool,
     previous_offsets: Vec<u64>,
@@ -50,11 +56,249 @@ pub(super) struct SourceModel {
 
 impl Drop for SourceModel {
     fn drop(&mut self) {
+        for (_, task) in self.tree_operations.values() {
+            task.abort();
+        }
         if !self.saving
             && let Some(task) = &self.operation
         {
             task.abort();
         }
+    }
+}
+
+impl SourceModel {
+    fn cancel_catalogs(&mut self, matches: impl Fn(&TreeKey) -> bool) {
+        let keys: Vec<_> = self
+            .tree_operations
+            .keys()
+            .filter(|key| matches(key))
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some((_, task)) = self.tree_operations.remove(&key) {
+                task.abort();
+            }
+            self.tree.loading.remove(&key);
+        }
+    }
+
+    fn remove_tree_source(&mut self, source: &str) {
+        self.cancel_catalogs(|key| key.source() == source);
+        self.tree.remove_source(source);
+    }
+
+    /// Catalog jobs have independent generations from table paging and form/save jobs.
+    /// Keep at most two requests alive; newer user intent supersedes the oldest request.
+    fn run_catalog<T: Send + 'static>(
+        &mut self,
+        key: TreeKey,
+        future: impl Future<Output = Result<T>> + Send + 'static,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, T) + 'static,
+    ) {
+        self.cancel_catalogs(|item| item == &key);
+        if self.tree_operations.len() >= 2
+            && let Some(oldest) = self
+                .tree_operations
+                .iter()
+                .min_by_key(|(_, (generation, _))| generation)
+                .map(|(key, _)| key.clone())
+        {
+            self.cancel_catalogs(|item| item == &oldest);
+        }
+        self.tree_generation += 1;
+        let generation = self.tree_generation;
+        self.tree.loading.insert(key.clone());
+        self.tree.errors.remove(&key);
+        let job = runtime().spawn(future);
+        self.tree_operations
+            .insert(key.clone(), (generation, job.abort_handle()));
+        cx.spawn(async move |this, cx| {
+            let result = job
+                .await
+                .map_err(|_| anyhow!("Catalog worker stopped"))
+                .and_then(|result| result);
+            let _ = this.update(cx, |this, cx| {
+                if !this
+                    .tree_operations
+                    .get(&key)
+                    .is_some_and(|(active, _)| *active == generation)
+                {
+                    return;
+                }
+                this.tree_operations.remove(&key);
+                this.tree.loading.remove(&key);
+                if !this.profiles.iter().any(|p| p.id == key.source()) {
+                    return;
+                }
+                match result {
+                    Ok(value) => done(this, value),
+                    Err(error) => {
+                        this.tree.errors.insert(key, error.to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub fn toggle_source(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
+        let Some(profile) = self.profiles.iter().find(|p| p.id == id).cloned() else {
+            return;
+        };
+        if self.tree.expanded_sources.remove(&id) {
+            self.cancel_catalogs(|key| key.source() == id);
+            cx.notify();
+            return;
+        }
+        self.tree.expanded_sources.insert(id.clone());
+        // Expansion is independent of the displayed table's identity.
+        if self.selected_source.is_none() {
+            self.selected_source = Some(id.clone());
+        }
+        if self.tree.databases.contains_key(&id) {
+            cx.notify();
+            return;
+        }
+        let session = self.passwords.get(&id).cloned();
+        self.run_catalog(
+            TreeKey::Source(id.clone()),
+            async move {
+                let password = Self::resolve_password(&profile, session).await?;
+                let report = dalan_drivers::test_connection(&profile, &password).await?;
+                Ok((report.databases, password))
+            },
+            cx,
+            move |this, (databases, password)| {
+                this.passwords.insert(id.clone(), password);
+                let databases: Vec<_> = databases.into_iter().take(1000).collect();
+                if this.selected_source.as_ref() == Some(&id) {
+                    this.databases = databases.clone();
+                }
+                this.tree.databases.insert(id, databases);
+            },
+        );
+    }
+
+    pub fn toggle_database(&mut self, source: String, database: String, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
+        let Some(profile) = self.profiles.iter().find(|p| p.id == source).cloned() else {
+            return;
+        };
+        if !self
+            .tree
+            .databases
+            .get(&source)
+            .is_some_and(|dbs| dbs.contains(&database))
+        {
+            return;
+        }
+        let pair = (source.clone(), database.clone());
+        let key = TreeKey::Database {
+            source: source.clone(),
+            database: database.clone(),
+        };
+        if self.tree.expanded_databases.remove(&pair) {
+            self.cancel_catalogs(|item| item == &key);
+            cx.notify();
+            return;
+        }
+        self.tree.expanded_databases.insert(pair.clone());
+        if self.tree.tables.contains_key(&pair) {
+            cx.notify();
+            return;
+        }
+        let session = self.passwords.get(&source).cloned();
+        self.run_catalog(
+            key,
+            async move {
+                let password = Self::resolve_password(&profile, session).await?;
+                let tables = dalan_drivers::tables(&profile, &password, &database).await?;
+                Ok((tables, password))
+            },
+            cx,
+            move |this, (tables, password)| {
+                this.passwords.insert(source, password);
+                this.tree
+                    .tables
+                    .insert(pair.clone(), tables.into_iter().take(1000).collect());
+                this.tree.expanded_groups.insert((pair.0, pair.1, false));
+            },
+        );
+    }
+
+    pub fn toggle_group(
+        &mut self,
+        source: String,
+        database: String,
+        views: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let pair = (source.clone(), database.clone());
+        if !self.profiles.iter().any(|p| p.id == source) || !self.tree.tables.contains_key(&pair) {
+            return;
+        }
+        let group = (source, database, views);
+        if !self.tree.expanded_groups.remove(&group) {
+            self.tree.expanded_groups.insert(group);
+        }
+        cx.notify();
+    }
+
+    pub fn collapse_tree(&mut self, cx: &mut Context<Self>) {
+        self.cancel_catalogs(|_| true);
+        self.tree.collapse_all();
+        cx.notify();
+    }
+
+    pub fn expand_loaded_tree(&mut self, cx: &mut Context<Self>) {
+        self.tree.retain_profiles(&self.profiles);
+        self.tree.expand_loaded();
+        cx.notify();
+    }
+
+    pub fn open_tree_table(
+        &mut self,
+        source: String,
+        database: String,
+        table: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving || !self.profiles.iter().any(|p| p.id == source) {
+            return;
+        }
+        let Some(tables) = self
+            .tree
+            .tables
+            .get(&(source.clone(), database.clone()))
+            .filter(|tables| {
+                tables
+                    .iter()
+                    .any(|t| t.name == table && t.kind == "BASE TABLE")
+            })
+            .cloned()
+        else {
+            return;
+        };
+        self.selected_source = Some(source.clone());
+        self.explorer_source = Some(source.clone());
+        self.databases = self
+            .tree
+            .databases
+            .get(&source)
+            .cloned()
+            .unwrap_or_default();
+        self.selected_database = Some(database);
+        self.tables = tables;
+        self.select_table(table, cx);
     }
 }
 
@@ -143,6 +387,7 @@ impl SourceModel {
     fn empty(repository: Option<SourceRepository>) -> Self {
         Self {
             profiles: vec![],
+            tree: ExplorerTree::default(),
             form_open: false,
             form_profile: None,
             form_generation: 0,
@@ -153,6 +398,8 @@ impl SourceModel {
             busy: false,
             databases: vec![],
             selected_source: None,
+            explorer_source: None,
+            pending_delete_source: None,
             selected_database: None,
             tables: vec![],
             selected_table: None,
@@ -165,6 +412,8 @@ impl SourceModel {
             filter: None,
             generation: 0,
             operation: None,
+            tree_generation: 0,
+            tree_operations: HashMap::new(),
             repository,
             storage_ready: false,
             previous_offsets: vec![],
@@ -262,13 +511,26 @@ impl SourceModel {
         cx.notify();
     }
 
-    pub fn edit_source(&mut self, cx: &mut Context<Self>) {
+    pub fn edit_explorer_source(&mut self, cx: &mut Context<Self>) {
+        let target = self
+            .explorer_source
+            .as_ref()
+            .or(self.selected_source.as_ref());
+        let Some(profile) = self
+            .profiles
+            .iter()
+            .find(|profile| Some(&profile.id) == target)
+            .cloned()
+        else {
+            return;
+        };
+        self.edit_profile(profile, cx);
+    }
+
+    fn edit_profile(&mut self, profile: SourceProfile, cx: &mut Context<Self>) {
         if self.saving {
             return;
         }
-        let Some(profile) = self.selected_profile() else {
-            return;
-        };
         if !self.storage_ready {
             self.form_feedback = Some(
                 "Source settings did not load successfully; resolve that error before saving."
@@ -392,9 +654,13 @@ impl SourceModel {
         }).await? }, cx, move |this, result, cx| {
             this.saving = false; this.form_busy = false;
             match result {
-                Ok(profiles) => { this.profiles = profiles; this.passwords.insert(saved_profile.id.clone(), saved_password);
-                    this.selected_source = Some(saved_profile.id); this.form_open = false; this.form_profile = None;
-                    this.form_generation += 1; this.form_feedback = None; this.clear_data(); this.error = None; },
+                Ok(profiles) => { this.remove_tree_source(&saved_profile.id); this.profiles = profiles; this.passwords.insert(saved_profile.id.clone(), saved_password);
+                    this.explorer_source = Some(saved_profile.id.clone());
+                    if this.selected_source.as_ref() == Some(&saved_profile.id) || this.selected_source.is_none() {
+                        this.selected_source = Some(saved_profile.id); this.clear_data();
+                    }
+                    this.form_open = false; this.form_profile = None;
+                    this.form_generation += 1; this.form_feedback = None; this.error = None; },
                 Err(error) => this.form_feedback = Some(format!("Not saved: {error}")),
             } cx.notify();
         });
@@ -432,83 +698,6 @@ impl SourceModel {
         } else {
             Ok(String::new())
         }
-    }
-
-    pub fn connect(&mut self, id: String, cx: &mut Context<Self>) {
-        if self.saving {
-            return;
-        }
-        let Some(profile) = self
-            .profiles
-            .iter()
-            .find(|profile| profile.id == id)
-            .cloned()
-        else {
-            return;
-        };
-        self.invalidate();
-        self.clear_data();
-        self.form_open = false;
-        self.form_profile = None;
-        self.form_generation += 1;
-        self.selected_source = Some(id.clone());
-        self.error = None;
-        self.delete_confirm = false;
-        self.busy = true;
-        let session = self.passwords.get(&id).cloned();
-        self.run(
-            async move {
-                let password = Self::resolve_password(&profile, session).await?;
-                let report = dalan_drivers::test_connection(&profile, &password).await?;
-                Ok((report, password))
-            },
-            cx,
-            move |this, result, cx| {
-                this.busy = false;
-                match result {
-                    Ok((report, password)) => {
-                        this.passwords.insert(id, password);
-                        this.databases = report.databases;
-                    }
-                    Err(error) => this.error = Some(error.to_string()),
-                };
-                cx.notify();
-            },
-        );
-        cx.notify();
-    }
-
-    pub fn select_database(&mut self, database: String, cx: &mut Context<Self>) {
-        if self.saving {
-            return;
-        }
-        let Some(profile) = self.selected_profile() else {
-            return;
-        };
-        self.invalidate();
-        self.selected_database = Some(database.clone());
-        self.sort = None;
-        self.selected_table = None;
-        self.tables.clear();
-        self.page = None;
-        self.filter = None;
-        self.previous_offsets.clear();
-        self.error = None;
-        self.busy = true;
-        let password = self.password(&profile.id);
-        self.run(
-            async move { dalan_drivers::tables(&profile, &password, &database).await },
-            cx,
-            |this, result, cx| {
-                this.busy = false;
-                match result {
-                    Ok(tables) => this.tables = tables,
-                    Err(error) => this.error = Some(error.to_string()),
-                };
-                cx.notify();
-            },
-        );
-        cx.notify();
     }
 
     pub fn select_table(&mut self, table: String, cx: &mut Context<Self>) {
@@ -583,30 +772,69 @@ impl SourceModel {
         };
         self.load_page(offset, cx);
     }
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+    pub fn refresh_explorer(&mut self, cx: &mut Context<Self>) {
         if self.saving {
             return;
         }
-        self.previous_offsets.clear();
-        if self.selected_table.is_some() {
-            self.load_page(0, cx);
-        } else if let Some(database) = self.selected_database.clone() {
-            self.select_database(database, cx);
-        } else if let Some(id) = self.selected_source.clone() {
-            self.connect(id, cx);
-        }
+        let Some(id) = self
+            .explorer_source
+            .clone()
+            .or_else(|| self.selected_source.clone())
+        else {
+            return;
+        };
+        self.remove_tree_source(&id);
+        self.toggle_source(id, cx);
     }
-    pub fn request_delete(&mut self, cx: &mut Context<Self>) {
-        if !self.saving {
-            self.delete_confirm = !self.delete_confirm;
-            cx.notify();
-        }
+
+    pub fn request_delete_explorer(&mut self, cx: &mut Context<Self>) {
+        self.request_delete_for(
+            self.explorer_source
+                .clone()
+                .or_else(|| self.selected_source.clone()),
+            cx,
+        );
     }
+
+    fn request_delete_for(&mut self, target: Option<String>, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
+        if self.delete_confirm {
+            self.delete_confirm = false;
+            self.pending_delete_source = None;
+        } else if let Some(id) =
+            target.filter(|id| self.profiles.iter().any(|profile| &profile.id == id))
+        {
+            self.delete_confirm = true;
+            self.pending_delete_source = Some(id);
+        }
+        cx.notify();
+    }
+
+    pub fn confirm_delete_explorer(&mut self, cx: &mut Context<Self>) {
+        self.confirm_delete(cx);
+    }
+
+    pub fn removal_source_name(&self) -> Option<&str> {
+        self.pending_delete_source.as_ref().and_then(|id| {
+            self.profiles
+                .iter()
+                .find(|profile| &profile.id == id)
+                .map(|profile| profile.name.as_str())
+        })
+    }
+
     pub fn confirm_delete(&mut self, cx: &mut Context<Self>) {
         if self.saving || !self.delete_confirm {
             return;
         }
-        let (Some(id), Some(repo)) = (self.selected_source.clone(), self.repository.clone()) else {
+        let (Some(id), Some(repo)) = (
+            self.pending_delete_source
+                .clone()
+                .or_else(|| self.selected_source.clone()),
+            self.repository.clone(),
+        ) else {
             return;
         };
         self.invalidate();
@@ -621,7 +849,9 @@ impl SourceModel {
             .collect();
         let removed_id = id.clone();
         let credential_saved = self
-            .selected_profile()
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
             .is_some_and(|profile| profile.save_password);
         self.run(async move { tokio::task::spawn_blocking(move || {
             let store = NativeSecretStore; let old = if credential_saved { store.get(&id)? } else { None };
@@ -629,7 +859,10 @@ impl SourceModel {
             if let Err(error) = repo.save(&profiles) { if let Some(password) = old { store.set(&id, &password).map_err(|_| anyhow!("Settings removal failed and Keychain restore failed; review saved source."))?; } return Err(error); }
             Ok(profiles)
         }).await? }, cx, move |this, result, cx| { this.saving = false; this.busy = false;
-            match result { Ok(profiles) => { this.profiles = profiles; this.passwords.remove(&removed_id); this.selected_source = None; this.clear_data(); this.error = None; }, Err(error) => this.error = Some(format!("Not removed: {error}")) }; cx.notify(); });
+            match result { Ok(profiles) => { this.remove_tree_source(&removed_id); this.profiles = profiles; this.passwords.remove(&removed_id); this.pending_delete_source = None;
+                    if this.selected_source.as_ref() == Some(&removed_id) { this.selected_source = None; this.clear_data(); }
+                    if this.explorer_source.as_ref() == Some(&removed_id) { this.explorer_source = None; }
+                    this.error = None; }, Err(error) => this.error = Some(format!("Not removed: {error}")) }; cx.notify(); });
         cx.notify();
     }
 }
@@ -705,6 +938,279 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("export did not complete within one second");
+    }
+
+    #[gpui::test]
+    fn closing_catalog_branch_cancels_only_its_metadata(cx: &mut TestAppContext) {
+        let model = cx.new(|_| loaded_model());
+        model.update(cx, |model, cx| {
+            model.profiles = vec![
+                SourceProfile {
+                    id: "a".into(),
+                    ..Default::default()
+                },
+                SourceProfile {
+                    id: "b".into(),
+                    ..Default::default()
+                },
+            ];
+            for source in ["a", "b"] {
+                model.tree.expanded_sources.insert(source.into());
+                model.run_catalog(
+                    TreeKey::Source(source.into()),
+                    std::future::pending::<Result<()>>(),
+                    cx,
+                    |_, _| panic!("cancelled catalog completed"),
+                );
+            }
+            assert_eq!(model.tree_operations.len(), 2);
+            model.toggle_source("a".into(), cx);
+            assert_eq!(model.tree_operations.len(), 1);
+            assert!(!model.tree.loading.contains(&TreeKey::Source("a".into())));
+            assert!(model.tree.loading.contains(&TreeKey::Source("b".into())));
+            assert_eq!(model.page.as_ref().unwrap().offset, 40);
+            model.collapse_tree(cx);
+            assert!(model.tree_operations.is_empty());
+            assert!(model.tree.loading.is_empty());
+            assert_eq!(model.page.as_ref().unwrap().offset, 40);
+        });
+        cx.run_until_parked();
+        model.read_with(cx, |model, _| assert!(model.tree.errors.is_empty()));
+    }
+
+    #[gpui::test]
+    fn cached_tree_toggles_preserve_page_and_never_start_operations(cx: &mut TestAppContext) {
+        let model = cx.new(|_| {
+            let mut model = loaded_model();
+            model.profiles = vec![SourceProfile {
+                id: "test-source".into(),
+                ..Default::default()
+            }];
+            model
+                .tree
+                .databases
+                .insert("test-source".into(), vec!["inventory".into()]);
+            model.tree.tables.insert(
+                ("test-source".into(), "inventory".into()),
+                vec![TableInfo {
+                    name: "items".into(),
+                    kind: "BASE TABLE".into(),
+                }],
+            );
+            model
+        });
+        model.update(cx, |model, cx| {
+            model.toggle_source("test-source".into(), cx);
+            model.toggle_database("test-source".into(), "inventory".into(), cx);
+            model.toggle_group("test-source".into(), "inventory".into(), false, cx);
+            assert_eq!(model.tree.flatten(&model.profiles).len(), 5);
+            model.toggle_database("test-source".into(), "inventory".into(), cx);
+            assert_eq!(model.tree.flatten(&model.profiles).len(), 2);
+            model.toggle_source("test-source".into(), cx);
+            assert_eq!(model.tree.flatten(&model.profiles).len(), 1);
+            model.expand_loaded_tree(cx);
+            model.collapse_tree(cx);
+            assert_eq!(model.tree.tables.len(), 1);
+            assert_eq!(model.page.as_ref().unwrap().offset, 40);
+            assert_eq!(model.selected_table.as_deref(), Some("items"));
+            assert!(model.operation.is_none());
+            assert!(model.tree_operations.is_empty());
+            assert!(model.tree.loading.is_empty());
+            assert!(!model.busy);
+        });
+    }
+
+    fn two_source_model() -> SourceModel {
+        let mut model = loaded_model();
+        model.profiles = ["Source A", "Source B"]
+            .into_iter()
+            .map(|name| SourceProfile {
+                name: name.into(),
+                save_password: false,
+                ..Default::default()
+            })
+            .collect();
+        model.selected_source = Some(model.profiles[0].id.clone());
+        model.explorer_source = Some(model.profiles[1].id.clone());
+        for profile in &model.profiles {
+            model.passwords.insert(
+                profile.id.clone(),
+                format!("{}-session-secret", profile.name),
+            );
+            model
+                .tree
+                .databases
+                .insert(profile.id.clone(), vec!["inventory".into()]);
+            model.tree.tables.insert(
+                (profile.id.clone(), "inventory".into()),
+                vec![TableInfo {
+                    name: "items".into(),
+                    kind: "BASE TABLE".into(),
+                }],
+            );
+        }
+        model
+    }
+
+    fn assert_displayed_a(model: &SourceModel, id: &str, page: &TablePage) {
+        assert_eq!(model.selected_source.as_deref(), Some(id));
+        assert_eq!(model.selected_database.as_deref(), Some("inventory"));
+        assert_eq!(model.selected_table.as_deref(), Some("items"));
+        assert_eq!(
+            serde_json::to_value(model.page.as_ref().unwrap()).unwrap(),
+            serde_json::to_value(page).unwrap(),
+        );
+    }
+
+    #[gpui::test]
+    fn editing_explorer_b_preserves_displayed_a_and_session_passwords(cx: &mut TestAppContext) {
+        let model = cx.new(|_| two_source_model());
+        model.update(cx, |model, cx| {
+            let a = model.profiles[0].id.clone();
+            let b = model.profiles[1].id.clone();
+            let page = model.page.clone().unwrap();
+            let generation = model.generation;
+            model.edit_explorer_source(cx);
+            assert_eq!(model.form_profile.as_ref().unwrap().id, b);
+            assert_eq!(model.password(&b), "Source B-session-secret");
+            assert_eq!(model.password(&a), "Source A-session-secret");
+            assert!(!model.form_profile.as_ref().unwrap().save_password);
+            assert!(model.form_open);
+            assert!(!model.form_busy);
+            assert!(model.operation.is_none());
+            assert_displayed_a(model, &a, &page);
+            model.close_form(cx);
+            assert!(!model.form_open);
+            assert!(model.form_profile.is_none());
+            assert!(model.generation > generation);
+            assert_displayed_a(model, &a, &page);
+            // Refresh must also respect the persistence guard without touching either cache.
+            model.saving = true;
+            model.refresh_explorer(cx);
+            model.saving = false;
+            assert!(model.tree.databases.contains_key(&a));
+            assert!(model.tree.databases.contains_key(&b));
+            assert!(model.tree_operations.is_empty());
+            assert_displayed_a(model, &a, &page);
+        });
+    }
+
+    #[gpui::test]
+    fn deleting_captured_explorer_b_preserves_displayed_a(cx: &mut TestAppContext) {
+        let sandbox = ExportSandbox::new();
+        let path = sandbox.0.join("sources.json");
+        let repository = SourceRepository::new(path.clone());
+        let model = cx.new(|_| {
+            let mut model = two_source_model();
+            repository.save(&model.profiles).unwrap();
+            model.repository = Some(repository.clone());
+            model
+        });
+        let (a, b, page) = model.read_with(cx, |model, _| {
+            (
+                model.profiles[0].id.clone(),
+                model.profiles[1].id.clone(),
+                model.page.clone().unwrap(),
+            )
+        });
+        model.update(cx, |model, cx| {
+            model.request_delete_explorer(cx);
+            assert!(model.delete_confirm);
+            assert_eq!(model.pending_delete_source.as_deref(), Some(b.as_str()));
+            model.explorer_source = Some(a.clone());
+            assert_eq!(model.pending_delete_source.as_deref(), Some(b.as_str()));
+            model.confirm_delete_explorer(cx);
+            assert!(model.saving);
+            assert!(!model.delete_confirm);
+        });
+        for _ in 0..100 {
+            cx.run_until_parked();
+            if !model.read_with(cx, |model, _| model.saving) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        model.read_with(cx, |model, _| {
+            assert!(!model.saving, "delete did not complete within one second");
+            assert!(model.error.is_none(), "{:?}", model.error);
+            assert!(model.pending_delete_source.is_none());
+            assert_eq!(model.profiles.len(), 1);
+            assert_eq!(model.profiles[0].id, a);
+            assert_eq!(model.explorer_source.as_deref(), Some(a.as_str()));
+            assert_displayed_a(model, &a, &page);
+            assert_eq!(model.password(&a), "Source A-session-secret");
+            assert!(!model.passwords.contains_key(&b));
+            assert!(model.tree.databases.contains_key(&a));
+            assert!(!model.tree.databases.contains_key(&b));
+            assert!(
+                model
+                    .tree
+                    .tables
+                    .contains_key(&(a.clone(), "inventory".into()))
+            );
+            assert!(
+                !model
+                    .tree
+                    .tables
+                    .contains_key(&(b.clone(), "inventory".into()))
+            );
+        });
+        let saved = repository.load().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, a);
+        let json = std::fs::read_to_string(path).unwrap();
+        assert!(!json.contains(&b));
+        assert!(!json.contains("Source B"));
+        assert!(!json.contains("Source A-session-secret"));
+        assert!(!json.contains("Source B-session-secret"));
+    }
+
+    #[gpui::test]
+    fn views_and_group_collapse_do_not_replace_or_cancel_displayed_table(cx: &mut TestAppContext) {
+        let model = cx.new(|_| two_source_model());
+        model.update(cx, |model, cx| {
+            let a = model.profiles[0].id.clone();
+            let b = model.profiles[1].id.clone();
+            let page = model.page.clone().unwrap();
+            model
+                .tree
+                .tables
+                .get_mut(&(b.clone(), "inventory".into()))
+                .unwrap()
+                .push(TableInfo {
+                    name: "items_view".into(),
+                    kind: "VIEW".into(),
+                });
+            let generation = model.generation;
+            model.open_tree_table(b.clone(), "inventory".into(), "items_view".into(), cx);
+            assert_displayed_a(model, &a, &page);
+            assert_eq!(model.explorer_source.as_deref(), Some(b.as_str()));
+            assert_eq!(model.generation, generation);
+            assert!(model.operation.is_none());
+            assert!(!model.busy);
+            model.busy = true;
+            model.run(std::future::pending::<Result<()>>(), cx, |_, _, _| {
+                panic!("pending table operation completed");
+            });
+            let operation_id = model.operation.as_ref().unwrap().id();
+            model
+                .tree
+                .expanded_groups
+                .insert((b.clone(), "inventory".into(), false));
+            model.toggle_group(b.clone(), "inventory".into(), false, cx);
+            assert!(
+                !model
+                    .tree
+                    .expanded_groups
+                    .contains(&(b, "inventory".into(), false))
+            );
+            assert!(model.busy);
+            assert_eq!(model.generation, generation);
+            assert_eq!(model.operation.as_ref().unwrap().id(), operation_id);
+            assert!(!model.operation.as_ref().unwrap().is_finished());
+            assert_displayed_a(model, &a, &page);
+            model.invalidate();
+        });
     }
 
     #[gpui::test]
@@ -894,7 +1400,7 @@ mod tests {
             assert!(model.operation.is_none());
             model.selected_source = Some(id.clone());
             model.passwords.insert(id.clone(), "session-secret".into());
-            model.edit_source(cx);
+            model.edit_explorer_source(cx);
             assert!(model.form_open);
             assert_eq!(model.form_profile.as_ref().unwrap().id, id);
             assert_eq!(model.selected_profile().unwrap().id, id);
@@ -1029,7 +1535,7 @@ mod tests {
         assert!(!text.contains("ephemeral-fixture-secret"));
         assert_eq!(repository.load().unwrap().len(), 1);
         model.update(cx, |model, cx| {
-            model.request_delete(cx);
+            model.request_delete_explorer(cx);
             assert!(model.delete_confirm);
             model.confirm_delete(cx);
         });

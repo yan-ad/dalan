@@ -6,7 +6,7 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 
 - [x] Rust workspace and macOS GPUI dark shell, native titlebar/menu, Database Explorer visibility/resizing and keyboard controls.
 - [x] About Dalan and optional ACP panel with honest **Not connected** state. No agent process, transport, prompt or provider-key integration.
-- [x] Main open-source icon set: fourteen embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`. Bottom-right 28 px bot-message-square replaces text in the ACP trigger, retaining AI · ACP tooltip/focus help and Cmd-Shift-A. No new app/brand icon.
+- [x] Main open-source icon set: nineteen embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`. Bottom-right 28 px bot-message-square replaces text in the ACP trigger, retaining AI · ACP tooltip/focus help and Cmd-Shift-A. No new app/brand icon.
 - [x] Complete Lucide ISC and retained Feather MIT notices, with adapted GPUI input Apache-2.0 attribution in [third-party notices](../THIRD_PARTY_NOTICES.md), plus bundle resource wiring. Project license remains undecided.
 - [x] Experimental MySQL/MariaDB source form, version 1 password-free profile storage and optional database discovery. Test, Save and Connect remain separate actions.
 - [x] Session-only passwords and opt-in native macOS Keychain storage; explicit failure/compensation boundaries.
@@ -16,7 +16,11 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 - [x] Loaded-page CSV with native save picker, fresh complete rows only, visible success/cancel/error and no overwrite. Default name `Dalan-loaded-page.csv`; no extension enforcement. UTF-8/CRLF/quoted fields, explicit NULL syntax, default spreadsheet-safe text protection and private same-filesystem hard-link publication. No full-query or whole-table export. See [exact export limits](mysql-sources.md#export-loaded-csv).
 - [x] Headless, simulated GPUI, bundle-helper and disposable live transport coverage. Historical icon/sorting/export results: 48 headless, 42 simulated UI, four bundle-helper, one generated Keychain and 22 live checks passed, including sorting on actual routes.
 
-- [x] Compact explorer: 32 px header and 32 px toolbar, four 28 px Add/Manage/Refresh/Remove icons with tooltips and selection/busy/save guards; no rail, header hide/minimise or inactive advanced tools.
+- [x] Compact explorer: no title header; one 32 px toolbar with six 28 px Add/Manage/Refresh/Remove/Expand Loaded/Collapse All icons, tooltips and selection/busy/save guards; bottom-left toggle unchanged; no rail or inactive advanced tools.
+- [x] Virtual lazy tree for large catalogs: 22 px rows, cached expansion, viewport-only rendering, readable ellipsized names/full-name tooltips, Tables/Views groups and unavailable view leaves.
+- [x] Selection-safe explorer actions independent of the current table page; UUID-pinned removal confirmation, source-root-only Refresh and per-branch catalog cancellation/errors.
+- [x] Single-focus tree keyboard navigation and guarded toolbar Enter/Space activation; scoped 71-test simulated suite includes 1,000-database visible-range, scroll-to-900 and End regressions. No native smoothness/FPS claim.
+- [x] Compact-explorer local verification: 57 headless, 71 UI and four Python tests passed with formatting, strict lint and bundle verification; current hosted CI and native review remain pending. See [testing](testing.md#compact-lazy-explorer).
 - [x] Bottom-left 28 px panel-left toggle retaining the closed preference; Cmd-B and View/Layout alternatives unchanged. Both body sides have 6 px padding; 320 px preferred sidebar, 200–480 px bounds and 462 px maximum at 720 px retain main 240 px and compact ACP behavior.
 - [x] Source rows with readable name/engine labels and abstract Lucide database/MySQL and database-zap/MariaDB cues, not vendor logos. Optional marker color, manual hex and labeled Default/Blue/Green/Amber/Red/Purple form presets; no color-only risk meaning or arbitrary-color AA claim.
 - [x] Backward-compatible version 1 color metadata with absent None, case-preserving hex, unchanged password rejection and no automatic rewrite/Keychain migration. Scoped migration and malformed-color no-overwrite tests passed.
@@ -39,7 +43,7 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 
 ## Remaining platform and release work
 
-- [ ] Verify all five CI jobs on the actual next main push. Historical run 37192402473 passed four jobs and failed the Windows fixture; the fixed revision is not yet claimed green. Live database and generated Keychain reruns are not required for this window/layout/test-fixture-only change; their historical evidence remains preserved.
+- [ ] Verify all five CI jobs on the actual next main push. Historical run 37192402473 failed the Windows fixture; fix `3c4fdae` passed all five jobs in run 37194669634. The current compact-tree revision requires a separate run. Live database and generated Keychain reruns are not required for this window/layout/test-fixture-only change; their historical evidence remains preserved.
 - [ ] Native macOS source/browse/sort/save-picker keyboard and error/cancel interaction, visual review, VoiceOver and scaled text. Simulated tests do not close these gates.
 - [ ] Broader MySQL/MariaDB auth/TLS/server matrix and positive trusted HTTPS proxy fixture.
 - [ ] PostgreSQL adapter and workflow slice; Redis engine-native key/type/TTL/binary workflows. Neither adapter is working yet.

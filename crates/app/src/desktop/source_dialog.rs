@@ -237,7 +237,7 @@ mod tests {
         let model = cx.new(|_| SourceModel::for_tests(vec![profile.clone()]));
         model.update(cx, |model, cx| {
             model.selected_source = Some(profile.id.clone());
-            model.edit_source(cx);
+            model.edit_explorer_source(cx);
         });
         let (handle, mut visual) = open(&model, cx);
         let form = handle

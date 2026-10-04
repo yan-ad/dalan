@@ -11,14 +11,14 @@ Implemented scope: macOS dark desktop shell, following the user's supplied DataG
 ```
 
 - Native macOS traffic lights remain real OS controls. A transparent titlebar allows the compact custom top bar; its workspace-label region drags the window, and double-click requests the native zoom behavior.
-- A 38 px top bar, 32 px pane headers, a separate 32 px explorer toolbar, and 32 px status strip retain the dense proportions of the reference. Main content has database browsing and bounded table results, but no SQL editor, welcome cards or gradients.
+- A 38 px top bar, 32 px headers on other panes, a single 32 px explorer toolbar without a title header, and 32 px status strip retain the dense proportions of the reference. Main content has database browsing and bounded table results, but no SQL editor, welcome cards or gradients.
 - The single Database Explorer sidebar defaults to 320 px, bounded to 200–480 px. Dark inset surfaces use 6 px structural corner radii, a 6 px divider gap, and 6 px outer padding on both sides, not floating cards or reserved rail space. The optional scoped right ACP panel is initially closed; there is no Files rail.
 - System UI typography is a calm, dense 13 pt, with 12 px secondary copy and an 11 px status strip. No font assets or logo are introduced.
 - Fourteen pinned Lucide SVGs provide utility glyphs: database, database-zap, plus, settings-2, refresh-cw, trash-2, panel-left, chevron-down, minus, bot-message-square, arrow-up, arrow-down, download and check. Local trash-2.svg is the unchanged upstream trash.svg alias from the same pin; see the [asset README](../crates/app/assets/README.md). No vendor-brand artwork, decorative AI sparkle or icon-font dependency.
 - Database Explorer shows real saved sources and discovered databases/tables. No fabricated sources or results.
 - The status strip identifies the development scope without implying a connected database or agent. Its bottom-right 28 px bot-message-square icon button, with AI · ACP tooltip/focus-help label, toggles the right panel. The panel says **Not connected**, with no ACP transport or agent launch implemented, no text prompt input yet, and no BYOK/provider settings.
 
-The activity rail and header hide/minimise button are removed. Database Explorer has one 32 px title header without add text or a repeated title row, followed by a 32 px toolbar with four 28 px icon buttons. Add, Manage, Refresh and Remove have action-specific tooltips; no inactive DDL, console or advanced-option icons are shown. Source selection rows show name, readable engine label and abstract Lucide database/MySQL or database-zap/MariaDB cue, not vendor logos or branded driver icons. Optional color affects only the small marker; selection/focus and names stay independently readable.
+Database Explorer now has only a 32 px toolbar with six 28 px icon actions: Add, Manage, Refresh, Remove, Expand Loaded and Collapse All. The Database Explorer title header is removed, as are the activity rail and header hide/minimise controls. The bottom-left 28 px panel-left toggle is unchanged; Cmd-B and native View/Layout alternatives remain. Closing the explorer retains that preference until toggled or reset. All six actions have action-specific tooltips; no inactive DDL, console or advanced-option icons are shown. Source selection rows show name, readable engine label and abstract Lucide database/MySQL or database-zap/MariaDB cue, not vendor logos or branded driver icons. Optional color affects only the small marker; selection/focus and names stay independently readable.
 
 With no sources, the main area centers a working Connect to a Source action, not a demo/trial welcome screen. It opens the same dedicated source dialog window by mouse, Enter or Space and remains available when Database Explorer is hidden. Loading and sanitized errors remain visible in the appropriate source/browse state.
 
@@ -29,8 +29,10 @@ With no sources, the main area centers a working Connect to a Source action, not
 | Bottom-left 28 px panel-left | Toggle Database Explorer; retain the closed preference until toggled or reset |
 | Explorer Add / plus | Open/reuse the dedicated source dialog window; disabled during saving |
 | Explorer Manage / settings-2 | Edit selected source; disabled without selection or while busy/saving |
-| Explorer Refresh / refresh-cw | Refresh selected source; disabled without selection or while busy/saving |
-| Explorer Remove / trash-2 | Request confirmed local removal; disabled without selection or while busy/saving |
+| Explorer Refresh / refresh-cw | Invalidate explorer-selected source catalog and reload its root only, not the current table page; selection/busy/save guards apply |
+| Explorer Remove / trash-2 | Confirm removal of a captured stable source UUID; another source's current page is preserved; selection/busy/save guards apply |
+| Explorer Expand Loaded / list-tree | Expand cached branches only; no network fan-out |
+| Explorer Collapse All / chevrons-down-up | Collapse branches and cancel their catalog work, preserving cached metadata |
 | Main Connect to a Source | With no sources, open/reuse the dedicated source dialog window by mouse or Enter/Space, even with explorer hidden |
 | Layout | Open/close the layout menu |
 | Menu toggle row | Toggle Database Explorer; show requested Shown/Hidden preference |
@@ -131,13 +133,25 @@ Generic Files explorer, generic code viewer, Git, build/run integrations, generi
 
 The historical blank-main state above is superseded by the source slice below. SQL editor work requires its own scoped milestone. Light/system theme, text scaling, and native accessibility remain required before release.
 
+## Compact lazy explorer
+
+Rows are 22 px high. Sources have an abstract driver icon, optional color marker, readable name and engine label, and a count only for loaded databases. Databases have disclosure and database icons. Tables and Views use folder icons and show counts only when database metadata is known; table/view leaves use Table icons. Tables automatically opens after metadata arrives; Views starts collapsed and its leaves remain unavailable, issuing no browse query. Unread metadata must not imply view availability or a zero count.
+
+Names have explicit constrained text layout, nonblank ellipses and full-name tooltips. Unicode and quoted names remain distinct through collision-safe IDs. This replaces per-node full-hierarchy buttons; the reported blank state has no measured root cause, and the change is not evidence of a font or GPU defect.
+
+The tree has one focusable list, with Up/Down and Home/End navigation. Right expands or enters a branch; Left collapses or moves to the parent. Enter/Space toggles branches; Enter on an available table leaf browses it. Toolbar Enter/Space invokes the focused action, not the tree; tree-only keys require tree focus. Clicking a row's disclosure chevron stops propagation so it does not also trigger row activation.
+
+The flattened tree is rebuilt on model notifications, not wheel events. A uniform-list viewport renders only the requested visible range, keeping offscreen rows out of the painted hierarchy. Cached database expansions survive filters, table pagination and source changes. Expand Loaded opens cached branches without network fan-out; Collapse All keeps metadata. Branch loading/error status dots expose full sanitized errors in tooltips; default global-error feedback remains available. Explorer selection is independent of the source owning the current table page, so Manage/Remove on another source preserve that page. Refresh invalidates only the explorer-selected source cache and reloads its root, not the table page.
+
+Scoped simulated GPUI coverage passed **71 tests**, including 1,000 databases with at most 40 painted rows, scrolling to row 900 and End navigation. No native manual smoothness, FPS, latency, VoiceOver or scaled-text result is implied. Full workspace/bundle validation passed 57 headless, 71 UI and four Python tests with formatting, strict lint and bundle checks; hosted CI for the new revision remains pending; see [testing](testing.md#compact-lazy-explorer).
+
 ## Dedicated source dialog window
 
 **Data Sources · Dalan** is one application-wide, resizable normal GPUI window: initial 1040 × 760, minimum 780 × 560. It is not an OS modal sheet and does not trap or block the main window. Add, Manage and the centered connection action activate/reuse it, preserving draft edits. A new form or model `form_generation` refresh (including loaded passwords) replaces the form inside the existing window and focuses Name; ordinary notifications do not reset it. Cancel/Escape/Cmd-W/native close discard the draft and cancel testing. Native close and Cmd-W refuse dismissal while credential/JSON saving is active. Model-observed successful Save closes the window, without auto-connect.
 
 The form starts at Engine, without a redundant internal title strip. Database, SSH, HTTP and HTTPS Host/Port fields share horizontal rows, defaulting to localhost and 3306/22/8080/443 respectively. Port is 96 px wide, minimum 80 px; native-input Tab still moves Host → Port. The explicit body maximum is 720 px; zero minimum widths allow text truncation, while nonshrinking rows retain 28 px input and 30 px candidate heights. The viewport scrolls a natural-height body instead of vertically compressing it. The key list is capped at 150 px and long labels ellipsize.
 
-The supplied screenshot may predate the full-width form, but it exposed a real flex-shrink defect, not merely an old sidebar layout. Draw-bound regressions at 1040 × 760 and 850 × 600 exercise long values, key labels and password/color changes, proving fields no longer collapse to single-character widths in simulation. Current local suites passed 54 headless, 63 simulated UI and four Python tests. Native visual/accessibility review remains unverified; existing capture attempts were blocked by Screen Recording permissions, which were not changed. See [testing](testing.md#source-dialog-window-and-windows-fixture-fix) for CI evidence and the pending next-main gate.
+The supplied screenshot may predate the full-width form, but it exposed a real flex-shrink defect, not merely an old sidebar layout. Draw-bound regressions at 1040 × 760 and 850 × 600 exercise long values, key labels and password/color changes, proving fields no longer collapse to single-character widths in simulation. Historical source-dialog local suites passed 54 headless, 63 simulated UI and four Python tests. Native visual/accessibility review remains unverified; existing capture attempts were blocked by Screen Recording permissions, which were not changed. See [testing](testing.md#source-dialog-window-and-windows-fixture-fix) for CI evidence and the pending next-main gate.
 
 ## Current source and read-view slice
 
