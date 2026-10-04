@@ -359,3 +359,22 @@ async fn mysql_default_verified_tls_rejects_fixture() -> anyhow::Result<()> {
 async fn mariadb_default_verified_tls_rejects_fixture() -> anyhow::Result<()> {
     verified_tls_rejects_fixture("DALAN_TEST_MARIADB", DbEngine::MariaDb).await
 }
+
+/// scripts/test-databases provisions this account with caching_sha2_password
+/// and runs this test first, without a CLI readiness login warming its cache.
+#[tokio::test]
+#[ignore = "requires a fresh disposable caching_sha2_password account"]
+async fn mysql_uncached_sha2_without_tls() -> anyhow::Result<()> {
+    let (mut profile, password) = configured("DALAN_TEST_MYSQL", DbEngine::MySql)?;
+    profile.username = std::env::var("DALAN_TEST_MYSQL_UNCACHED_USER")?;
+    anyhow::ensure!(
+        profile.tls == TlsMode::Disabled,
+        "requires explicit TLS_DISABLED=1"
+    );
+    assert_eq!(profile.database, None);
+    let report = test_connection(&profile, &password).await?;
+    assert!(report.databases.iter().any(|db| db == "dalan_fixture"));
+    // The second handshake exercises the now-cached fast authentication path.
+    test_connection(&profile, &password).await?;
+    Ok(())
+}

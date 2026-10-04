@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow, ensure};
 use std::{
     net::{IpAddr, Ipv4Addr},
     process::Stdio,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{
@@ -16,6 +17,7 @@ use tokio::{
 pub(crate) struct Relay {
     pub port: u16,
     task: JoinHandle<Result<()>>,
+    failure: Arc<Mutex<Option<String>>>,
 }
 impl Drop for Relay {
     fn drop(&mut self) {
@@ -26,13 +28,44 @@ impl Relay {
     pub fn ips(&self) -> Vec<IpAddr> {
         vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]
     }
+    pub fn check_failure(&self) -> Result<()> {
+        if let Some(message) = self
+            .failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            return Err(anyhow!("{message}"));
+        }
+        Ok(())
+    }
     pub fn check(&self) -> Result<()> {
+        self.check_failure()?;
         ensure!(
             !self.task.is_finished(),
             "Transport relay closed unexpectedly (check proxy or SSH configuration)"
         );
         Ok(())
     }
+}
+// Store only locally generated labels and the typed I/O kind, never OS text,
+// SSH stderr, proxy responses, hostnames, or forwarded protocol bytes.
+fn spawn_forward(
+    failure: Arc<Mutex<Option<String>>>,
+    label: &'static str,
+    future: impl std::future::Future<Output = Result<()>> + Send + 'static,
+) -> JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let result = future.await;
+        if let Err(error) = &result {
+            let message = match error.downcast_ref::<std::io::Error>() {
+                Some(e) => format!("{label} failed ({:?})", e.kind()),
+                None => format!("{label} closed unexpectedly; check transport configuration"),
+            };
+            *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
+        }
+        result
+    })
 }
 fn authority(host: &str, port: u16) -> String {
     if host.contains(':') {
@@ -82,14 +115,15 @@ pub(crate) async fn start(profile: &SourceProfile) -> Result<Option<Relay>> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let port = listener.local_addr()?.port();
     let target = authority(&profile.host, profile.port);
+    let failure = Arc::new(Mutex::new(None));
     let task = match &profile.transport {
         // Own the TCP transport even without a proxy, so caps/cancellation can
         // close it without mysql_async's drop cleanup draining unread rows.
         Transport::Direct => {
             let mut remote = TcpStream::connect((profile.host.as_str(), profile.port))
                 .await
-                .map_err(|_| anyhow!("Cannot connect to database"))?;
-            tokio::spawn(async move {
+                .map_err(|e| anyhow!("Cannot connect to database ({:?})", e.kind()))?;
+            spawn_forward(failure.clone(), "Database TCP relay", async move {
                 let (mut local, _) = listener.accept().await?;
                 tokio::io::copy_bidirectional(&mut local, &mut remote).await?;
                 Ok(())
@@ -158,7 +192,7 @@ pub(crate) async fn start(profile: &SourceProfile) -> Result<Option<Relay>> {
                 .stdout
                 .take()
                 .ok_or_else(|| anyhow!("SSH stdout unavailable"))?;
-            tokio::spawn(async move {
+            spawn_forward(failure.clone(), "SSH tunnel", async move {
                 let (socket, _) = listener.accept().await?;
                 let (mut read, mut write) = socket.into_split();
                 let forward = async {
@@ -195,7 +229,7 @@ pub(crate) async fn start(profile: &SourceProfile) -> Result<Option<Relay>> {
                 )
                 .await
                 .map_err(|_| anyhow!("HTTP CONNECT timed out"))??;
-                tokio::spawn(async move {
+                spawn_forward(failure.clone(), "HTTPS CONNECT relay", async move {
                     let (mut local, _) = listener.accept().await?;
                     tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
                     Ok(())
@@ -208,7 +242,7 @@ pub(crate) async fn start(profile: &SourceProfile) -> Result<Option<Relay>> {
                 )
                 .await
                 .map_err(|_| anyhow!("HTTP CONNECT timed out"))??;
-                tokio::spawn(async move {
+                spawn_forward(failure.clone(), "HTTP CONNECT relay", async move {
                     let (mut local, _) = listener.accept().await?;
                     tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
                     Ok(())
@@ -216,11 +250,42 @@ pub(crate) async fn start(profile: &SourceProfile) -> Result<Option<Relay>> {
             }
         }
     };
-    Ok(Some(Relay { port, task }))
+    Ok(Some(Relay {
+        port,
+        task,
+        failure,
+    }))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn forwarding_failure_retains_only_safe_io_kind() {
+        let failure = Arc::new(Mutex::new(None));
+        let task = spawn_forward(failure.clone(), "Database TCP relay", async {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "sentinel-secret-host-password",
+            )
+            .into())
+        });
+        let relay = Relay {
+            port: 1,
+            task,
+            failure,
+        };
+        while !relay.task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let error = relay.check_failure().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Database TCP relay failed (ConnectionReset)"
+        );
+        assert!(!format!("{error:#?}").contains("sentinel"));
+        assert_eq!(error.chain().count(), 1);
+        assert!(relay.check().is_err());
+    }
     async fn response(bytes: Vec<u8>) -> Result<Vec<u8>> {
         let (mut a, mut b) = tokio::io::duplex(32768);
         let writer = tokio::spawn(async move {

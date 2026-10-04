@@ -107,12 +107,62 @@ impl CellValue {
     }
 }
 fn driver_error(e: mysql_async::Error) -> anyhow::Error {
-    // Server messages may echo a bound credential/value, so only emit the numeric code.
+    use mysql_async::{DriverError as D, Error as E, IoError};
+    // Never retain the original error as a source: server messages, packets,
+    // rows, URLs and OS error text can contain credentials or bound values.
     match e {
-        mysql_async::Error::Server(e) => {
-            anyhow!("Database rejected the operation (code {})", e.code)
+        E::Server(e) => {
+            let reason = match e.code {
+                1045 => "Authentication denied; check password and account grants",
+                1044 => "Account cannot access the selected database",
+                1049 => "Selected database does not exist",
+                1130 => "Server does not permit this client host; check account host grants",
+                1251 => "Server requires an unsupported authentication protocol",
+                3159 => "Server requires secure transport; enable verified TLS",
+                1820 => {
+                    "Account password is expired; change it using an administrator-approved client"
+                }
+                _ => "Database rejected the operation",
+            };
+            anyhow!("{reason} (code {})", e.code)
         }
-        _ => anyhow!(
+        E::Io(IoError::Io(e)) => anyhow!("Database transport/TLS I/O failed ({:?})", e.kind()),
+        E::Io(IoError::Tls(e)) => {
+            let reason = match e {
+                mysql_async::TlsError::InvalidDnsName(_) => "invalid server identity",
+                mysql_async::TlsError::Pem(_) => "invalid certificate or key PEM encoding",
+                mysql_async::TlsError::VerifierBuilderError(_) => {
+                    "invalid certificate trust configuration"
+                }
+                mysql_async::TlsError::Tls(_) => {
+                    "TLS configuration or certificate verification failed"
+                }
+            };
+            anyhow!("Database TLS failed: {reason}; check trust and server identity")
+        }
+        E::Driver(e) => anyhow!(
+            "{}",
+            match e {
+                D::ConnectionClosed => "Database server closed the connection during the operation",
+                D::CantParseServerVersion { .. } =>
+                    "Database handshake contains an unsupported server version",
+                D::UnknownAuthPlugin { .. } =>
+                    "Database requested an unsupported authentication plugin",
+                D::NoClientSslFlagFromServer =>
+                    "Database server does not advertise TLS support; verified TLS cannot connect",
+                D::NoKeyFound => "Database TLS client identity contains no usable private key",
+                D::CleartextPluginDisabled =>
+                    "Database requested cleartext authentication, which is disabled; no insecure fallback was attempted",
+                D::MysqlOldPasswordDisabled =>
+                    "Database requested legacy mysql_old_password authentication, which is disabled",
+                D::UnexpectedPacket { .. } => "Database protocol failed: unexpected packet",
+                D::PacketOutOfOrder => "Database protocol failed: packet out of order",
+                D::PacketTooLarge => "Database protocol packet exceeds the configured limit",
+                _ => "Database driver failed during the operation",
+            }
+        ),
+        E::Url(_) => anyhow!("Invalid database connection options"),
+        E::Other(_) => anyhow!(
             "Database connection or protocol failed (check TLS, credentials, and transport)"
         ),
     }
@@ -137,7 +187,9 @@ impl Session {
             .pass(Some(password))
             .db_name(profile.database.clone())
             .prefer_socket(false)
-            .max_allowed_packet(Some(PACKET_CAP));
+            .max_allowed_packet(Some(PACKET_CAP))
+            // Disabled means no TLS request, independent of dependency defaults.
+            .ssl_opts(None);
         if let Some(r) = &relay {
             opts = opts.tcp_port(r.port).resolved_ips(Some(r.ips()));
         }
@@ -148,7 +200,19 @@ impl Session {
             }
             opts = opts.ssl_opts(ssl);
         }
-        let conn = Conn::new(opts).await.map_err(driver_error)?;
+        let conn = match Conn::new(opts).await {
+            Ok(conn) => conn,
+            Err(error) => {
+                // A server rejection is authoritative even if it then closes
+                // the transport. Only enrich errors caused by broken forwarding.
+                if !matches!(error, mysql_async::Error::Server(_))
+                    && let Some(r) = &relay
+                {
+                    r.check_failure()?;
+                }
+                return Err(driver_error(error));
+            }
+        };
         if let Some(r) = &relay {
             r.check()?;
         }
@@ -559,6 +623,75 @@ pub async fn browse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn errors_classify_without_leaking_server_or_input_values() {
+        use mysql_async::{DriverError as D, Error as E, IoError, ServerError};
+        const SECRET: &str = "sentinel-password-SELECT-secret-user";
+        for (code, expected) in [
+            (1045, "Authentication denied"),
+            (1044, "cannot access"),
+            (1049, "does not exist"),
+            (1130, "client host"),
+            (1251, "authentication protocol"),
+            (3159, "secure transport"),
+            (1820, "password is expired"),
+            (9999, "rejected the operation"),
+        ] {
+            let error = driver_error(E::Server(ServerError {
+                code,
+                message: SECRET.into(),
+                state: SECRET.into(),
+            }));
+            let message = format!("{error:#}");
+            assert!(message.contains(expected));
+            assert!(message.contains(&code.to_string()));
+            assert!(!message.contains(SECRET));
+            assert_eq!(error.chain().count(), 1);
+        }
+        for (error, expected) in [
+            (
+                D::UnknownAuthPlugin {
+                    name: SECRET.into(),
+                },
+                "unsupported authentication plugin",
+            ),
+            (
+                D::CantParseServerVersion {
+                    version_string: SECRET.into(),
+                },
+                "server version",
+            ),
+            (
+                D::UnexpectedPacket {
+                    payload: SECRET.as_bytes().to_vec(),
+                },
+                "unexpected packet",
+            ),
+            (D::ConnectionClosed, "closed the connection"),
+            (D::NoClientSslFlagFromServer, "TLS support"),
+            (D::NoKeyFound, "private key"),
+            (D::CleartextPluginDisabled, "no insecure fallback"),
+            (D::MysqlOldPasswordDisabled, "legacy"),
+            (D::PacketOutOfOrder, "out of order"),
+            (D::PacketTooLarge, "configured limit"),
+        ] {
+            let error = driver_error(E::Driver(error));
+            assert!(error.to_string().contains(expected));
+            assert!(!format!("{error:#?}").contains(SECRET));
+            assert_eq!(error.chain().count(), 1);
+        }
+        let error = driver_error(E::Io(IoError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            SECRET,
+        ))));
+        assert_eq!(
+            error.to_string(),
+            "Database transport/TLS I/O failed (ConnectionReset)"
+        );
+        assert!(!format!("{error:#?}").contains(SECRET));
+        let error = driver_error(E::Other(Box::new(std::io::Error::other(SECRET))));
+        assert!(!format!("{error:#?}").contains(SECRET));
+    }
     fn col() -> ColumnInfo {
         ColumnInfo {
             name: "a`b".into(),

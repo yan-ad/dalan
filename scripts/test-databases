@@ -18,9 +18,10 @@ for pair in "$MYSQL mysql:8.4" "$MARIA mariadb:11.4"; do
     --env MYSQL_ROOT_PASSWORD=dalan-local-root-only \
     --mount "type=bind,source=$ROOT/scripts/tests/mysql-fixture.sql,target=/docker-entrypoint-initdb.d/fixture.sql,readonly" \
     "$2" >/dev/null
+  # Readiness must not authenticate as the reader: that warms caching_sha2_password.
   ready=0
   for attempt in $(seq 1 90); do
-    if docker exec "$1" sh -c 'if command -v mariadb >/dev/null; then client=mariadb; else client=mysql; fi; MYSQL_PWD=dalan-local-fixture-only "$client" -h127.0.0.1 -udalan_reader -N -e "SELECT COUNT(*) FROM dalan_fixture.contact"' 2>/dev/null | grep -q '^3$'; then ready=1; break; fi
+    if docker exec "$1" sh -c 'if command -v mariadb >/dev/null; then client=mariadb; else client=mysql; fi; MYSQL_PWD=dalan-local-root-only "$client" -h127.0.0.1 -uroot -N -e "SELECT COUNT(*) FROM dalan_fixture.contact"' 2>/dev/null | grep -q '^3$'; then ready=1; break; fi
     sleep 2
   done
   [ "$ready" -eq 1 ] || { echo "Fixture server $1 did not become ready" >&2; docker logs "$1" | tail -30; exit 1; }
@@ -29,6 +30,11 @@ MYSQL_PORT=$(docker port "$MYSQL" 3306/tcp | sed 's/.*://')
 MARIA_PORT=$(docker port "$MARIA" 3306/tcp | sed 's/.*://')
 export DALAN_TEST_MYSQL_HOST=127.0.0.1 DALAN_TEST_MYSQL_PORT="$MYSQL_PORT" DALAN_TEST_MYSQL_USER=dalan_reader DALAN_TEST_MYSQL_PASSWORD=dalan-local-fixture-only DALAN_TEST_MYSQL_DATABASE=dalan_fixture DALAN_TEST_MYSQL_TLS_DISABLED=1
 export DALAN_TEST_MARIADB_HOST=127.0.0.1 DALAN_TEST_MARIADB_PORT="$MARIA_PORT" DALAN_TEST_MARIADB_USER=dalan_reader DALAN_TEST_MARIADB_PASSWORD=dalan-local-fixture-only DALAN_TEST_MARIADB_DATABASE=dalan_fixture DALAN_TEST_MARIADB_TLS_DISABLED=1
+# A dedicated MySQL account has never authenticated. Force the plugin explicitly
+# and run this test alone before any concurrent smoke tests can warm its cache.
+docker exec "$MYSQL" sh -c 'MYSQL_PWD=dalan-local-root-only mysql -h127.0.0.1 -uroot -e "CREATE USER \"dalan_uncached\"@\"%\" IDENTIFIED WITH caching_sha2_password BY \"dalan-local-fixture-only\"; GRANT SELECT ON dalan_fixture.* TO \"dalan_uncached\"@\"%\";"'
+export DALAN_TEST_MYSQL_UNCACHED_USER=dalan_uncached
+cargo test -p dalan-drivers --test mysql_live --locked mysql_uncached_sha2_without_tls -- --ignored --nocapture
 # Runs direct and anonymous loopback HTTP CONNECT fixture coverage, plus
 # verified-TLS rejection of untrusted/absent providers. No HTTPS/SSH or trusted
 # certificate success is claimed by this plaintext disposable fixture.

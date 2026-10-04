@@ -255,7 +255,11 @@ const OPERATORS: [(FilterOperator, &str); 7] = [
 
 impl SourceBrowser {
     pub(super) fn new(model: Entity<SourceModel>, cx: &mut Context<Self>) -> Self {
-        let value = cx.new(|cx| TextInput::new("", "Filter value", false, cx));
+        let value = cx.new(|cx| {
+            let mut input = TextInput::new("", "Filter value", false, cx);
+            input.set_tab_order(20);
+            input
+        });
         let m = model.read(cx);
         let selection = (
             m.selected_source.clone(),
@@ -461,9 +465,6 @@ impl Render for SourceBrowser {
                             div()
                                 .id("filter-value")
                                 .debug_selector(|| "filter-value".into())
-                                .track_focus(&self.value.read(cx).focus_handle())
-                                .tab_stop(true)
-                                .tab_index(20)
                                 .w(px(200.))
                                 .child(self.value.clone()),
                         )

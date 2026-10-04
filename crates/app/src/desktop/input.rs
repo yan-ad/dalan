@@ -52,7 +52,7 @@ impl TextInput {
     ) -> Self {
         let content = single_line(&value.into()).into();
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             content,
             placeholder: placeholder.into(),
             secret,
@@ -83,6 +83,10 @@ impl TextInput {
 
     pub(super) fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
+    }
+
+    pub(super) fn set_tab_order(&mut self, index: isize) {
+        self.focus_handle = self.focus_handle.clone().tab_index(index);
     }
 
     fn display_text(&self) -> SharedString {
@@ -181,6 +185,11 @@ impl TextInput {
         cx: &mut Context<Self>,
     ) {
         self.focus_handle.focus(window);
+        if event.click_count >= 2 {
+            self.is_selecting = false;
+            self.select_all(&SelectAll, window, cx);
+            return;
+        }
         self.is_selecting = true;
 
         if event.modifiers.shift {
@@ -800,6 +809,56 @@ mod tests {
         input.read_with(visual, |input, _| {
             assert_eq!(input.last_layout.as_ref().unwrap().text.as_ref(), "••")
         });
+    }
+
+    #[gpui::test]
+    fn double_click_selects_all_unicode_and_secret_text(cx: &mut TestAppContext) {
+        cx.update(bind_keys);
+        for secret in [false, true] {
+            let text = "é👩‍💻e\u{301}";
+            let (input, visual) = cx.add_window_view(|_, cx| TextInput::new(text, "", secret, cx));
+            visual.refresh().unwrap();
+            visual.run_until_parked();
+            let position = visual.debug_bounds("dalan-input").unwrap().center();
+            visual.simulate_event(MouseDownEvent {
+                position,
+                modifiers: gpui::Modifiers::default(),
+                button: MouseButton::Left,
+                click_count: 2,
+                first_mouse: false,
+            });
+            // Movement after the second click must not shrink the full selection.
+            visual.simulate_event(MouseMoveEvent {
+                position,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: gpui::Modifiers::default(),
+            });
+            visual.update(|window, app| {
+                app.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
+                input.update(app, |input, cx| {
+                    assert_eq!(input.selected_range, 0..text.len());
+                    assert!(!input.is_selecting);
+                    if secret {
+                        input.copy(&Copy, window, cx);
+                        input.cut(&Cut, window, cx);
+                        assert_eq!(input.value(), text);
+                        assert_eq!(
+                            cx.read_from_clipboard().unwrap().text().as_deref(),
+                            Some("sentinel")
+                        );
+                        let mut actual = None;
+                        assert!(
+                            input
+                                .text_for_range(0..100, &mut actual, window, cx)
+                                .is_none()
+                        );
+                        assert_eq!(input.last_layout.as_ref().unwrap().text.as_ref(), "•••");
+                    }
+                });
+            });
+            visual.simulate_input("replacement");
+            input.read_with(visual, |input, _| assert_eq!(input.value(), "replacement"));
+        }
     }
 
     #[gpui::test]

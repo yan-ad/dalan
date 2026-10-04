@@ -23,6 +23,10 @@ pub(super) struct SourceForm {
     transport: u8,
     tls: TlsMode,
     save_password: bool,
+    ssh_keys: Vec<dalan_app::ssh_keys::SshKeyCandidate>,
+    key_picker_open: bool,
+    key_picker_busy: bool,
+    key_picker_error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -140,6 +144,7 @@ impl SourceForm {
             "source-test",
             "source-save",
             "source-cancel",
+            "source-keys",
         ]
         .into_iter()
         .map(|id| (id, cx.focus_handle().tab_stop(true)))
@@ -155,6 +160,10 @@ impl SourceForm {
             controls,
             root_focus: cx.focus_handle().tab_stop(false),
             transport,
+            ssh_keys: vec![],
+            key_picker_open: false,
+            key_picker_busy: false,
+            key_picker_error: None,
             _subscriptions: subscriptions,
         }
     }
@@ -228,6 +237,31 @@ impl SourceForm {
             return;
         }
         match id {
+            "source-keys" => {
+                self.key_picker_open = !self.key_picker_open;
+                if self.key_picker_open && !self.key_picker_busy {
+                    self.key_picker_busy = true;
+                    self.key_picker_error = None;
+                    let task = cx.background_executor().spawn(async move {
+                        let directory = dalan_app::ssh_keys::user_ssh_directory()?;
+                        dalan_app::ssh_keys::discover(&directory)
+                    });
+                    cx.spawn(async move |this, cx| {
+                        let result = task.await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.key_picker_busy = false;
+                            match result {
+                                Ok(keys) => this.ssh_keys = keys,
+                                Err(error) => this.key_picker_error = Some(error.to_string()),
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                }
+                cx.notify();
+                return;
+            }
             "source-cancel" => {
                 self.cancel(cx);
                 return;
@@ -274,7 +308,7 @@ impl SourceForm {
         id: &'static str,
         label: &'static str,
         selected: bool,
-        index: isize,
+        _index: isize,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let disabled = matches!(id, "source-save" | "source-test") && self.model.read(cx).form_busy;
@@ -282,8 +316,6 @@ impl SourceForm {
             .id(id)
             .debug_selector(move || id.into())
             .track_focus(&self.controls[id])
-            .tab_stop(true)
-            .tab_index(index)
             .flex()
             .items_center()
             .justify_center()
@@ -331,19 +363,71 @@ impl SourceForm {
             .child(div().flex_1().min_w(px(0.)).child(content))
     }
 
-    fn field(&self, id: &'static str, label: &'static str, index: isize, cx: &App) -> Div {
-        let handle = self.inputs[id].read(cx).focus_handle();
+    fn field(&self, id: &'static str, label: &'static str, _index: isize, _cx: &App) -> Div {
+        // Only TextInput tracks its handle. Equal indices follow the visual tree order.
         self.row(
             label,
             div()
                 .id(id)
                 .debug_selector(move || id.into())
-                .track_focus(&handle)
-                .tab_stop(true)
-                .tab_index(index)
                 .w_full()
                 .child(self.inputs[id].clone()),
         )
+    }
+
+    fn choose_key(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.read(cx).saving {
+            return;
+        }
+        self.inputs["source-tunnel-key"].update(cx, |input, cx| input.set_value(path.clone(), cx));
+        self.last_values.insert("source-tunnel-key", path);
+        self.model.update(cx, |model, cx| model.edit_form(cx));
+        self.key_picker_open = false;
+        self.inputs["source-tunnel-key"]
+            .read(cx)
+            .focus_handle()
+            .focus(window);
+        cx.notify();
+    }
+
+    fn key_row(
+        &self,
+        id: impl Into<gpui::SharedString>,
+        label: String,
+        path: String,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let id = id.into();
+        let selector = id.clone();
+        let keyboard_path = path.clone();
+        div()
+            .id(id)
+            .debug_selector(move || selector.to_string())
+            .tab_index(0)
+            .w_full()
+            .h(px(30.0))
+            .flex()
+            .items_center()
+            .px(px(8.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(rgb(CHROME))
+            .bg(rgb(CHROME))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(HOVER)))
+            .focus(|style| style.border_color(rgb(FOCUS)))
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.choose_key(path.clone(), window, cx)),
+            )
+            .on_key_down(
+                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        this.choose_key(keyboard_path.clone(), window, cx);
+                    }
+                }),
+            )
+            .child(label)
     }
 }
 
@@ -416,7 +500,58 @@ impl Render for SourceForm {
                 .child(self.field("source-tunnel-port", "SSH port", 14, cx))
                 .child(self.field("source-tunnel-user", "SSH user", 15, cx))
                 .child(self.field("source-tunnel-key", "Identity file", 16, cx))
-                .child(self.field("source-known-hosts", "Known hosts file", 17, cx));
+                .child(self.field("source-known-hosts", "Known hosts file", 17, cx))
+                .child(self.row(
+                    "",
+                    self.button("source-keys", "SSH keys…", self.key_picker_open, 16, cx),
+                ));
+            if self.key_picker_open {
+                let mut picker = div()
+                    .id("ssh-key-picker")
+                    .debug_selector(|| "ssh-key-picker".into())
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .p(px(8.0))
+                    .bg(rgb(HEADER))
+                    .child(self.key_row(
+                        "ssh-use-agent",
+                        "Use SSH agent (no explicit identity file)".into(),
+                        String::new(),
+                        cx,
+                    ));
+                if self.key_picker_busy {
+                    picker = picker.child("Listing ~/.ssh identity filenames…");
+                }
+                if let Some(error) = &self.key_picker_error {
+                    picker = picker.child(error.clone());
+                }
+                if !self.key_picker_busy && self.ssh_keys.is_empty() {
+                    picker = picker
+                        .child("No candidate keys found. You can enter an identity path manually.");
+                }
+                picker = picker.child(
+                    div()
+                        .id("ssh-key-list")
+                        .max_h(px(150.0))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .children(self.ssh_keys.iter().enumerate().map(|(index, key)| {
+                            self.key_row(
+                                format!("ssh-key-{index}"),
+                                key.name.clone(),
+                                key.path.to_string_lossy().into_owned(),
+                                cx,
+                            )
+                        })),
+                );
+                picker = picker.child(div().text_size(px(12.0)).text_color(rgb(MUTED))
+                    .child("Candidates are listed by filename only. Unlock encrypted keys with ssh-add; private key contents are not read by this picker."));
+                body = body.child(self.row("", picker));
+            }
         } else if self.transport == 2 || self.transport == 3 {
             body = body
                 .child(self.field("source-proxy-host", "Proxy host", 13, cx))
@@ -490,6 +625,7 @@ impl Render for SourceForm {
             .id("source-form")
             .debug_selector(|| "source-form".into())
             .track_focus(&self.root_focus)
+            .tab_group()
             .tab_stop(false)
             .key_context("SourceForm")
             .size_full()
@@ -735,6 +871,94 @@ mod tests {
         });
     }
 
+    fn assert_input_focus(form: &Entity<SourceForm>, cx: &mut VisualTestContext, id: &'static str) {
+        cx.run_until_parked();
+        assert!(
+            cx.update(|window, app| {
+                form.read(app).inputs[id]
+                    .read(app)
+                    .focus_handle()
+                    .is_focused(window)
+            }),
+            "expected focus on {id}"
+        );
+    }
+
+    #[gpui::test]
+    fn tab_and_shift_tab_follow_inputs_without_duplicate_stops(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        let fields = [
+            "source-name",
+            "source-host",
+            "source-port",
+            "source-user",
+            "source-password",
+            "source-database",
+        ];
+        click(cx, fields[0]);
+        for (i, id) in fields.iter().enumerate() {
+            assert_input_focus(&form, cx, id);
+            cx.simulate_keystrokes("cmd-a");
+            cx.simulate_input(&format!("field-{i}"));
+            // Rerendering must not replace the focused handle.
+            form.update(cx, |_, cx| cx.notify());
+            cx.run_until_parked();
+            assert_input_focus(&form, cx, id);
+            if i + 1 < fields.len() {
+                cx.simulate_keystrokes("tab");
+            }
+        }
+        for id in fields.iter().rev().skip(1) {
+            cx.simulate_keystrokes("shift-tab");
+            assert_input_focus(&form, cx, id);
+        }
+        for (i, id) in fields.iter().enumerate() {
+            assert_eq!(
+                form.read_with(cx, |form, app| form.inputs[id].read(app).value()),
+                format!("field-{i}")
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn conditional_transport_inputs_follow_visual_order(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        click(cx, "source-ssh");
+        let fields = [
+            "source-tunnel-host",
+            "source-tunnel-port",
+            "source-tunnel-user",
+            "source-tunnel-key",
+            "source-known-hosts",
+        ];
+        click(cx, fields[0]);
+        for id in fields.iter().skip(1) {
+            cx.simulate_keystrokes("tab");
+            assert_input_focus(&form, cx, id);
+        }
+        for id in fields.iter().rev().skip(1) {
+            cx.simulate_keystrokes("shift-tab");
+            assert_input_focus(&form, cx, id);
+        }
+        click(cx, "source-direct");
+        assert_eq!(form.read_with(cx, |form, _| form.transport), 0);
+        click(cx, "source-database");
+        // Transport and TLS controls remain keyboard-accessible, but hidden SSH
+        // fields are not part of the tab sequence.
+        for _ in 0..7 {
+            cx.simulate_keystrokes("tab");
+        }
+        assert_input_focus(&form, cx, "source-ca");
+        click(cx, "source-http");
+        click(cx, "source-proxy-host");
+        cx.simulate_keystrokes("tab");
+        assert_input_focus(&form, cx, "source-proxy-port");
+        click(cx, "source-https");
+        click(cx, "source-proxy-host");
+        cx.simulate_keystrokes("tab");
+        assert_input_focus(&form, cx, "source-https-port");
+    }
+
     #[gpui::test]
     fn keyboard_controls_and_escape_belong_to_form(cx: &mut TestAppContext) {
         let (form, model, cx) = fixture(cx);
@@ -748,5 +972,52 @@ mod tests {
         cx.simulate_keystrokes("escape");
         assert!(!model.read_with(cx, |model, _| model.form_open));
         assert_eq!(cx.update(|_, app| form.read(app).password(app)), "");
+    }
+    #[gpui::test]
+    fn key_picker_selects_identity_and_agent_without_reading_user_files(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        click(cx, "source-ssh");
+        form.update(cx, |form, cx| {
+            form.key_picker_open = true;
+            form.ssh_keys = vec![dalan_app::ssh_keys::SshKeyCandidate {
+                name: "work key.pem".into(),
+                path: std::path::PathBuf::from("/tmp/dalan-test/work key.pem"),
+            }];
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click(cx, "ssh-key-0");
+        assert_eq!(
+            form.read_with(cx, |form, app| form.inputs["source-tunnel-key"]
+                .read(app)
+                .value()),
+            "/tmp/dalan-test/work key.pem"
+        );
+        assert_input_focus(&form, cx, "source-tunnel-key");
+        assert!(!form.read_with(cx, |form, _| form.key_picker_open));
+        form.update(cx, |form, cx| {
+            form.key_picker_open = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let agent = cx.debug_bounds("ssh-use-agent").unwrap();
+        cx.simulate_mouse_down(
+            agent.center(),
+            gpui::MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            agent.center(),
+            gpui::MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+        assert_eq!(
+            form.read_with(cx, |form, app| form.inputs["source-tunnel-key"]
+                .read(app)
+                .value()),
+            ""
+        );
+        assert_input_focus(&form, cx, "source-tunnel-key");
     }
 }

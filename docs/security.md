@@ -20,6 +20,14 @@ SSH uses `/usr/bin/ssh -W`, strict known-host checking and BatchMode with keys/a
 
 Relay transports have an unauthenticated loopback listener accepting the first connection. A local process can race it; do not claim local account isolation or sandboxing. Cancellation closes owned tunnels/relays but is not proof that the server aborted work.
 
+## Connection diagnostics and input privacy
+
+Connection errors expose typed I/O kinds, safe fixed authentication/TLS/plugin descriptions and numeric server codes (including 1045, 1044, 1049, 1130, 1251, 3159 and 1820), not raw server text, payloads, SQL or credential names. Unsupported plugins and unavailable SSL fail explicitly; no legacy authentication or insecure fallback is added. Explicit Disabled TLS uses `.ssl_opts(None)` and does not change the verified default. Uncached SHA2/RSA first-login success in a disposable fixture does not prove the reported remote account works; a credential-free probe reset before the greeting and a retry with sanitized diagnostics is still required.
+
+SSH identity discovery runs only from the explicit picker button, on a background task, over `$HOME/.ssh` filenames and metadata. It never reads private-key contents. Likely `id_*`, `.pem`, `.key` and companion-public-key candidates exclude public/config/trust files, hidden files, directories and symlinks, with 512-entry and 128-candidate limits. Candidates are not format validation; manual paths remain available and nothing is auto-selected. Use SSH agent is explicit. Encrypted identities must be unlocked externally with `ssh-add`; there is no new passphrase prompt or insecure host-trust change.
+
+Password inputs suppress copy and cut, including after double-click selection; paste remains available. Native surrounding-text/extraction requests do not receive password contents. These implementation protections and simulated tests do not guarantee memory erasure or establish privacy against every OS/IME/accessibility path.
+
 ## Read-only database slice
 
 Only app-generated reads are exposed; no arbitrary SQL, writes or stored-program execution UI. Browsing rejects views and accepts BASE TABLE objects. Filters bind values and escape LIKE with `!`; identifier validation/quoting is separate from parameter binding. Sort columns are metadata-validated and quoted; direction is a typed whitelist, not raw SQL. Available primary-key tie-breakers improve ordering but do not establish a snapshot. Read-only transactions are used where capabilities permit. These controls do not secure a privileged account or guarantee transactional behavior for every storage engine.
