@@ -6,6 +6,22 @@ fn state(view: &gpui::Entity<Shell>, cx: &VisualTestContext) -> ShellState {
 }
 
 #[gpui::test]
+fn center_connect_action_works_with_explorer_hidden(cx: &mut TestAppContext) {
+    let (view, cx) = fixture(cx);
+    click(cx, "database-toggle");
+    assert!(!state(&view, cx).database_visible);
+    let content = cx.debug_bounds("main-content").unwrap();
+    let action = cx.debug_bounds("connect-empty-source").unwrap();
+    assert!((f32::from(action.center().x) - f32::from(content.center().x)).abs() < 2.0);
+    click(cx, "connect-empty-source");
+    assert!(cx.debug_bounds("source-name").is_some());
+    assert!(cx.debug_bounds("source-test").is_some());
+    cx.simulate_keystrokes("escape");
+    assert!(!state(&view, cx).database_visible);
+    assert!(cx.debug_bounds("connect-empty-source").is_some());
+}
+
+#[gpui::test]
 fn add_source_opens_real_form_and_cancel_returns_browser(cx: &mut TestAppContext) {
     let (_, cx) = fixture(cx);
     click(cx, "add-source");
@@ -118,8 +134,7 @@ fn tab_order_reaches_every_visible_control_in_both_directions(cx: &mut TestAppCo
     let (view, cx) = fixture(cx);
     let order = [
         "layout-menu",
-        "database-rail",
-        "hide-database",
+        "database-toggle",
         "database-resize",
         "acp-toggle",
     ];
@@ -165,14 +180,24 @@ fn click(cx: &mut VisualTestContext, selector: &'static str) {
 }
 
 #[gpui::test]
-fn rail_and_header_buttons_toggle_sidebars(cx: &mut TestAppContext) {
+fn bottom_left_toggle_is_persistent_without_rail_or_header_minimize(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
-    click(cx, "database-rail");
+    click(cx, "database-toggle");
     assert!(!state(&view, cx).database_visible);
-    click(cx, "database-rail");
-    click(cx, "hide-database");
+    click(cx, "database-toggle");
+    let button = cx.debug_bounds("database-toggle").unwrap();
+    assert!(button.origin.x <= px(12.0));
+    assert!(button.origin.y >= px(768.0));
+    click(cx, "database-toggle");
     assert!(!state(&view, cx).database_visible);
-    for id in ["files-rail", "files-pane", "files-resize", "hide-files"] {
+    for id in [
+        "database-rail",
+        "hide-database",
+        "files-rail",
+        "files-pane",
+        "files-resize",
+        "hide-files",
+    ] {
         assert!(!view.read_with(cx, |shell, _| shell.controls.contains_key(id)));
         assert!(cx.debug_bounds(id).is_none());
     }
@@ -269,10 +294,10 @@ fn separator_drag_keyboard_and_compact_resize(cx: &mut TestAppContext) {
         cx.update(|window, _| window.viewport_size().width),
         px(720.0)
     );
-    assert_eq!(state(&view, cx).database_width(720.0), Some(432.0));
+    assert_eq!(state(&view, cx).database_width(720.0), Some(462.0));
     assert_eq!(
         cx.debug_bounds("database-pane").unwrap().size.width,
-        px(432.0)
+        px(462.0)
     );
     assert!(cx.debug_bounds("main-content").unwrap().size.width >= px(240.0));
     cx.simulate_resize(size(px(1280.0), px(800.0)));

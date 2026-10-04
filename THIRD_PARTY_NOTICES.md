@@ -8,7 +8,7 @@ Source: https://github.com/lucide-icons/lucide
 
 Pinned revision: `500620a2e8123f8d1db191538886dc0c223f69a9` (resolved once from the official GitHub `commits/main` endpoint).
 
-Vendored unchanged: `database`, `panel-left`, `chevron-down`, `minus`, `bot-message-square`, `arrow-up`, `arrow-down`, `download`, and `check`, under `crates/app/assets/icons/`. The AI conversation glyph is BotMessageSquare.
+Fourteen SVGs vendored unchanged under `crates/app/assets/icons/`: `database.svg`, `panel-left.svg`, `chevron-down.svg`, `minus.svg`, `bot-message-square.svg`, `arrow-up.svg`, `arrow-down.svg`, `download.svg`, `check.svg`, `plus.svg`, `settings-2.svg`, `refresh-cw.svg`, `trash-2.svg`, and `database-zap.svg`. At the pinned revision, `trash-2` is a deprecated alias recorded in upstream `icons/trash.json`; its local SVG is the unchanged upstream `icons/trash.svg`, renamed to `trash-2.svg`. All other filenames match their upstream `icons/` paths. The AI conversation glyph is BotMessageSquare. MySQL uses the abstract Database glyph and MariaDB uses the distinct abstract DatabaseZap glyph, not vendor logos; visible engine labels remain the primary identifiers.
 
 License: ISC for Lucide, with the retained MIT notice for Feather-derived icons. The complete upstream license is also stored at `crates/app/assets/lucide-LICENSE.txt` and must accompany distributions (including application bundle resources).
 

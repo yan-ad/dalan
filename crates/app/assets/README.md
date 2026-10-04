@@ -4,15 +4,20 @@ The main UI icon set is [Lucide](https://github.com/lucide-icons/lucide), explic
 
 ## Provenance
 
-All nine SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
+All fourteen SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
 
 `500620a2e8123f8d1db191538886dc0c223f69a9`
 
-The revision was resolved once using `https://api.github.com/repos/lucide-icons/lucide/commits/main`. Downloads use the immutable base URL `https://raw.githubusercontent.com/lucide-icons/lucide/500620a2e8123f8d1db191538886dc0c223f69a9/`, followed by `icons/<name>.svg` or `LICENSE`. Do not fetch individual assets from a moving branch.
+The revision was resolved once using `https://api.github.com/repos/lucide-icons/lucide/commits/main`. Downloads use the immutable base URL `https://raw.githubusercontent.com/lucide-icons/lucide/500620a2e8123f8d1db191538886dc0c223f69a9/`, followed by `icons/<name>.svg` or `LICENSE`. Do not fetch individual assets from a moving branch. At this revision, `trash-2` is a deprecated alias of `trash` in `icons/trash.json`, not a separate upstream SVG: local `trash-2.svg` contains the unchanged bytes of upstream `icons/trash.svg`.
 
 | Rust icon | Upstream SVG |
 | --- | --- |
 | Database | database.svg |
+| MariaDb | database-zap.svg |
+| Add | plus.svg |
+| Manage | settings-2.svg |
+| Refresh | refresh-cw.svg |
+| Remove | trash.svg (vendored as trash-2.svg) |
 | Layout | panel-left.svg |
 | Chevron | chevron-down.svg |
 | Hide | minus.svg |
@@ -21,6 +26,8 @@ The revision was resolved once using `https://api.github.com/repos/lucide-icons/
 | SortDescending | arrow-down.svg |
 | Download | download.svg |
 | Check | check.svg |
+
+MySQL uses the abstract **Database** glyph; MariaDB uses the distinct abstract **DatabaseZap** glyph. These are not vendor logos or trademark artwork. Keep the visible engine name as the primary identifier; the glyph is a supplementary cue.
 
 `src/desktop/icons.rs` embeds these bytes with `include_bytes!` and exposes them through GPUI's `AssetSource`. The application must register `IconAssets` using `Application::new().with_assets(IconAssets)`. There are no additional npm/crate dependencies, runtime downloads, external resources, or icon fonts. GPUI renders SVG alpha masks with the requested text color; icons retain the upstream 24×24 viewBox and render at 16×16 UI pixels.
 

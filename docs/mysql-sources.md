@@ -4,14 +4,22 @@ Dalan now has a real macOS source form and read-only table view. This is an expe
 
 ## Create, test, save, connect
 
-1. Build/open the experimental native app with `./scripts/macos --open` on macOS. Use Add Source in Database Explorer. Opening Add/Edit focuses Name; Escape cancels the form.
-2. Choose MySQL or MariaDB and a source name. The database endpoint defaults to `localhost:3306` and user `root`. Prefer a dedicated least-privilege SELECT account rather than root. Database is optional: None discovers available databases with `SHOW DATABASES`, then lets you choose a database and table.
+1. Build/open the experimental native app with `./scripts/macos --open` on macOS. Use the **Add** icon in Database Explorer or, with no sources, the main **Connect to a Source** action. The main action remains available with the explorer hidden and opens the same form by mouse or Enter/Space. Opening Add/Edit focuses Name; Escape cancels the form.
+2. Choose MySQL or MariaDB and a source name. Optionally set **Color (optional)** below Name: enter `#RRGGBB` or choose labeled Default, Blue, Green, Amber, Red or Purple swatches. Default means no custom color. The database endpoint defaults to `localhost:3306` and user `root`. Prefer a dedicated least-privilege SELECT account rather than root. Database is optional: None discovers available databases with `SHOW DATABASES`, then lets you choose a database and table.
 3. Enter a password. It is session-only unless you explicitly choose to save it in macOS Keychain. After restart, a session-only source requires Edit and password re-entry.
 4. Choose transport and TLS settings below. **Test** checks connectivity without saving the source. **Save** persists the profile without automatically connecting.
-5. Select the saved source and choose **Connect** to discover databases/tables. Only BASE TABLE objects can be browsed. Views are listed but unavailable for browsing.
-6. Use Edit to update a source. Delete requires confirmation and removes only local source settings and its saved Keychain password, never a server database or table.
+5. Activate the saved source row to connect and discover databases/tables. Only BASE TABLE objects can be browsed. Views are listed but unavailable for browsing.
+6. Use **Manage** to edit a selected source and **Refresh** to reload it. **Remove** requires confirmation and removes only local source settings and its saved Keychain password, never a server database or table.
+
+The explorer has a 32 px Database Explorer header and a separate 32 px toolbar with four 28 px Add, Manage, Refresh and Remove icons and tooltips. Add is disabled while saving; selection actions are disabled without selection or while busy/saving. There is no activity rail, header hide/minimise control, repeated title row or inactive DDL/console/advanced toolbar. Use the bottom-left 28 px panel-left button, Cmd-B, native View or Layout menu to toggle the explorer. Closing it retains that preference until toggled or reset.
+
+Source rows show the name, readable engine label and abstract Lucide database (MySQL) or database-zap (MariaDB) icon, not vendor logos. Custom color changes only a small marker and has no automatic production or risk meaning. Names and engines remain readable without color; arbitrary custom colors are not guaranteed WCAG AA. Loading and sanitized connection errors remain explicit; no sample/demo/trial source state is added.
 
 Profiles have stable UUIDs and live in version 1 JSON at `~/Library/Application Support/Dalan/sources.json`. Passwords never belong in that file. JSON and Keychain updates are separate operations, not an atomic cross-resource transaction. Compensation failures are visible; a failed operation can require reconciliation rather than implying both resources changed together. Do not hand-edit credentials into JSON. The source file is limited to 1 MiB and 100 profiles; a failed load blocks saving rather than overwriting unreadable settings. Session-only Save is tested without calling Keychain.
+
+### Optional color and legacy profiles
+
+Color is stored as optional `color` in the existing version 1 JSON. `serde(default)` loads an absent field as None; opening legacy profiles does not automatically rewrite them. Valid `#RRGGBB` hex preserves exact letter case on round-trip. The source-field whitelist accepts color, but passwords remain rejected. Invalid color save/load does not overwrite stored bytes, and failed loads continue blocking saves. This metadata change does not affect Keychain or credentials. Scoped migration tests passed for exact legacy None, mixed-case hex and malformed-color no-overwrite behavior; the full redesign passed 54 headless, 57 simulated UI and four bundle tests; see [testing](testing.md#database-explorer-redesign-verified).
 
 ## Transport and TLS
 

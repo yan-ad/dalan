@@ -25,7 +25,7 @@ The product name is **Dalan** everywhere it is displayed. Lowercase `dalan-*` Ru
 | Core | Engine identities, finite execution limits, conservative declared-risk decisions |
 | Drivers | Experimental MySQL/MariaDB read-only adapter using mysql_async; PostgreSQL and Redis planned |
 | ACP | Official SDK schema boundary, empty client capabilities, launch-path shape validation; no process or transport |
-| App | Diagnostic command and macOS GPUI shell: native titlebar, layout menu, database rail, collapsible/resizable Database Explorer, optional disconnected ACP panel, About Dalan window, source form and read-only table view |
+| App | Diagnostic command and macOS GPUI shell: native titlebar, layout menu, bottom-left explorer toggle, collapsible/resizable Database Explorer, optional disconnected ACP panel, About Dalan window, source form and read-only table view |
 | macOS bundle | Debug/release `Dalan.app` build helper with metadata and local ad-hoc signing |
 | CI | Headless formatting/test/lint jobs on macOS, Linux, and Windows; macOS desktop build job; Ubuntu direct/HTTP CONNECT and database-TLS fixture jobs (hosted execution unverified) |
 
@@ -37,7 +37,13 @@ Previous icon/sorting/export validation: 48 headless Rust tests, 42 simulated GP
 
 The connection-UX revision fixes source-form Tab traversal and double-click selection, adds an explicit metadata-only SSH identity picker, and provides sanitized typed connection diagnostics. A fresh, uncached MySQL `caching_sha2_password` account passed its first login with TLS explicitly disabled, using RSA authentication through mysql_async. The live suites passed 23 unique cases (7 direct/CONNECT/authentication, 10 TLS, 6 SSH); 52 headless, 46 simulated UI and four Python tests passed, along with formatting, strict lint and debug bundle plist/signature checks. No native Keychain rerun is claimed for this revision. The reported remote connection is **not confirmed fixed**: a credential-free probe connected at TCP level but was reset before the MySQL greeting. Retry with the new diagnostic; see [troubleshooting](docs/mysql-sources.md#connection-troubleshooting). No new dependencies or license changes were introduced.
 
-The UI uses nine pinned Lucide SVGs, embedded through the desktop asset source. Complete Lucide ISC and retained Feather MIT notices, plus GPUI input Apache-2.0 attribution, are in [third-party notices](THIRD_PARTY_NOTICES.md); bundle resources include the notices and Lucide license. These utility glyphs do not introduce a Dalan app/brand icon or select a project license.
+The UI uses fourteen pinned Lucide SVGs, embedded through the desktop asset source. Complete Lucide ISC and retained Feather MIT notices, plus GPUI input Apache-2.0 attribution, are in [third-party notices](THIRD_PARTY_NOTICES.md); bundle resources include the notices and Lucide license. These utility glyphs do not introduce a Dalan app/brand icon or select a project license.
+
+The redesigned Database Explorer has a 32 px title header and a separate 32 px toolbar with four 28 px icon buttons: Add, Manage, Refresh and Remove. The activity rail and header hide/minimise button are removed. A bottom-left 28 px panel-left button toggles the explorer; closing it remains the requested state until toggled or reset. Cmd-B, native View and Layout menu alternatives remain. Status focus help and the ACP trigger are unchanged. The body has 6 px outer padding on both sides, with no reserved rail width.
+
+Source rows retain readable names and engine labels, with abstract Lucide database (MySQL) and database-zap (MariaDB) cues, not vendor logos. Optional source colors are markers only. Color below Name accepts `#RRGGBB` or labeled Default, Blue, Green, Amber, Red and Purple swatches. Legacy version 1 profiles load with no color and are not automatically rewritten; password rejection and Keychain behavior are unchanged. With no sources, the main area centers a working **Connect to a Source** button that opens the same source form by mouse, Enter or Space, even while the explorer is hidden. No demo/trial welcome content is added.
+
+Current redesign verification passed **54 headless Rust tests**, **57 simulated UI tests** and **four Python bundle tests**, plus formatting, strict lint and debug bundle plist/signature/license-resource checks. Migration tests verify exact legacy None, case-preserving hex and malformed-color no-overwrite behavior. See [testing](docs/testing.md#database-explorer-redesign-verified). Native visual/accessibility and hosted CI remain unverified; previous live transport results are historical for this UI/profile-only change. Asset provenance, including the trash filename alias, is in the [asset README](crates/app/assets/README.md).
 
 ## Start locally
 

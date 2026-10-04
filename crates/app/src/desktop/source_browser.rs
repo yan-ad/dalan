@@ -1,5 +1,8 @@
 //! Read-only source explorer and bounded table browser.
-use dalan_drivers::mysql::{CellValue, FilterOperator, SortDirection, TableFilter};
+use dalan_drivers::{
+    DbEngine,
+    mysql::{CellValue, FilterOperator, SortDirection, TableFilter},
+};
 use gpui::{Context, Div, Entity, Stateful, Subscription, Window, div, prelude::*, px, rgb};
 
 use super::{
@@ -34,6 +37,9 @@ impl Render for SourceExplorer {
         let databases = model.databases.clone();
         let tables = model.tables.clone();
         let busy = model.busy;
+        let saving = model.saving;
+        let selected_disabled = selected_source.is_none() || busy || saving;
+        let add_disabled = saving;
         let error = model.error.clone();
         let confirm = model.delete_confirm;
         let source_name = profiles
@@ -62,48 +68,59 @@ impl Render for SourceExplorer {
         for profile in profiles {
             let selected = Some(&profile.id) == selected_source.as_ref();
             let id = profile.id.clone();
-            let mut group = div().flex().flex_col().gap(px(4.)).child(button(
+            let glyph = match profile.engine {
+                DbEngine::MySql => Icon::Database,
+                DbEngine::MariaDb => Icon::MariaDb,
+            };
+            let glyph_id = format!("driver-glyph-{id}");
+            let color_id = format!("color-indicator-{id}");
+            let row = button(
                 format!("connect-source-{id}"),
-                format!("{} · {}", profile.name, profile.engine.display_name()),
+                "",
                 selected,
-                busy,
+                busy || saving,
                 cx,
                 move |this, cx| {
                     this.model
                         .update(cx, |model, cx| model.connect(id.clone(), cx));
                 },
-            ));
+            )
+            .w_full()
+            .p(px(4.))
+            .justify_start()
+            .gap(px(6.))
+            .child(
+                div()
+                    .id(gpui::SharedString::from(color_id.clone()))
+                    .debug_selector(move || color_id.clone())
+                    .w(px(3.))
+                    .h(px(16.))
+                    .flex_shrink_0()
+                    .bg(rgb(source_color(profile.color.as_deref()))),
+            )
+            .child(
+                div()
+                    .id(gpui::SharedString::from(glyph_id.clone()))
+                    .debug_selector(move || glyph_id.clone())
+                    .flex()
+                    .child(icon(glyph, TEXT)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .text_ellipsis()
+                    .child(profile.name.clone()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(11.))
+                    .text_color(rgb(MUTED))
+                    .child(profile.engine.display_name()),
+            );
+            let mut group = div().flex().flex_col().gap(px(4.)).child(row);
             if selected {
-                group = group.child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(4.))
-                        .child(button(
-                            "edit-source",
-                            "Edit",
-                            false,
-                            busy,
-                            cx,
-                            |this, cx| this.model.update(cx, |m, cx| m.edit_source(cx)),
-                        ))
-                        .child(button(
-                            "delete-source",
-                            "Delete",
-                            false,
-                            busy,
-                            cx,
-                            |this, cx| this.model.update(cx, |m, cx| m.request_delete(cx)),
-                        ))
-                        .child(button(
-                            "refresh-source",
-                            "Refresh",
-                            false,
-                            busy,
-                            cx,
-                            |this, cx| this.model.update(cx, |m, cx| m.refresh(cx)),
-                        )),
-                );
                 if confirm {
                     group = group.child(
                         div()
@@ -219,16 +236,58 @@ impl Render for SourceExplorer {
             .bg(rgb(PANEL))
             .child(
                 div()
+                    .id("source-explorer-header")
+                    .debug_selector(|| "source-explorer-header".into())
                     .flex_shrink_0()
-                    .p(px(8.))
+                    .h(px(32.))
+                    .pl(px(10.))
+                    .bg(rgb(HEADER))
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .gap(px(4.))
-                    .child("Database Explorer")
-                    .child(button("add-source", "Add", false, false, cx, |this, cx| {
-                        this.model.update(cx, |m, cx| m.new_source(cx))
-                    })),
+                    .child("Database Explorer"),
+            )
+            .child(
+                div()
+                    .id("source-explorer-toolbar")
+                    .debug_selector(|| "source-explorer-toolbar".into())
+                    .flex_shrink_0()
+                    .h(px(32.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(toolbar_button(
+                        "add-source",
+                        Icon::Add,
+                        "Add data source",
+                        add_disabled,
+                        cx,
+                        |this: &mut Self, cx| this.model.update(cx, |m, cx| m.new_source(cx)),
+                    ))
+                    .child(toolbar_button(
+                        "edit-source",
+                        Icon::Manage,
+                        "Manage selected source",
+                        selected_disabled,
+                        cx,
+                        |this: &mut Self, cx| this.model.update(cx, |m, cx| m.edit_source(cx)),
+                    ))
+                    .child(toolbar_button(
+                        "refresh-source",
+                        Icon::Refresh,
+                        "Refresh selected source",
+                        selected_disabled,
+                        cx,
+                        |this: &mut Self, cx| this.model.update(cx, |m, cx| m.refresh(cx)),
+                    ))
+                    .child(toolbar_button(
+                        "delete-source",
+                        Icon::Remove,
+                        "Remove saved source (not its databases)",
+                        selected_disabled,
+                        cx,
+                        |this: &mut Self, cx| this.model.update(cx, |m, cx| m.request_delete(cx)),
+                    )),
             )
             .child(entries)
     }
@@ -320,6 +379,43 @@ impl SourceBrowser {
 impl Render for SourceBrowser {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let m = self.model.read(cx);
+        if m.profiles.is_empty() {
+            let disabled = m.busy || m.saving;
+            let loading = m.busy;
+            let load_error = m.error.clone();
+            return div()
+                .id("source-browser")
+                .debug_selector(|| "source-browser".into())
+                .size_full()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .justify_center()
+                .items_center()
+                .gap(px(12.))
+                .bg(rgb(PANEL))
+                .text_color(rgb(TEXT))
+                .text_size(px(12.))
+                .child(button(
+                    "connect-empty-source",
+                    "Connect to a Source",
+                    false,
+                    disabled,
+                    cx,
+                    |this, cx| this.model.update(cx, |m, cx| m.new_source(cx)),
+                ))
+                .child(
+                    div()
+                        .text_color(rgb(MUTED))
+                        .child("Configure a MySQL or MariaDB connection to begin."),
+                )
+                .when(loading, |el| {
+                    el.child(div().text_color(rgb(MUTED)).child("Loading data sources…"))
+                })
+                .when_some(load_error, |el, error| {
+                    el.child(div().text_color(rgb(0xf2bf76)).child(error))
+                });
+        }
         let busy = m.busy;
         let error = m.error.clone();
         let stale = busy || error.is_some();
@@ -667,6 +763,33 @@ impl Render for SourceBrowser {
     }
 }
 
+/// Treat malformed persisted/custom colors as a neutral indicator, never as CSS.
+fn source_color(color: Option<&str>) -> u32 {
+    color
+        .and_then(|color| color.strip_prefix('#'))
+        .filter(|hex| hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+        .unwrap_or(MUTED)
+}
+
+fn toolbar_button<T: 'static>(
+    id: &'static str,
+    glyph: Icon,
+    tooltip: &'static str,
+    disabled: bool,
+    cx: &mut Context<T>,
+    activate: impl Fn(&mut T, &mut Context<T>) + Clone + 'static,
+) -> Stateful<Div> {
+    button(id, "", false, disabled, cx, activate)
+        .w(px(28.))
+        .h(px(28.))
+        .p(px(0.))
+        .flex_shrink_0()
+        .justify_center()
+        .child(icon(glyph, TEXT))
+        .tooltip(move |_, cx| cx.new(|_| super::ControlTooltip(tooltip)).into())
+}
+
 fn cell(value: String, null: bool) -> Div {
     div()
         .w(px(180.))
@@ -780,7 +903,7 @@ mod tests {
     ) -> (gpui::Entity<SourceModel>, &mut VisualTestContext) {
         cx.update(crate::desktop::bind_keys);
         let model = cx.new(|_| {
-            let mut model = SourceModel::for_tests(vec![]);
+            let mut model = SourceModel::for_tests(vec![SourceProfile::default()]);
             model.selected_database = Some("inventory".into());
             model.selected_table = Some("items".into());
             model.page = Some(page());
@@ -1004,6 +1127,136 @@ mod tests {
                 .clone()),
             id
         );
+    }
+
+    #[gpui::test]
+    fn compact_toolbar_and_engine_rows(cx: &mut TestAppContext) {
+        let mysql = SourceProfile {
+            id: "mysql-fixture".into(),
+            name: "Inventory".into(),
+            color: Some("#ff0000".into()),
+            ..SourceProfile::default()
+        };
+        let maria = SourceProfile {
+            id: "maria-fixture".into(),
+            name: "Reporting".into(),
+            engine: DbEngine::MariaDb,
+            ..mysql.clone()
+        };
+        let model = cx.new(|_| SourceModel::for_tests(vec![mysql, maria]));
+        let (_, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        cx.simulate_resize(gpui::size(px(320.), px(600.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        let header = cx.debug_bounds("source-explorer-header").unwrap();
+        let toolbar = cx.debug_bounds("source-explorer-toolbar").unwrap();
+        assert_eq!(header.size.height, px(32.));
+        assert_eq!(toolbar.size.height, px(32.));
+        assert_eq!(toolbar.top(), header.bottom());
+        let mut previous = toolbar.left();
+        for id in [
+            "add-source",
+            "edit-source",
+            "refresh-source",
+            "delete-source",
+        ] {
+            let bounds = cx.debug_bounds(id).unwrap();
+            assert_eq!(bounds.size.width, px(28.));
+            assert_eq!(bounds.size.height, px(28.));
+            assert!(bounds.left() >= previous);
+            previous = bounds.right();
+        }
+        for id in [
+            "driver-glyph-mysql-fixture",
+            "driver-glyph-maria-fixture",
+            "color-indicator-mysql-fixture",
+            "color-indicator-maria-fixture",
+        ] {
+            assert!(cx.debug_bounds(id).is_some(), "missing {id}");
+        }
+        for id in ["edit-source", "refresh-source", "delete-source"] {
+            click(cx, id);
+        }
+        model.read_with(cx, |m, _| {
+            assert!(!m.form_open);
+            assert!(!m.delete_confirm);
+            assert!(!m.busy);
+        });
+        click(cx, "add-source");
+        assert!(model.read_with(cx, |m, _| m.form_open));
+        assert_eq!(source_color(Some("#ff0000")), 0xff0000);
+        for invalid in ["ff0000", "#fff", "#zzzzzz", "#1000000"] {
+            assert_eq!(source_color(Some(invalid)), MUTED);
+        }
+    }
+
+    #[gpui::test]
+    fn selected_toolbar_manage_and_remove_are_guarded(cx: &mut TestAppContext) {
+        let profile = SourceProfile {
+            save_password: false,
+            ..SourceProfile::default()
+        };
+        let model = cx.new(|_| {
+            let mut m = SourceModel::for_tests(vec![profile.clone()]);
+            m.selected_source = Some(profile.id.clone());
+            m
+        });
+        let (_, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        cx.refresh().unwrap();
+        click(cx, "edit-source");
+        model.read_with(cx, |m, _| {
+            assert_eq!(m.form_profile.as_ref(), Some(&profile))
+        });
+        click(cx, "delete-source");
+        assert!(model.read_with(cx, |m, _| m.delete_confirm));
+        click(cx, "cancel-delete");
+        for saving in [false, true] {
+            model.update(cx, |m, cx| {
+                m.form_open = false;
+                m.busy = !saving;
+                m.saving = saving;
+                cx.notify();
+            });
+            for id in ["edit-source", "refresh-source", "delete-source"] {
+                click(cx, id);
+            }
+            model.read_with(cx, |m, _| {
+                assert!(!m.form_open);
+                assert!(!m.delete_confirm);
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn empty_browser_connect_is_centered_and_keyboard_accessible(cx: &mut TestAppContext) {
+        let model = cx.new(|_| SourceModel::for_tests(vec![]));
+        let (_, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
+        cx.simulate_resize(gpui::size(px(1000.), px(800.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        let root = cx.debug_bounds("source-browser").unwrap();
+        let connect = cx.debug_bounds("connect-empty-source").unwrap();
+        assert!((connect.center().x - root.center().x).abs() < px(1.));
+        assert!((connect.center().y - root.center().y).abs() < px(30.));
+        click(cx, "connect-empty-source");
+        assert!(model.read_with(cx, |m, _| m.form_open && m.form_profile.is_some()));
+        for key in ["enter", "space"] {
+            model.update(cx, |m, cx| {
+                m.form_open = false;
+                cx.notify();
+            });
+            cx.update(|window, _| window.focus_next());
+            cx.simulate_keystrokes(key);
+            cx.run_until_parked();
+            assert!(model.read_with(cx, |m, _| m.form_open));
+        }
+        model.update(cx, |m, cx| {
+            m.form_open = false;
+            m.saving = true;
+            cx.notify();
+        });
+        click(cx, "connect-empty-source");
+        assert!(!model.read_with(cx, |m, _| m.form_open));
     }
 
     #[gpui::test]

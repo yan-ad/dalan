@@ -5,6 +5,11 @@ use gpui::{AssetSource, IntoElement, SharedString, prelude::*, px, rgb, svg};
 #[derive(Clone, Copy)]
 pub enum Icon {
     Database,
+    MariaDb,
+    Add,
+    Manage,
+    Refresh,
+    Remove,
     Layout,
     Chevron,
     Hide,
@@ -19,6 +24,11 @@ impl Icon {
     fn path(self) -> &'static str {
         match self {
             Self::Database => "icons/database.svg",
+            Self::MariaDb => "icons/database-zap.svg",
+            Self::Add => "icons/plus.svg",
+            Self::Manage => "icons/settings-2.svg",
+            Self::Refresh => "icons/refresh-cw.svg",
+            Self::Remove => "icons/trash-2.svg",
             Self::Layout => "icons/panel-left.svg",
             Self::Chevron => "icons/chevron-down.svg",
             Self::Hide => "icons/minus.svg",
@@ -74,6 +84,26 @@ const ASSETS: &[(&str, &[u8])] = &[
         "lucide-LICENSE.txt",
         include_bytes!("../../assets/lucide-LICENSE.txt"),
     ),
+    (
+        "icons/plus.svg",
+        include_bytes!("../../assets/icons/plus.svg"),
+    ),
+    (
+        "icons/settings-2.svg",
+        include_bytes!("../../assets/icons/settings-2.svg"),
+    ),
+    (
+        "icons/refresh-cw.svg",
+        include_bytes!("../../assets/icons/refresh-cw.svg"),
+    ),
+    (
+        "icons/trash-2.svg",
+        include_bytes!("../../assets/icons/trash-2.svg"),
+    ),
+    (
+        "icons/database-zap.svg",
+        include_bytes!("../../assets/icons/database-zap.svg"),
+    ),
 ];
 
 pub(super) struct IconAssets;
@@ -109,10 +139,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_icons_are_listed_and_loaded() {
+    fn all_fourteen_embedded_icons_are_listed_and_loaded() {
         let assets = IconAssets;
         let paths = assets.list("icons/").unwrap();
-        assert_eq!(paths.len(), 9);
+        assert_eq!(paths.len(), 14);
         for path in paths {
             let bytes = assets.load(path.as_ref()).unwrap().unwrap();
             assert!(matches!(bytes, Cow::Borrowed(_)));
@@ -139,6 +169,56 @@ mod tests {
         assert!(assets.list("missing/").unwrap().is_empty());
         assert!(assets.load("icons/missing.svg").unwrap().is_none());
         assert!(assets.load("../icons/database.svg").unwrap().is_none());
+    }
+
+    #[test]
+    fn toolbar_icons_load_the_expected_assets() {
+        for (kind, path, expected) in [
+            (
+                Icon::Add,
+                "icons/plus.svg",
+                include_bytes!("../../assets/icons/plus.svg").as_slice(),
+            ),
+            (
+                Icon::Manage,
+                "icons/settings-2.svg",
+                include_bytes!("../../assets/icons/settings-2.svg").as_slice(),
+            ),
+            (
+                Icon::Refresh,
+                "icons/refresh-cw.svg",
+                include_bytes!("../../assets/icons/refresh-cw.svg").as_slice(),
+            ),
+            (
+                Icon::Remove,
+                "icons/trash-2.svg",
+                include_bytes!("../../assets/icons/trash-2.svg").as_slice(),
+            ),
+        ] {
+            assert_eq!(kind.path(), path);
+            assert_eq!(
+                IconAssets.load(kind.path()).unwrap().unwrap().as_ref(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn engine_icons_have_distinct_paths_and_bytes() {
+        assert_eq!(Icon::Database.path(), "icons/database.svg");
+        assert_eq!(Icon::MariaDb.path(), "icons/database-zap.svg");
+        assert_ne!(Icon::Database.path(), Icon::MariaDb.path());
+        let mysql = IconAssets.load(Icon::Database.path()).unwrap().unwrap();
+        let mariadb = IconAssets.load(Icon::MariaDb.path()).unwrap().unwrap();
+        assert_eq!(
+            mysql.as_ref(),
+            include_bytes!("../../assets/icons/database.svg")
+        );
+        assert_eq!(
+            mariadb.as_ref(),
+            include_bytes!("../../assets/icons/database-zap.svg")
+        );
+        assert_ne!(mysql.as_ref(), mariadb.as_ref());
     }
 
     #[test]

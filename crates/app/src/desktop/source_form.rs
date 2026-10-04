@@ -15,6 +15,15 @@ use super::{
     theme::*,
 };
 
+const COLOR_PRESETS: [(&str, &str, &str, Option<u32>); 6] = [
+    ("source-color-default", "Default", "", None),
+    ("source-color-blue", "Blue", "#8AB4F8", Some(0x8AB4F8)),
+    ("source-color-green", "Green", "#8CD4A4", Some(0x8CD4A4)),
+    ("source-color-amber", "Amber", "#E7BD6A", Some(0xE7BD6A)),
+    ("source-color-red", "Red", "#EE9296", Some(0xEE9296)),
+    ("source-color-purple", "Purple", "#C7AAF5", Some(0xC7AAF5)),
+];
+
 /// A draft is kept separate from the persisted model until Save is activated.
 pub(super) struct SourceForm {
     original: SourceProfile,
@@ -81,6 +90,12 @@ impl SourceForm {
                 "source-known-hosts",
                 String::new(),
                 "Optional known_hosts file",
+                false,
+            ),
+            (
+                "source-color",
+                profile.color.clone().unwrap_or_default(),
+                "Default",
                 false,
             ),
         ];
@@ -154,6 +169,7 @@ impl SourceForm {
             "source-ca-browse",
         ]
         .into_iter()
+        .chain(COLOR_PRESETS.iter().map(|(id, _, _, _)| *id))
         .map(|id| (id, cx.focus_handle().tab_stop(true)))
         .collect();
         Self {
@@ -194,6 +210,7 @@ impl SourceForm {
     pub(super) fn profile(&self, cx: &App) -> Result<SourceProfile> {
         let mut profile = self.original.clone();
         profile.name = self.value("source-name", cx);
+        profile.color = optional(self.value("source-color", cx));
         profile.host = self.value("source-host", cx);
         profile.port = parse_port(&self.value("source-port", cx), "Database")?;
         profile.username = self.value("source-user", cx);
@@ -242,6 +259,14 @@ impl SourceForm {
 
     fn activate(&mut self, id: &'static str, cx: &mut Context<Self>) {
         if self.model.read(cx).saving {
+            return;
+        }
+        if let Some((_, _, value, _)) = COLOR_PRESETS.iter().find(|(preset, _, _, _)| *preset == id)
+        {
+            self.inputs["source-color"].update(cx, |input, cx| input.set_value(*value, cx));
+            self.last_values.insert("source-color", (*value).to_owned());
+            self.model.update(cx, |model, cx| model.edit_form(cx));
+            cx.notify();
             return;
         }
         match id {
@@ -380,6 +405,71 @@ impl SourceForm {
                 .debug_selector(move || id.into())
                 .w_full()
                 .child(self.inputs[id].clone()),
+        )
+    }
+
+    fn color_row(&self, cx: &mut Context<Self>) -> Div {
+        let value = self.value("source-color", cx);
+        let disabled = self.model.read(cx).saving;
+        let presets = COLOR_PRESETS.iter().map(|&(id, label, hex, swatch)| {
+            let selected = value.eq_ignore_ascii_case(hex);
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .track_focus(&self.controls[id])
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .px(px(6.))
+                .h(px(30.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(rgb(if selected { FOCUS } else { CHROME }))
+                .bg(rgb(if selected { SELECTION } else { PANEL }))
+                .text_size(px(12.))
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(HOVER)))
+                .focus(|style| style.border_color(rgb(FOCUS)))
+                .when(disabled, |style| style.opacity(0.5))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.controls[id].focus(window);
+                    this.activate(id, cx);
+                }))
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if this.controls[id].is_focused(window)
+                            && matches!(event.keystroke.key.as_str(), "space" | "enter")
+                        {
+                            cx.stop_propagation();
+                            this.activate(id, cx);
+                        }
+                    }),
+                )
+                .child(
+                    div()
+                        .size(px(12.))
+                        .flex_shrink_0()
+                        .rounded(px(3.))
+                        .border_1()
+                        .border_color(rgb(swatch.unwrap_or(MUTED)))
+                        .bg(rgb(swatch.unwrap_or(PANEL))),
+                )
+                .child(label)
+        });
+        self.row(
+            "Color (optional)",
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .id("source-color")
+                        .debug_selector(|| "source-color".into())
+                        .w_full()
+                        .child(self.inputs["source-color"].clone()),
+                )
+                .child(div().flex().flex_wrap().gap(px(4.)).children(presets)),
         )
     }
 
@@ -641,6 +731,7 @@ impl Render for SourceForm {
                 ),
             )
             .child(self.field("source-name", "Name", 3, cx))
+            .child(self.color_row(cx))
             .child(self.field("source-host", "Host", 4, cx))
             .child(self.field("source-port", "Port", 5, cx))
             .child(self.field("source-user", "User", 6, cx))
@@ -973,6 +1064,134 @@ mod tests {
     }
 
     #[gpui::test]
+    fn color_constructor_preserves_existing_profile_and_ssh_fields(cx: &mut TestAppContext) {
+        let profile = SourceProfile {
+            color: Some("#C7AAF5".into()),
+            transport: Transport::Ssh {
+                host: "bastion.internal".into(),
+                port: 2222,
+                user: "tunnel-user".into(),
+                identity_file: Some("/fixture/identity".into()),
+                known_hosts_file: Some("/fixture/known_hosts".into()),
+            },
+            ..SourceProfile::default()
+        };
+        let model = cx.new(|_| SourceModel::for_tests(vec![profile.clone()]));
+        let (form, visual) =
+            cx.add_window_view(|_, cx| SourceForm::new(profile.clone(), model.clone(), cx));
+        assert_eq!(
+            form.read_with(visual, |form, app| form.inputs["source-known-hosts"]
+                .read(app)
+                .value()),
+            "/fixture/known_hosts"
+        );
+        // Validate the round trip without touching a real known_hosts file.
+        set(&form, visual, "source-known-hosts", "");
+        let draft = visual.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(draft.color, profile.color);
+        let mut expected_transport = profile.transport;
+        if let Transport::Ssh {
+            known_hosts_file, ..
+        } = &mut expected_transport
+        {
+            *known_hosts_file = None;
+        }
+        assert_eq!(draft.transport, expected_transport);
+        assert_eq!(
+            form.read_with(visual, |form, app| form.inputs["source-color"]
+                .read(app)
+                .value()),
+            "#C7AAF5"
+        );
+    }
+
+    #[gpui::test]
+    fn color_presets_manual_validation_and_cancel_are_draft_only(cx: &mut TestAppContext) {
+        let (form, model, cx) = fixture(cx);
+        assert_eq!(
+            cx.update(|_, app| form.read(app).profile(app).unwrap().color),
+            None
+        );
+        let original = form.read_with(cx, |form, _| form.original.clone());
+        for (id, _, hex, _) in COLOR_PRESETS {
+            model.update(cx, |model, cx| {
+                model.form_feedback = Some("Previous test result".into());
+                cx.notify();
+            });
+            click(cx, id);
+            assert_eq!(
+                cx.update(|_, app| form.read(app).profile(app).unwrap().color),
+                optional(hex.to_owned())
+            );
+            assert!(model.read_with(cx, |model, _| model.form_feedback.is_none()));
+        }
+        // Preset handles survive rerenders and support keyboard activation.
+        cx.simulate_keystrokes("shift-tab enter");
+        assert_eq!(
+            cx.update(|_, app| form
+                .read(app)
+                .profile(app)
+                .unwrap()
+                .color
+                .as_deref()
+                .map(str::to_owned)),
+            Some("#EE9296".into())
+        );
+        set(&form, cx, "source-color", "  #12aBcF  ");
+        assert_eq!(
+            cx.update(|_, app| form.read(app).profile(app).unwrap().color),
+            Some("#12aBcF".into())
+        );
+        model.update(cx, |model, cx| {
+            model.form_feedback = Some("Previous test result".into());
+            cx.notify();
+        });
+        set(&form, cx, "source-color", "#xyz");
+        assert!(model.read_with(cx, |model, _| model.form_feedback.is_none()));
+        assert!(cx.update(|_, app| form.read(app).profile(app).is_err()));
+        click(cx, "source-test");
+        model.read_with(cx, |model, _| {
+            assert!(model.form_feedback.is_some());
+            assert!(!model.form_busy);
+        });
+        click(cx, "source-color-default");
+        assert_eq!(
+            form.read_with(cx, |form, app| form.inputs["source-color"]
+                .read(app)
+                .value()),
+            ""
+        );
+        set(&form, cx, "source-color", "   ");
+        assert_eq!(
+            cx.update(|_, app| form.read(app).profile(app).unwrap().color),
+            None
+        );
+        set(&form, cx, "source-color", "#8AB4F8");
+        model.update(cx, |model, cx| {
+            model.saving = true;
+            cx.notify();
+        });
+        click(cx, "source-color-red");
+        cx.simulate_keystrokes("space");
+        set(&form, cx, "source-color", "#E7BD6A");
+        assert_eq!(
+            cx.update(|_, app| form.read(app).profile(app).unwrap().color),
+            Some("#8AB4F8".into())
+        );
+        model.update(cx, |model, cx| {
+            model.saving = false;
+            cx.notify();
+        });
+        click(cx, "source-cancel");
+        assert!(!model.read_with(cx, |model, _| model.form_open));
+        assert!(model.read_with(cx, |model, _| model.profiles.is_empty()));
+        assert_eq!(
+            form.read_with(cx, |form, _| form.original.color.clone()),
+            original.color
+        );
+    }
+
+    #[gpui::test]
     fn engine_transport_tls_and_credential_controls(cx: &mut TestAppContext) {
         let (form, _, cx) = fixture(cx);
         click(cx, "source-engine-mariadb");
@@ -1077,6 +1296,7 @@ mod tests {
         let (form, _, cx) = fixture(cx);
         let fields = [
             "source-name",
+            "source-color",
             "source-host",
             "source-port",
             "source-user",
@@ -1094,6 +1314,14 @@ mod tests {
             assert_input_focus(&form, cx, id);
             if i + 1 < fields.len() {
                 cx.simulate_keystrokes("tab");
+                if *id == "source-color" {
+                    for (preset, _, _, _) in COLOR_PRESETS {
+                        assert!(cx.update(|window, app| {
+                            form.read(app).controls[preset].is_focused(window)
+                        }));
+                        cx.simulate_keystrokes("tab");
+                    }
+                }
                 if *id == "source-password" {
                     assert!(cx.update(|window, app| {
                         form.read(app).controls["source-save-password"].is_focused(window)
@@ -1104,6 +1332,14 @@ mod tests {
         }
         for id in fields.iter().rev().skip(1) {
             cx.simulate_keystrokes("shift-tab");
+            if *id == "source-color" {
+                for (preset, _, _, _) in COLOR_PRESETS.into_iter().rev() {
+                    assert!(cx.update(|window, app| {
+                        form.read(app).controls[preset].is_focused(window)
+                    }));
+                    cx.simulate_keystrokes("shift-tab");
+                }
+            }
             if *id == "source-password" {
                 assert!(cx.update(|window, app| {
                     form.read(app).controls["source-save-password"].is_focused(window)

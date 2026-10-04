@@ -79,6 +79,7 @@ impl SourceRepository {
                         fields.keys().all(|key| matches!(
                             key.as_str(),
                             "id" | "name"
+                                | "color"
                                 | "engine"
                                 | "host"
                                 | "port"
@@ -397,6 +398,52 @@ mod tests {
         }
         repo.save(&[]).unwrap();
         assert!(repo.load().unwrap().is_empty());
+    }
+
+    #[test]
+    fn color_round_trip_legacy_and_invalid_colors() {
+        let sandbox = Sandbox::new();
+        let repo = sandbox.repository();
+        let profile = SourceProfile {
+            color: Some("#AB12cd".into()),
+            ..SourceProfile::default()
+        };
+        repo.save(std::slice::from_ref(&profile)).unwrap();
+        assert_eq!(repo.load().unwrap(), vec![profile.clone()]);
+        let saved = fs::read(&repo.path).unwrap();
+        let mut document: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(document["version"], 1);
+        assert_eq!(document["profiles"][0]["color"], "#AB12cd");
+
+        for color in ["#gg8800", "#fff", "#ff88\n0", "private-secret"] {
+            let mut invalid = profile.clone();
+            invalid.color = Some(color.into());
+            let error = repo.save(&[invalid]).unwrap_err();
+            assert!(!format!("{error:#}").contains(color));
+            assert_eq!(fs::read(&repo.path).unwrap(), saved);
+
+            document["profiles"][0]["color"] = color.into();
+            let malformed = serde_json::to_vec(&document).unwrap();
+            fs::write(&repo.path, &malformed).unwrap();
+            let error = repo.load().unwrap_err();
+            assert!(!format!("{error:#}").contains(color));
+            assert_eq!(fs::read(&repo.path).unwrap(), malformed);
+            fs::write(&repo.path, &saved).unwrap();
+        }
+
+        document["profiles"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("color");
+        fs::write(&repo.path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let mut legacy = profile;
+        legacy.color = None;
+        assert_eq!(repo.load().unwrap(), vec![legacy]);
+
+        document["profiles"][0]["password"] = "private-secret".into();
+        fs::write(&repo.path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let error = repo.load().unwrap_err();
+        assert!(!format!("{error:#}").contains("private-secret"));
     }
 
     #[test]

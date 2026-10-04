@@ -9,7 +9,7 @@ mod theme;
 
 use std::collections::HashMap;
 
-use dalan_app::shell_state::{Control, OUTER_PADDING, PANE_GAP, RAIL_WIDTH, ShellState};
+use dalan_app::shell_state::{Control, OUTER_PADDING, PANE_GAP, ShellState};
 use gpui::{
     App, Application, Bounds, Context, Div, FocusHandle, KeyBinding, Menu, MenuItem, MouseButton,
     SharedString, Stateful, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div,
@@ -50,8 +50,7 @@ struct DragState {
 fn control_label(id: &str) -> &'static str {
     match id {
         "layout-menu" => "Workspace layout",
-        "database-rail" | "toggle-database" => "Toggle database sidebar (Cmd-B)",
-        "hide-database" => "Hide database sidebar",
+        "database-toggle" | "toggle-database" => "Toggle database sidebar (Cmd-B)",
         "database-resize" => "Resize database sidebar (Left/Right)",
         "narrow-database" => "Narrow database sidebar",
         "widen-database" => "Widen database sidebar",
@@ -95,8 +94,7 @@ impl Shell {
         root_focus.focus(window);
         let ids = [
             "layout-menu",
-            "database-rail",
-            "hide-database",
+            "database-toggle",
             "database-resize",
             "acp-toggle",
             "acp-close",
@@ -267,22 +265,7 @@ impl Shell {
             .child(div().w(px(8.0)))
     }
 
-    fn rail(&self, pane_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .w(px(RAIL_WIDTH))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .items_center()
-            .pt(px(4.0))
-            .child(
-                self.button("database-rail", Control::ToggleDatabase, pane_visible, cx)
-                    .child(icon(Icon::Database, TEXT)),
-            )
-    }
-
-    fn sidebar(&self, width: f32, cx: &mut Context<Self>) -> impl IntoElement {
+    fn sidebar(&self, width: f32) -> impl IntoElement {
         div()
             .id("database-pane")
             .debug_selector(|| "database-pane".into())
@@ -294,18 +277,6 @@ impl Shell {
             .overflow_hidden()
             .rounded(px(6.0))
             .bg(rgb(PANEL))
-            .child(
-                div()
-                    .h(px(28.0))
-                    .flex_shrink_0()
-                    .flex()
-                    .justify_end()
-                    .bg(rgb(HEADER))
-                    .child(
-                        self.button("hide-database", Control::ToggleDatabase, false, cx)
-                            .child(icon(Icon::Hide, MUTED)),
-                    ),
-            )
             .child(
                 div()
                     .flex_1()
@@ -486,10 +457,9 @@ impl Render for Shell {
                     .min_h(px(0.0))
                     .flex()
                     .pb(px(2.0))
-                    .pr(px(OUTER_PADDING))
-                    .child(self.rail(layout.database.is_some(), cx))
+                    .px(px(OUTER_PADDING))
                     .when_some(layout.database, |body, width| {
-                        body.child(self.sidebar(width, cx))
+                        body.child(self.sidebar(width))
                             .child(self.separator(width, cx))
                     })
                     .child(
@@ -519,6 +489,17 @@ impl Render for Shell {
                     .px(px(12.0))
                     .text_size(px(11.0))
                     .text_color(rgb(MUTED))
+                    .gap(px(8.0))
+                    .child(
+                        self.button(
+                            "database-toggle",
+                            Control::ToggleDatabase,
+                            layout.database.is_some(),
+                            cx,
+                        )
+                        .w(px(28.0))
+                        .child(icon(Icon::Layout, TEXT)),
+                    )
                     .child(
                         div()
                             .flex_1()

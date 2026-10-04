@@ -1,4 +1,3 @@
-pub const RAIL_WIDTH: f32 = 36.0;
 pub const PANE_GAP: f32 = 6.0;
 pub const OUTER_PADDING: f32 = 6.0;
 pub const MIN_CONTENT_WIDTH: f32 = 240.0;
@@ -91,7 +90,7 @@ impl ShellState {
                 acp: None,
             };
         }
-        let mut budget = viewport_width - RAIL_WIDTH - OUTER_PADDING - MIN_CONTENT_WIDTH;
+        let mut budget = viewport_width - 2.0 * OUTER_PADDING - MIN_CONTENT_WIDTH;
         let acp = if self.acp_visible && budget > PANE_GAP {
             let width = ACP_PANEL_WIDTH.min(budget - PANE_GAP);
             budget -= width + PANE_GAP;
@@ -147,7 +146,7 @@ mod tests {
     fn compact_layout_preserves_preference() {
         let mut state = ShellState::default();
         state.resize(480.0);
-        assert_eq!(state.database_width(720.0), Some(432.0));
+        assert_eq!(state.database_width(720.0), Some(462.0));
         assert_eq!(state.database_width(1_200.0), Some(480.0));
         assert_eq!(state.requested_width(), 480.0);
         assert_eq!(state.database_width(f32::NAN), None);
@@ -160,9 +159,7 @@ mod tests {
             let state = ShellState::default();
             if let Some(width) = state.database_width(viewport) {
                 assert!((MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH).contains(&width));
-                assert!(
-                    width + RAIL_WIDTH + PANE_GAP + OUTER_PADDING + MIN_CONTENT_WIDTH <= viewport
-                );
+                assert!(width + PANE_GAP + 2.0 * OUTER_PADDING + MIN_CONTENT_WIDTH <= viewport);
             }
         }
     }
@@ -196,7 +193,7 @@ mod tests {
         );
         assert!(state.database_visible);
         state.apply(Control::ToggleAcp);
-        assert_eq!(state.layout(720.0).database, Some(432.0));
+        assert_eq!(state.layout(720.0).database, Some(462.0));
         assert_eq!(state.requested_width(), 480.0);
     }
 
@@ -210,7 +207,7 @@ mod tests {
             let gaps = PANE_GAP
                 * (usize::from(layout.database.is_some()) + usize::from(layout.acp.is_some()))
                     as f32;
-            assert!(panes + gaps + RAIL_WIDTH + OUTER_PADDING + MIN_CONTENT_WIDTH <= viewport);
+            assert!(panes + gaps + 2.0 * OUTER_PADDING + MIN_CONTENT_WIDTH <= viewport);
         }
         state.apply(Control::ResetLayout);
         assert!(!state.acp_visible);

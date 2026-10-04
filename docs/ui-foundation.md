@@ -6,24 +6,32 @@ Implemented scope: macOS dark desktop shell, following the user's supplied DataG
 
 ```text
 [ native window controls | Dalan   Database workspace          Layout ]
-[ database rail ][ Database Explorer ][ source form / table view ][ optional ACP ]
-[ UI foundation / focused-control help                      | bot-message-square ]
+[ 6 px ][ Database Explorer ][ source form / table view ][ optional ACP ][ 6 px ]
+[ panel-left | UI foundation / focused-control help         | bot-message-square ]
 ```
 
 - Native macOS traffic lights remain real OS controls. A transparent titlebar allows the compact custom top bar; its workspace-label region drags the window, and double-click requests the native zoom behavior.
-- A 38 px top bar, 32 px pane headers, a 36 px database rail, and 32 px status strip retain the dense proportions of the reference. Main content has a source form and bounded table results, but no SQL editor, welcome cards or gradients.
-- The single Database Explorer sidebar defaults to 320 px, bounded to 200–480 px. Dark inset surfaces use 6 px structural corner radii, a 6 px divider gap, and 6 px right padding, not floating cards. The optional scoped right ACP panel is initially closed; there is no Files rail.
+- A 38 px top bar, 32 px pane headers, a separate 32 px explorer toolbar, and 32 px status strip retain the dense proportions of the reference. Main content has a source form and bounded table results, but no SQL editor, welcome cards or gradients.
+- The single Database Explorer sidebar defaults to 320 px, bounded to 200–480 px. Dark inset surfaces use 6 px structural corner radii, a 6 px divider gap, and 6 px outer padding on both sides, not floating cards or reserved rail space. The optional scoped right ACP panel is initially closed; there is no Files rail.
 - System UI typography is a calm, dense 13 pt, with 12 px secondary copy and an 11 px status strip. No font assets or logo are introduced.
-- Eight pinned Lucide SVGs replace locally drawn utility glyphs: database, panel-left, chevron-down, minus, bot-message-square, arrow-up, arrow-down and download. No vendor-brand artwork, decorative AI sparkle or icon-font dependency.
+- Fourteen pinned Lucide SVGs provide utility glyphs: database, database-zap, plus, settings-2, refresh-cw, trash-2, panel-left, chevron-down, minus, bot-message-square, arrow-up, arrow-down, download and check. Local trash-2.svg is the unchanged upstream trash.svg alias from the same pin; see the [asset README](../crates/app/assets/README.md). No vendor-brand artwork, decorative AI sparkle or icon-font dependency.
 - Database Explorer shows real saved sources and discovered databases/tables. No fabricated sources or results.
 - The status strip identifies the development scope without implying a connected database or agent. Its bottom-right 28 px bot-message-square icon button, with AI · ACP tooltip/focus-help label, toggles the right panel. The panel says **Not connected**, with no ACP transport or agent launch implemented, no text prompt input yet, and no BYOK/provider settings.
+
+The activity rail and header hide/minimise button are removed. Database Explorer has one 32 px title header without add text or a repeated title row, followed by a 32 px toolbar with four 28 px icon buttons. Add, Manage, Refresh and Remove have action-specific tooltips; no inactive DDL, console or advanced-option icons are shown. Source selection rows show name, readable engine label and abstract Lucide database/MySQL or database-zap/MariaDB cue, not vendor logos or branded driver icons. Optional color affects only the small marker; selection/focus and names stay independently readable.
+
+With no sources, the main area centers a working Connect to a Source action, not a demo/trial welcome screen. It opens the same source form by mouse, Enter or Space and remains available when Database Explorer is hidden. Loading and sanitized errors remain visible in the appropriate source/browse state.
 
 ## Controls
 
 | Control | Behavior |
 | --- | --- |
-| Database rail | Toggle database sidebar |
-| Database header minus | Hide database sidebar |
+| Bottom-left 28 px panel-left | Toggle Database Explorer; retain the closed preference until toggled or reset |
+| Explorer Add / plus | Open the same source form; disabled during saving |
+| Explorer Manage / settings-2 | Edit selected source; disabled without selection or while busy/saving |
+| Explorer Refresh / refresh-cw | Refresh selected source; disabled without selection or while busy/saving |
+| Explorer Remove / trash-2 | Request confirmed local removal; disabled without selection or while busy/saving |
+| Main Connect to a Source | With no sources, open the source form by mouse or Enter/Space, even with explorer hidden |
 | Layout | Open/close the layout menu |
 | Menu toggle row | Toggle Database Explorer; show requested Shown/Hidden preference |
 | Menu narrow/widen rows | Adjust Database Explorer preference by 32 px, bounded to 200–480 px |
@@ -49,9 +57,9 @@ Controls have hover feedback/tooltips, keyboard focus-help text in the status st
 
 ## Resize behavior
 
-The window minimum is 720 × 480. Compact layout clamps Database Explorer toward its 200 px minimum while reserving at least 240 px for main content. The ACP panel prefers 300 px, capped by available space; its initial visibility is false. While ACP is visible, a compact window may temporarily hide Database Explorer. Database visibility and width preferences survive this temporary suppression and are restored after closing ACP or when space allows. Layout preferences are in-memory only; source profiles have separate versioned persistence.
+The window minimum is 720 × 480. Compact layout clamps Database Explorer toward its 200 px minimum while reserving at least 240 px for main content. At 720 px with ACP closed, the maximum effective sidebar width is 462 px: 720 minus 12 px outer padding, 6 px gap and 240 px content. The ACP panel prefers 300 px, capped by available space; its initial visibility is false. While ACP is visible, a compact window may temporarily hide Database Explorer. Database visibility and width preferences survive this temporary suppression and are restored after closing ACP or when space allows. Layout preferences are in-memory only; source profiles have separate versioned persistence.
 
-A pane toggle changes the user's visibility preference, independently of width clamping. The rail's selected state reflects actual visibility; the menu's Shown/Hidden text reflects the retained preference.
+A pane toggle changes the user's visibility preference, independently of width clamping. The bottom-left toggle's selected state reflects actual visibility; the menu's Shown/Hidden text reflects the retained preference.
 
 ## About Dalan
 
@@ -138,6 +146,12 @@ SSH has an explicit background metadata-only identity picker for likely `$HOME/.
 The table view offers 100-row pages and a column-cycle filter with Contains, Equals, NotEquals, greater than, less than, is null and is not null. Views are listed but unavailable for browsing. Stale rows remain visibly labeled on errors or filter changes, retaining the labeled previous page with pagination disabled until refresh succeeds. Source changes clear old rows. Primary-key order where available is not a cross-page snapshot. Column headers now cycle ascending/descending/none by click or Enter/Space, retaining filters and resetting offset. Loaded CSV uses a native save picker (default `Dalan-loaded-page.csv`) and fresh nontruncated rows only; visible feedback reports success, cancellation or errors. No arbitrary SQL, writes, full-query export or whole-table export are exposed. Transport, TLS, representation and backend bounds are documented in [MySQL sources](mysql-sources.md).
 
 The input control adapts GPUI Apache-2.0 code with attribution. Lucide SVGs are explicitly permitted open-source utility assets pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`. Complete ISC and retained Feather MIT notices are in [third-party notices](../THIRD_PARTY_NOTICES.md), alongside GPUI input Apache-2.0 attribution. The bundle includes these notices and the full Lucide license in Resources. The bot/message glyph represents chat-agent communication, not app branding. No reference advanced-options panel, marketplace, visual tools or vendor-brand artwork are copied. Dependency attribution does not choose a project license; that remains undecided.
+
+## Database Explorer redesign validation
+
+Color (optional) sits below Name, with manual `#RRGGBB` entry and labeled Default, Blue, Green, Amber, Red and Purple swatches. Default stores None. Color is a marker, not a production/risk classification; custom colors are not guaranteed AA. Version 1 JSON uses an optional `color` field with `serde(default)` for legacy profiles. Legacy load produces None without automatic rewrite, preserves exact mixed-case hex on round-trip, and does not touch Keychain. The source-field whitelist accepts color while password rejection and failed-load overwrite protection remain unchanged.
+
+Verified migration/color tests preserve legacy None and mixed-case hex and reject malformed values without overwriting settings. Current totals: **54 headless**, **57 simulated UI** and **four Python bundle tests** passed, along with formatting, strict lint, bundle build and plist/signature/license checks. Native visual/accessibility, hosted CI, live transports and Keychain were not rerun for this UI/profile-only iteration.
 
 ## Current change validation
 

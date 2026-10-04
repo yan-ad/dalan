@@ -42,6 +42,8 @@ pub enum TlsMode {
 pub struct SourceProfile {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub color: Option<String>,
     pub engine: DbEngine,
     pub host: String,
     pub port: u16,
@@ -57,6 +59,7 @@ impl Default for SourceProfile {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             name: "New source".into(),
+            color: None,
             engine: DbEngine::MySql,
             host: "localhost".into(),
             port: 3306,
@@ -111,6 +114,14 @@ impl SourceProfile {
             "Invalid source UUID"
         );
         field(&self.name, 256, "source name")?;
+        if let Some(color) = &self.color {
+            ensure!(
+                color.len() == 7
+                    && color.starts_with('#')
+                    && color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit),
+                "Invalid source color (use #RRGGBB)"
+            );
+        }
         host(&self.host)?;
         ensure!(self.port != 0, "Port must be nonzero");
         field(&self.username, 128, "username")?;
@@ -164,6 +175,33 @@ impl SourceProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn color_validation() {
+        let mut profile = SourceProfile::default();
+        assert_eq!(profile.color, None);
+        assert!(profile.validate().is_ok());
+        for color in ["#ff8800", "#AB12cd"] {
+            profile.color = Some(color.into());
+            assert!(profile.validate().is_ok());
+        }
+        for color in [
+            "",
+            "ff8800",
+            "#fff",
+            "#ff88000",
+            "#gg8800",
+            " #ff8800",
+            "#ff8800 ",
+            "#ff88\n0",
+            "#ff88\0",
+            "#ＡB12",
+            "private-secret",
+        ] {
+            profile.color = Some(color.into());
+            let error = profile.validate().unwrap_err().to_string();
+            assert_eq!(error, "Invalid source color (use #RRGGBB)");
+        }
+    }
     #[test]
     fn transport_rejects_unknown_nested_fields() {
         for json in [
@@ -222,6 +260,7 @@ mod tests {
         assert_eq!(p.port, 3306);
         assert_eq!(p.tls, TlsMode::VerifyIdentity);
         assert_eq!(p.database, None);
+        assert_eq!(p.color, None);
         assert!(!p.save_password);
         p.port = 0;
         assert!(p.validate().is_err());
