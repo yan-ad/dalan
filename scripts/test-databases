@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT"
+docker info >/dev/null 2>&1 || { echo 'Start your Docker-compatible runtime before running this disposable test.' >&2; exit 1; }
+TAG="dalan-fixture-$$"
+MYSQL="$TAG-mysql"
+MARIA="$TAG-maria"
+cleanup() { docker rm -f -v "$MYSQL" "$MARIA" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+for pair in "$MYSQL mysql:8.4" "$MARIA mariadb:11.4"; do
+  set -- $pair
+  docker run --detach --name "$1" --label dalan.test-fixture=true \
+    --publish 127.0.0.1::3306 \
+    --env MYSQL_ROOT_PASSWORD=dalan-local-root-only \
+    --mount "type=bind,source=$ROOT/scripts/tests/mysql-fixture.sql,target=/docker-entrypoint-initdb.d/fixture.sql,readonly" \
+    "$2" >/dev/null
+  ready=0
+  for attempt in $(seq 1 90); do
+    if docker exec "$1" sh -c 'if command -v mariadb >/dev/null; then client=mariadb; else client=mysql; fi; MYSQL_PWD=dalan-local-fixture-only "$client" -h127.0.0.1 -udalan_reader -N -e "SELECT COUNT(*) FROM dalan_fixture.contact"' 2>/dev/null | grep -q '^3$'; then ready=1; break; fi
+    sleep 2
+  done
+  [ "$ready" -eq 1 ] || { echo "Fixture server $1 did not become ready" >&2; docker logs "$1" | tail -30; exit 1; }
+done
+MYSQL_PORT=$(docker port "$MYSQL" 3306/tcp | sed 's/.*://')
+MARIA_PORT=$(docker port "$MARIA" 3306/tcp | sed 's/.*://')
+export DALAN_TEST_MYSQL_HOST=127.0.0.1 DALAN_TEST_MYSQL_PORT="$MYSQL_PORT" DALAN_TEST_MYSQL_USER=dalan_reader DALAN_TEST_MYSQL_PASSWORD=dalan-local-fixture-only DALAN_TEST_MYSQL_DATABASE=dalan_fixture DALAN_TEST_MYSQL_TLS_DISABLED=1
+export DALAN_TEST_MARIADB_HOST=127.0.0.1 DALAN_TEST_MARIADB_PORT="$MARIA_PORT" DALAN_TEST_MARIADB_USER=dalan_reader DALAN_TEST_MARIADB_PASSWORD=dalan-local-fixture-only DALAN_TEST_MARIADB_DATABASE=dalan_fixture DALAN_TEST_MARIADB_TLS_DISABLED=1
+# Runs direct and anonymous loopback HTTP CONNECT fixture coverage, plus
+# verified-TLS rejection of untrusted/absent providers. No HTTPS/SSH or trusted
+# certificate success is claimed by this plaintext disposable fixture.
+cargo test -p dalan-drivers --test mysql_live --locked -- --ignored --nocapture

@@ -1,0 +1,149 @@
+# UI foundation
+
+Implemented scope: macOS dark desktop shell, following the user's supplied DataGrip screenshot for chrome and sidebar organization, with restrained editor styling. Main content now hosts an experimental MySQL/MariaDB source form and read-only table view. This is not a completed SQL client or accessibility/theme system.
+
+## Composition and purpose
+
+```text
+[ native window controls | Dalan   Database workspace          Layout ]
+[ database rail ][ Database Explorer ][ source form / table view ][ optional ACP ]
+[ UI foundation / focused-control help                      | bot-message-square ]
+```
+
+- Native macOS traffic lights remain real OS controls. A transparent titlebar allows the compact custom top bar; its workspace-label region drags the window, and double-click requests the native zoom behavior.
+- A 38 px top bar, 32 px pane headers, a 36 px database rail, and 32 px status strip retain the dense proportions of the reference. Main content has a source form and bounded table results, but no SQL editor, welcome cards or gradients.
+- The single Database Explorer sidebar defaults to 320 px, bounded to 200–480 px. Dark inset surfaces use 6 px structural corner radii, a 6 px divider gap, and 6 px right padding, not floating cards. The optional scoped right ACP panel is initially closed; there is no Files rail.
+- System UI typography is a calm, dense 13 pt, with 12 px secondary copy and an 11 px status strip. No font assets or logo are introduced.
+- Eight pinned Lucide SVGs replace locally drawn utility glyphs: database, panel-left, chevron-down, minus, bot-message-square, arrow-up, arrow-down and download. No vendor-brand artwork, decorative AI sparkle or icon-font dependency.
+- Database Explorer shows real saved sources and discovered databases/tables. No fabricated sources or results.
+- The status strip identifies the development scope without implying a connected database or agent. Its bottom-right 28 px bot-message-square icon button, with AI · ACP tooltip/focus-help label, toggles the right panel. The panel says **Not connected**, with no ACP transport or agent launch implemented, no text prompt input yet, and no BYOK/provider settings.
+
+## Controls
+
+| Control | Behavior |
+| --- | --- |
+| Database rail | Toggle database sidebar |
+| Database header minus | Hide database sidebar |
+| Layout | Open/close the layout menu |
+| Menu toggle row | Toggle Database Explorer; show requested Shown/Hidden preference |
+| Menu narrow/widen rows | Adjust Database Explorer preference by 32 px, bounded to 200–480 px |
+| Reset layout | Show Database Explorer, restore its 320 px width, close ACP |
+| Pane divider drag | Resize Database Explorer; dragging right widens it |
+| Focused divider Left/Right | Move divider by 16 px; keyboard alternative to dragging |
+| Escape | Close menu and return focus to Layout; stop active resize. Close ACP only when focus is inside that panel, returning focus to AI · ACP |
+| Tab / Shift-Tab | Navigate controls; while menu is open, cycle only through its rows |
+| Enter / Space | Activate focused buttons |
+| Cmd-B | Toggle Database Explorer |
+| Cmd-Alt-0 | Reset layout |
+| Bot-message-square (AI · ACP label) / Cmd-Shift-A | Toggle the scoped ACP panel |
+| ACP panel close button | Close panel and return focus to AI · ACP |
+| Column header click / focused Enter or Space | Cycle ascending, descending, no explicit sort; retain filter and reset offset |
+| Export loaded CSV / download | Native save picker for the fresh complete loaded page; visible success/cancel/error; no overwrite |
+| Native About Dalan menu | Open the separate About window |
+| Cmd-W / Cmd-Q | Close window / quit app |
+| Native View menu | Toggle Database Explorer, toggle AI panel, reset layout |
+
+Layout has exactly four rows: toggle Database Explorer, narrow Database Explorer, widen Database Explorer, and reset layout. macOS bindings use Command, not Control.
+
+Controls have hover feedback/tooltips, keyboard focus-help text in the status strip, and a high-contrast focus border/resize indicator. The menu focuses its first row on open and returns to the trigger on dismissal. Source add/edit/delete and connection controls are implemented; no generic search or version-control controls are added. AI · ACP exposes only panel visibility, not a working agent feature.
+
+## Resize behavior
+
+The window minimum is 720 × 480. Compact layout clamps Database Explorer toward its 200 px minimum while reserving at least 240 px for main content. The ACP panel prefers 300 px, capped by available space; its initial visibility is false. While ACP is visible, a compact window may temporarily hide Database Explorer. Database visibility and width preferences survive this temporary suppression and are restored after closing ACP or when space allows. Layout preferences are in-memory only; source profiles have separate versioned persistence.
+
+A pane toggle changes the user's visibility preference, independently of width clamping. The rail's selected state reflects actual visibility; the menu's Shown/Hidden text reflects the retained preference.
+
+## About Dalan
+
+The native macOS application menu opens **About Dalan** in a separate 420 × 280 nonresizable GPUI window. It displays the Cargo package version, the name’s Javanese meaning “ways,” and database-workspace scope. It uses existing GPUI/native integration, not external libraries. The titlebar brand is capitalized **Dalan**; no brand/app icon artwork is introduced. Utility icons are distinct from app identity.
+
+## Adopted dark tokens
+
+| Role | Value | Reason |
+| --- | --- | --- |
+| Chrome | `#262729` | Match the reference's quiet outer frame |
+| Inset surface | `#191A1C` | Separate work areas from surrounding chrome |
+| Pane header | `#1F2022` | Compact hierarchy without a floating toolbar |
+| Hover | `#35373B` | Pointer feedback, not a persistent decoration |
+| Active selection | `#344C72` | Navigation state, paired with active border |
+| Primary text | `#E6E8EB` | Readable small UI labels |
+| Secondary text | `#B8BEC8` | Lower hierarchy without failing selected-state contrast |
+| Focus | `#8AB4F8` | Single accent for actual focus/selection |
+
+Text/focus pairings across chrome, surface, header, hover, and selected backgrounds are computationally checked. This does not establish screen-reader support, scaled-text resilience, or future syntax/status colors.
+
+Minimum measured ratios across these backgrounds: primary text 7.06:1, secondary text 4.64:1, focus indicator 4.11:1. Focus uses the 3:1 non-text threshold and is not used as label text.
+
+## Modules and verification
+
+- `crates/app/src/shell_state.rs`: GPUI-free database/ACP visibility, width, and compact-layout rules; headless regression coverage.
+- `crates/app/src/desktop.rs`: view composition, control focus, input handlers, native titlebar/menu, and ACP panel.
+- `crates/app/src/desktop/about.rs`: About Dalan window, Cargo version, dismiss and reuse behavior.
+- `crates/app/src/desktop/theme.rs`: adopted tokens and chrome dimensions.
+- `crates/app/src/desktop/icons.rs`: embedded Lucide SVG asset source, wired in the desktop entry point; explicit arrow-up/arrow-down sort direction.
+- `crates/app/src/desktop/tests.rs`: opt-in GPUI event simulation for controls, menus, focus, resizing, compact windows, ACP toggling/dismissal, and About behavior.
+
+```sh
+cargo test --workspace --locked
+# macOS development path without offline Metal compiler:
+cargo test -p dalan-app --bin dalan --features runtime-shaders,ui-tests --locked
+./scripts/macos --open
+```
+
+`ui-tests` enables GPUI's own `test-support` dependency graph and stays off by default. Simulated event tests are separate from real macOS/VoiceOver/manual rendering evidence. Standard desktop builds still require full Xcode/Metal.
+
+## Historical validation: initial two-sidebar iteration
+
+These results apply only to the previous iteration, not the newer database-only shell.
+
+- Default workspace: 17 tests passed. Opt-in GPUI input suite: seven tests passed. Formatting, headless/UI strict Clippy, and runtime-shader desktop build passed.
+- Simulated click-through: both rail toggles and header hide buttons; all seven Layout rows; trigger open/close, Escape and outside dismissal. Simulated keyboard: complete forward/reverse Tab sequence, menu focus cycle, Enter/Space activation, pane/reset shortcuts, divider arrows, and Cmd-W. Divider drag and compact/expanded viewport geometry also passed.
+- Latest real desktop binary launched on local macOS and stayed running without captured startup errors. Window-only screenshot capture was attempted but macOS returned `could not create image from window`; no Screen Recording/Accessibility permissions were changed. Visual matching, native traffic-light/titlebar interaction, manual click-through, actual accessibility, and 200% text scaling are not claimed verified.
+- Hosted CI and standard offline-Metal builds were not run in this iteration; the known full Xcode/Metal prerequisite remains. Existing dependency future-Rust warnings for `block` and `proc-macro-error2` remain unchanged.
+
+## Historical validation: database-only and app-bundle iteration
+
+These recorded results predate the About Dalan and optional ACP-panel changes; they do not validate those additions.
+
+- Rewritten single-sidebar checks passed: 17 headless workspace tests, seven GPUI input tests, and four Python bundle-helper tests. Formatting, headless/UI strict Clippy, and runtime-shader debug build passed.
+- Simulated controls passed: database rail/header hide, all four Layout rows, open/close/Escape/outside dismissal, Tab/Shift-Tab focus, Enter/Space, Cmd-B/Cmd-Alt-0/Cmd-W, divider drag/arrows, and 720 px clamp/restored preferred width. Regression assertions verify no Files pane/rail/hide/resize controls or selectors exist.
+- `./scripts/macos` produced `target/debug/bundles/Dalan.app`. Plist lint and strict ad-hoc signature verification passed. Executable dependencies inspected with `otool -L` are macOS system libraries/frameworks, with no external runtime library paths observed.
+- `./scripts/macos --open` successfully launched the bundle through macOS Launch Services. `NSRunningApplication` reported display name `Dalan`, bundle ID `local.dalan.debug`, the bundle path, and executable `Dalan.app/Contents/MacOS/Dalan`. The app was left open for the user.
+- This verifies app identity/launch, not visual matching, native titlebar click-through, VoiceOver, scaled text, hosted CI, notarization, or release/offline-Metal builds. Those remain separate checks. Local ad-hoc signing is not a release-distribution guarantee.
+
+## Historical validation: About Dalan and ACP-panel iteration
+
+- Passed 19 headless Rust tests, 11 simulated GPUI interaction tests, and four Python bundle-helper tests (34 total). Formatting, both strict Clippy paths, runtime-shader build, plist lint, and ad-hoc bundle signature verification passed.
+- ACP tests check bottom-right button bounds, click/Enter/Space/Cmd-Shift-A activation, close/focus return, panel-focused Escape versus Escape outside the panel, compact layout, and restoration of Database Explorer. Tab order includes the ACP trigger. Main content remains blank.
+- About tests dispatch the same action used by the macOS menu, verify a single reused 420 × 280 window, and exercise Done, Escape, and Cmd-W close paths. The window displays Cargo's package version; no duplicated version constant or additional dependency was added.
+- Rebuilt Dalan.app, gracefully quit the older development instance, and reopened the bundle. macOS reported display name Dalan and executable Dalan.app/Contents/MacOS/Dalan. The updated app was left open.
+- Actual menu click-through, visual comparison, VoiceOver/scaled text, hosted CI, notarization, and release/offline-Metal builds remain unverified. ACP transport/authentication, agent launch, and prompts remain unimplemented; the panel explicitly says Not connected. Existing upstream future-Rust warnings are unchanged.
+
+Generic Files explorer, generic code viewer, Git, build/run integrations, generic terminal, and plugin/toolbox chrome are excluded. The optional database-focused ACP panel is explicitly permitted, not an exception allowing generic tools. SQL query consoles, database script workflows, and database-focused import/export remain valid later scope.
+
+The historical blank-main state above is superseded by the source slice below. SQL editor work requires its own scoped milestone. Light/system theme, text scaling, and native accessibility remain required before release.
+
+## Current source and read-view slice
+
+The main area is no longer blank. Add/Edit Source has engine, name, endpoint, user, optional database and password fields, plus transport/TLS choices. Database defaults to None, host/port to localhost:3306 and user to root; recommend a least-privilege account. Opening Add/Edit focuses Name; Escape cancels. SSH exposes an optional Known hosts file field requiring an absolute existing file. Test does not save. Save persists a profile without connecting; Connect on the selected source triggers real discovery. Delete is confirmed and removes local settings/Keychain only, not server objects.
+
+Passwords are session-only unless saved explicitly to native macOS Keychain. After restart, Edit/re-enter a session-only password. Profiles use stable UUIDs and version 1 JSON without passwords. JSON/Keychain changes are not atomic across resources and compensation failures remain visible. Session-only Save is tested without a Keychain call, save failures are visible and a failed profile load blocks overwriting settings. The file limit is 1 MiB with at most 100 profiles.
+
+The table view offers 100-row pages and a column-cycle filter with Contains, Equals, NotEquals, greater than, less than, is null and is not null. Views are listed but unavailable for browsing. Stale rows remain visibly labeled on errors or filter changes, retaining the labeled previous page with pagination disabled until refresh succeeds. Source changes clear old rows. Primary-key order where available is not a cross-page snapshot. Column headers now cycle ascending/descending/none by click or Enter/Space, retaining filters and resetting offset. Loaded CSV uses a native save picker (default `Dalan-loaded-page.csv`) and fresh nontruncated rows only; visible feedback reports success, cancellation or errors. No arbitrary SQL, writes, full-query export or whole-table export are exposed. Transport, TLS, representation and backend bounds are documented in [MySQL sources](mysql-sources.md).
+
+The input control adapts GPUI Apache-2.0 code with attribution. Lucide SVGs are explicitly permitted open-source utility assets pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`. Complete ISC and retained Feather MIT notices are in [third-party notices](../THIRD_PARTY_NOTICES.md), alongside GPUI input Apache-2.0 attribution. The bundle includes these notices and the full Lucide license in Resources. The bot/message glyph represents chat-agent communication, not app branding. No reference advanced-options panel, marketplace, visual tools or vendor-brand artwork are copied. Dependency attribution does not choose a project license; that remains undecided.
+
+## Current change validation
+
+- Six live fixture smokes passed on MySQL 8.4.11 and MariaDB 11.4.13: direct TCP/HTTP CONNECT, all filter operators and fixture values, view rejection and untrusted default-TLS rejection.
+- Historical source-slice evidence: passed 37 default headless Rust tests (4 ACP, 13 app, 5 core, 15 driver), 27 simulated GPUI tests (3 native-input, 5 source-form, 4 source-model, 3 browser, 12 shell) and four Python bundle-helper tests. One generated native Keychain round-trip passed with cleanup. Historical counts above are not evidence for this slice.
+- Ten secure-transport tests passed: trusted database TLS direct/HTTP CONNECT reads and wrong-hostname/untrusted-CA/untrusted-HTTPS-proxy rejection, five cases per engine. Six actual SSH tests passed: two reads, two wrong-host-key and two wrong-identity rejections, without modifying user SSH/OS CA state. Trusted system-CA HTTPS proxy success remains unverified.
+- Simulated input tests cover selection/replacement/paste and source-form behavior, not native macOS input correctness or absence of OS input-system credential leakage. Simulated UI tests do not establish native keyboard click-through, actual accessibility, scaled text, hosted CI, notarization or release/offline-Metal behavior.
+- The source-slice Dalan.app was rebuilt, plist-linted, ad-hoc signed and signature-verified. The older development instance was quit and the bundle relaunched; macOS confirmed Dalan and its bundle executable. The app was left open. This is launch evidence, not manual source-flow or visual verification.
+- The desktop source implements the experimental source UI; the final bundle rebuild is a separate gate. ACP remains explicitly Not connected, with no transport, process, prompt or provider configuration.
+
+Latest results: 48 headless and 42 simulated GPUI tests, four bundle-helper tests, one generated Keychain round-trip and 22 actual direct/CONNECT/TLS/SSH cases passed. Formatting, strict lint, debug bundle build/signature and license-resource checks passed. No new manual visual/accessibility validation is claimed.
+
+Current gate: confirm the final rerun/build results, verify system-trusted HTTPS proxy success, then exercise real macOS source/browse keyboard and error/cancel flows. Light/system theme, scaled text and assistive-technology validation remain release requirements. Preserve the historical records and [initial validation](initial-validation.md) as evidence of their own iterations, not current compatibility.
+
+[Overview](../README.md) · [Design direction](../DESIGN.md) · [Testing](testing.md) · [Development](development.md)

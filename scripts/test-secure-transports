@@ -1,0 +1,5 @@
+#!/bin/sh
+# Disposable local fixtures only. Never changes SSH known_hosts or OS CA trust.
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec python3 "$ROOT/scripts/tests/secure_transport_fixture.py" "$@"

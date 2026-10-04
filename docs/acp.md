@@ -4,7 +4,7 @@ Status: proposed integration; the scaffold links the official Rust SDK and provi
 
 ## Product contract
 
-dalan is an Agent Client Protocol client. AI features connect to user-configured ACP-compatible agents. The app does not collect model-provider API keys, implement provider SDKs, offer direct-provider HTTP fallbacks, or manage model billing. The external agent handles login, subscriptions, providers, and its own credentials. An agent may itself use API keys: ACP-only does not mean credentials cannot exist outside dalan.
+Dalan is an Agent Client Protocol client. AI features connect to user-configured ACP-compatible agents. The app does not collect model-provider API keys, implement provider SDKs, offer direct-provider HTTP fallbacks, or manage model billing. The external agent handles login, subscriptions, providers, and its own credentials. An agent may itself use API keys: ACP-only does not mean credentials cannot exist outside Dalan.
 
 Normal database features must work with AI disabled, no agent installed, or an agent unavailable. The first AI milestone supports query explanation/drafting and review/insertion. No application-provided database execution tools, autonomous queries, or MCP database server are proposed for first release. ACP is not a database-tool protocol; any future execution tools require a separately reviewed MCP interface or extension and app-owned enforcement.
 
@@ -44,7 +44,7 @@ For initial integration, keep filesystem and tool-terminal capabilities unadvert
 
 `session/request_permission` supplies option IDs with allow/reject once/always kinds. UI decisions must return a supplied option ID, never an invented option. Default is no automatic approval; avoid persistent allow-always decisions initially. Show agent/tool/action details without rendering agent text as trusted UI.
 
-Permission requests are optional in the protocol. Tool-call updates describe agent work; they do not enforce universal authorization. An agent may execute tools using its own OS privileges even when dalan does not advertise filesystem/terminal methods. dalan cannot guarantee every external action is requested or reported. See [security](security.md).
+Permission requests are optional in the protocol. Tool-call updates describe agent work; they do not enforce universal authorization. An agent may execute tools using its own OS privileges even when Dalan does not advertise filesystem/terminal methods. Dalan cannot guarantee every external action is requested or reported. See [security](security.md).
 
 ## Context and privacy
 

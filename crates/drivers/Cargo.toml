@@ -7,6 +7,16 @@ publish.workspace = true
 
 [dependencies]
 dalan-core.workspace = true
+mysql_async = { version = "=0.37.1", default-features = false, features = ["default-rustls-ring"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "process", "sync", "macros"] }
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+anyhow = "1"
+native-tls = "0.2"
+tokio-native-tls = "0.3"
+
+[dev-dependencies]
+serde_json = "1"
 
 [lints]
 workspace = true

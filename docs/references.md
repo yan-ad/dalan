@@ -1,6 +1,6 @@
 # Research references
 
-Primary sources inspected during initial scaffold planning. Upstream documentation changes; pinned version source/rustdoc takes precedence over main-branch examples. These links support dependency/protocol facts, not claims that dalan implements their features.
+Primary sources inspected during initial scaffold planning. Upstream documentation changes; pinned version source/rustdoc takes precedence over main-branch examples. These links support dependency/protocol facts, not claims that Dalan implements their features.
 
 ## GPUI and desktop
 
@@ -9,6 +9,7 @@ Primary sources inspected during initial scaffold planning. Upstream documentati
 - [Current GPUI README in Zed main](https://github.com/zed-industries/zed/blob/main/crates/gpui/README.md): pre-1.0 warning, native dependencies, newer `gpui_platform` initialization.
 - [Zed macOS development](https://zed.dev/docs/development/macos): Xcode/Metal setup and troubleshooting.
 - [Zed Linux development](https://zed.dev/docs/development/linux): later platform research source.
+- [Apple Bundle Programming Guide: macOS application structure](https://developer.apple.com/library/archive/documentation/CoreFoundation/Conceptual/CFBundles/BundleTypes/BundleTypes.html): `Contents/Info.plist`, executable and Resources layout, application identity/version metadata. Used for the local `Dalan.app` bundler, not a distribution/signing certification.
 
 ## ACP
 

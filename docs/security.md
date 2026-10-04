@@ -1,51 +1,55 @@
 # Security and privacy design
 
-Status: planned controls, not a claim that this scaffold secures database or agent operations. No database access, agent process, persistent settings, credential store, or telemetry is implemented.
+Status: experimental MySQL/MariaDB reads, versioned source settings and native macOS Keychain integration exist. Broader execution and agent controls remain planned. No telemetry, agent process or ACP transport is implemented. See [MySQL sources](mysql-sources.md) for setup and the scope/evidence matrix.
 
 ## Trust boundaries
 
-Assets include database credentials, query text, result data, local settings/history, agent conversations, and live transaction state. Inputs from servers, result cells, connection imports, SQL, Redis commands, and external agents are untrusted. The user's host account and chosen external agent are separate trust decisions.
+Credentials, metadata, row data and local settings are sensitive. Server values and external-agent output are untrusted. The app is not a sandbox against other programs running under the host account. Least-privilege server roles are required; read-only UI labels and client limits are not authorization or server-resource limits.
 
-| Boundary | Proposed controls | Important limit |
-| --- | --- | --- |
-| App to database | Verified TLS, bounded operations, explicit target/session, server privileges | App read-only labels alone do not restrict server roles |
-| App to credential store | OS keychain references, explicit failure, no plaintext fallback | An unlocked host/account has its own access risks |
-| App to agent | Explicit trust/launch, filtered environment, consented context, bounded protocol | ACP and cwd are not an OS sandbox |
-| App to disk/export | Versioned permissions-aware writes, scope preview, retention controls | Exported data leaves credential protection and may be sensitive |
-| Server/agent to UI | Text rendering, payload bounds, schema validation, safe links | Strings must not become commands or trusted markup |
+## Credentials and persistence
 
-## Credentials and connectivity
+Source profiles have stable UUIDs in version 1 JSON at `~/Library/Application Support/Dalan/sources.json`, without passwords. Native macOS Keychain password saving is opt-in. Otherwise credentials are session-only; after restart, Edit and re-enter them. Keychain failure is visible, never a plaintext fallback. One generated native Keychain round-trip passed with item cleanup; this is not blanket locked/denied Keychain or OS input privacy validation. Session-only Save is tested without Keychain calls. The source file is limited to 1 MiB and 100 profiles; a failed load blocks saving over unreadable settings.
 
-macOS Keychain first; use OS credential services on later platforms. Settings store references, never passwords. A keychain failure must explain the error and offer explicit session-only credentials; never silently write plaintext. Clear sensitive buffers where practical without promising perfect memory erasure. Avoid deriving Debug for credential-bearing structs or logging launch arguments that may contain secrets.
+JSON and Keychain changes are not an atomic cross-resource transaction. Compensation failures are reported and may require reconciliation. Confirmed Delete removes only profile settings and its Keychain entry, not a database. Test does not save; Save does not automatically connect. Avoid real credentials in fixtures, logs, crash reports, CLI arguments, exported files or agent context. Memory erasure cannot be guaranteed.
 
-Peer and hostname verification on by default. Custom CA/client certificate behavior needs tested configuration. Any insecure mode must be a deliberate per-profile override with persistent warning, not automatic retry after verification failure. Do not put secrets in command-line arguments, URLs printed in logs, crash reports, agent environment, or imported/exported connection files.
+## Connectivity
 
-## Database execution
+Database TLS defaults to VerifyIdentity with an optional custom CA. Peer/hostname failures never trigger an insecure retry. The database hostname remains the TLS identity through relays. A local server without a trusted certificate requires CA setup or an explicit Disabled override, recommended only for disposable localhost use with a visible warning. Trusted custom-CA direct and HTTP CONNECT database TLS reads passed on both engines, alongside wrong-hostname and untrusted-CA rejection.
 
-The implemented decision table is a **declared-risk policy helper**, not a SQL/Redis classifier or an authorization system. It allows declared reads, denies nonreads in read-only mode, and requires confirmation for nonreads in read-write mode. Until a real adapter classifies and enforces risk, it does not protect a database.
+SSH uses `/usr/bin/ssh -W`, strict known-host checking and BatchMode with keys/agent, not interactive SSH passwords. A selected key enables `IdentitiesOnly=yes`. Do not disable host checking to make a test pass. Anonymous HTTP/HTTPS CONNECT carries MySQL wire traffic, not database-query HTTP requests; a named gateway integration is separate work. SSH actual transport reads, wrong-host-key and wrong-identity rejection passed on both engines. The optional absolute existing Known hosts file sets `UserKnownHostsFile` and `GlobalKnownHostsFile=/dev/null`, making selected trust authoritative; absent/None preserves OpenSSH default user/system known-host reads. `StrictHostKeyChecking=yes` remains enabled, and paths with spaces are tested. Disposable SSH fixtures do not edit user SSH state or install OS trust. Untrusted HTTPS proxy rejection passed; positive HTTPS CONNECT with system/native-trusted proxy roots remains unverified. The database custom CA field does not supply proxy trust. HTTPS proxy TLS does not replace database TLS.
 
-Use least-privilege server roles and supported server-side read-only controls. SELECT can invoke functions with side effects; EXPLAIN ANALYZE runs SQL; stored programs and dialect-specific constructs can change state. Unknown classification is denied in read-only mode and requires explicit review otherwise. Prefix regexes are not sufficient. App-generated mutations use parameterized values and verified identifier quoting.
+Relay transports have an unauthenticated loopback listener accepting the first connection. A local process can race it; do not claim local account isolation or sandboxing. Cancellation closes owned tunnels/relays but is not proof that the server aborted work.
 
-Approvals must cover exact immutable operation, connection, environment, and session generation. Staged edits require unambiguous primary keys and conflict/affected-row checks. Cap result bytes/rows and duration; a result cap does not cap server work. Preserve uncertain write outcomes after network loss/cancel and prohibit blind retries. Distinguish client cancellation, server cancellation, transaction rollback, and unknown outcome.
+## Read-only database slice
 
-Redis needs command-class controls for scripting, blocking, flush, shutdown, configuration, and other administrative commands, binary-safe key identity, bounded payloads, and explicit delete/TTL review. No browser-wide KEYS scans. SQL and Redis safety contracts must be tested independently.
+Only app-generated reads are exposed; no arbitrary SQL, writes or stored-program execution UI. Browsing rejects views and accepts BASE TABLE objects. Filters bind values and escape LIKE with `!`; identifier validation/quoting is separate from parameter binding. Sort columns are metadata-validated and quoted; direction is a typed whitelist, not raw SQL. Available primary-key tie-breakers improve ordering but do not establish a snapshot. Read-only transactions are used where capabilities permit. These controls do not secure a privileged account or guarantee transactional behavior for every storage engine.
+
+UI pages contain 100 rows, backend requests at most 200. Display cells are bounded at 4 KiB, retained pages at 2 MiB, columns at 512 and database/table discovery at 1,000. An actual 8 MiB per-packet limit is not an absolute process-memory cap; decoding, protocol assembly and runtime allocations need independent consideration. Client retention limits do not bound server work. Simulated password-input selection/replacement/paste tests are not proof against credential leakage through native OS input systems. Offset pages are not snapshots. Errors preserve clearly labeled stale rows with pagination disabled rather than passing them off as fresh.
+
+## Loaded CSV safety
+
+Export is explicit and limited to the fresh, complete loaded page. Missing/stale/truncated/busy states reject export. No full query or whole table is fetched. Source/table/page changes before save-picker return cancel; after writing starts, the captured page remains the exported data even if current selection changes. Native save success/cancel/error feedback does not imply database snapshot consistency.
+
+CSV quoting is not spreadsheet formula protection. Default spreadsheet-safe mode prefixes formula-risk text and headers with an apostrophe, intentionally altering content. Lexically validated numeric strings are not converted or rounded in the file, but spreadsheets can still lose large-number precision. NULL is unquoted `\N` and literal text is quoted; ordinary CSV parsers may discard that distinction. See [export contract](mysql-sources.md#export-loaded-csv).
+
+Existing files/symlinks are not overwritten. A same-directory staging file is created privately (`0600` on Unix), synced and published atomically by same-filesystem hard link; unsupported filesystems fail explicitly. Cleanup failure can be reported after a complete file has been published. This does not protect against hostile directory replacement, guarantee secure deletion or hide exported sensitive rows from the user-selected location. The native picker accepts chosen names without extension enforcement; output remains CSV.
+
+## Future execution safety
+
+Core's declared-risk decision table is a policy helper, not a SQL/Redis classifier or authorization system. SELECT can invoke side-effecting functions; EXPLAIN ANALYZE runs SQL; dialect constructs can change state. Do not use prefix regexes as a safety boundary. Future approvals must bind immutable target, operation and session generation. Staged writes need primary-key identity, conflict/affected-row checks and visible unknown outcomes after network loss. Never blindly retry writes or conflate cancellation with rollback.
+
+Redis requires binary identity, command-class controls for scripting/blocking/admin operations, bounded payloads and explicit delete/TTL review. No browser KEYS scans. SQL and Redis must be tested independently.
 
 ## External agents
 
-Run only an explicitly trusted configured executable, never a shell-expanded string. Shape validation is not trust verification. Show the executable path and invocation safely; review environment inheritance and working directory. No automatic install/download or arbitrary auto-start.
+No credentials or row data are sent to an agent by this slice. Future ACP integration is suggestion-only with explicit insertion, no autonomous execution, no direct provider SDKs and no app BYOK. Metadata context requires consent; row sharing is never automatic.
 
-Withholding ACP filesystem/terminal capabilities removes client-mediated RPC methods only. An agent can still read files, run tools, or access networks/databases with its own OS privileges and credentials. Permission UI cannot enforce actions an agent never reports. Real sandboxing would require an independently designed OS/process/container boundary; it is not in this initial scope. Do not claim safety based on cwd, prompting, or ACP permissions.
+Launch only an explicitly trusted executable, not a shell-expanded string. Absolute-path shape validation is not trust verification. Empty ACP filesystem/terminal capabilities remove client-mediated methods only: an external agent can still read files, run tools and access networks with its own OS privileges. Working directory and permission prompts are not a sandbox. Explain independent privileges and privacy before launch.
 
-First release exposes no app database execution tools to agents. Prompt injection from schemas, query results, or tool output must not gain authority or silently change sharing/execution rules. Explain data sharing and remote-agent privacy before sending any context. Terminal authentication, if added, must not accidentally enable general agent terminal execution capabilities.
+## Diagnostics and release gates
 
-## Local data and diagnostics
+No telemetry is implemented and no network telemetry is planned by default. Future crash reporting requires explicit opt-in and reviewed payloads. Do not persist rows by default. History/conversation/cache retention and deletion are future design work; source persistence does not imply history storage.
 
-History/conversation persistence should be opt-in until retention/redaction behavior is settled. Do not persist row data by default. Give users local deletion and per-profile history controls. Any schema cache contains potentially sensitive metadata and requires the same retention review.
-
-No telemetry is implemented. The proposal is no network telemetry by default; future crash reporting requires explicit opt-in and a reviewed payload. Logs should record operation IDs/outcomes and safe metadata, not raw results, passwords, complete SQL, or agent prompts by default. Bounded agent stderr capture is still potentially sensitive.
-
-## Release review
-
-Test certificate/hostname failures, credential-store denial, logs/exports for secret leakage, SQL classification bypasses, immutable approvals, uncertain outcomes, oversize result/protocol messages, agent trust/launch shutdown, and context-consent changes. Audit dependency licenses and vulnerabilities before distributing builds. Code signing/notarization and updater signature design are separate macOS distribution work; no updater exists yet.
+Test certificate/hostname failures and trusted success, credential denial/update/delete, secret-free diagnostics, stale/cancel behavior, oversize inputs, relay races/lifecycle and native interactions. Future execution adds classification-bypass, immutable approval and uncertain-outcome tests; future ACP adds trust, shutdown and consent tests. Dependency licenses/vulnerabilities, signing/notarization and updater design are separate release work. No updater exists.
 
 [Testing](testing.md) · [ACP](acp.md) · [Product plan](product-plan.md)

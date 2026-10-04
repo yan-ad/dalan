@@ -1,8 +1,16 @@
-# dalan UX proposal
+# Dalan UX proposal
 
-Status: planning only. No finished UI or implemented interactions are claimed. The compact keyboard-first IDE, Zed-like visual restraint, DataGrip-like layout, and optional ACP panel are explicit user direction. Details below are proposals to test.
+Status: product UX proposal with an implemented [UI shell foundation](ui-foundation.md). Top bar, native traffic lights, layout controls, one database rail, one collapsible/resizable Database Explorer sidebar, status strip with AI · ACP toggle, disconnected optional ACP panel, and About Dalan window exist; main content and database/ACP interactions remain unimplemented. The compact keyboard-first IDE, Zed-like visual restraint, DataGrip-like layout, and optional ACP panel are explicit user direction. Product workflows below remain proposals to test.
 
-## Workspace anatomy
+## Current shell
+
+Main content is blank, with an initially closed optional database-focused ACP right panel and no Files rail. Database Explorer defaults to 320 px with 200–480 px bounds. The rail is 36 px, the divider gap is 6 px, and right padding is 6 px; content retains at least 240 px. ACP prefers 300 px capped by available space. Compact layout retains at least 240 px for main content and may temporarily hide Database Explorer while ACP is visible, preserving visibility/width preferences for restoration after close. Layout contains exactly four rows: toggle Database Explorer, narrow, widen, and reset.
+
+AI · ACP in the 32 px status strip toggles the panel, as does Cmd-Shift-A. The panel says **Not connected**: no ACP transport or agent launch exists, and there is no text prompt input or BYOK/provider settings. Its close button returns focus to the trigger; Escape does so only when focus is inside the panel. The native About Dalan menu opens a separate 420 × 280 nonresizable GPUI window with Cargo version, “ways” in Javanese, and database-workspace scope; no new libraries or brand/icon artwork.
+
+Generic Files browsing, code viewing, Git, build/run integrations, generic terminals, and plugin/toolbox chrome are explicitly excluded. Query consoles, database SQL scripts, and database-focused import/export are valid database workflows.
+
+## Proposed database workspace anatomy
 
 - **Left:** data-source tree with connection, environment label, engine, databases/schemas, and engine-appropriate objects. Redis shows logical databases/keys, not SQL tables.
 - **Center:** tabbed SQL/Redis consoles and table or value views. Each tab retains visible connection and session identity. Dirty drafts and pinned transactions have distinct markers and text alternatives.
@@ -16,7 +24,7 @@ Reason: familiar spatial organization reduces navigation cost while retaining th
 
 ### Connect and browse
 
-The first workspace offers Add connection and Open local SQL file, without demonstration databases presented as real connections. Connection setup names the engine, host, authentication, TLS verification, and optional credential persistence. Test connection gives actionable errors without logging secrets. Keychain failure offers retry or explicit session-only use, never plaintext fallback. Tree refresh preserves selection where possible and marks stale objects after reconnect.
+The first workspace offers Add connection, then New query console after selecting a connection, without demonstration databases presented as real connections. Connection setup names the engine, host, authentication, TLS verification, and optional credential persistence. Test connection gives actionable errors without logging secrets. Keychain failure offers retry or explicit session-only use, never plaintext fallback. Tree refresh preserves selection where possible and marks stale objects after reconnect.
 
 Reason: connection setup is a security decision as well as navigation.
 
@@ -52,7 +60,7 @@ Reason: the panel is assistance, not autonomous control or a sandbox.
 
 | State | Visible treatment | Available actions / rules |
 | --- | --- | --- |
-| Empty workspace | Clear setup action and no fictitious data | Add connection, open file, command palette |
+| Empty workspace | Clear setup action and no fictitious data | Add connection; after selecting a connection, New query console; command palette |
 | Empty result/key range | Explain zero returned items versus nothing fetched | Refresh or modify query/filter; retain scope |
 | Loading/connecting | Named operation, progress where real, otherwise indeterminate indicator | Cancel if supported; do not fabricate percentage |
 | Running | Connection/session, submitted operation, bounded output | Cancel request is separate from editor Escape |
@@ -74,7 +82,7 @@ Reason: an accurate failure state is more important than a generic success/error
 
 ## Proposed macOS shortcuts
 
-These bindings are candidates, subject to conflict testing with native menus, text editing, and accessibility. Menus show discoverable shortcuts. Linux/Windows mapping follows platform conventions later.
+Except for the implemented shell bindings noted below, these bindings are candidates, subject to conflict testing with native menus, text editing, and accessibility. Shell shortcuts use macOS Command, not Control. Menus show discoverable shortcuts. Linux/Windows mapping follows platform conventions later.
 
 | Shortcut | Proposed action |
 | --- | --- |
@@ -86,9 +94,10 @@ These bindings are candidates, subject to conflict testing with native menus, te
 | Cmd+Shift+Return | Review and run SQL script, not apply grid edits |
 | Cmd+. | Request cancellation of the explicitly identified focused running operation |
 | Cmd+W | Close current tab with draft/transaction guards |
-| Cmd+B | Toggle left data-source pane |
+| Cmd+B | Toggle Database Explorer, implemented shell binding |
+| Cmd+Option+0 | Reset database layout, implemented shell binding |
 | Cmd+J | Toggle bottom pane |
-| Cmd+Option+A | Toggle optional AI panel, pending shortcut audit |
+| Cmd+Shift+A | Toggle AI panel (ACP only) |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous workspace tab, pending platform audit |
 | Escape | Close transient menu, leave cell edit by discarding its local uncommitted edit, or dismiss search; never execute, discard all staged edits, or cancel a server query |
 

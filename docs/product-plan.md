@@ -1,18 +1,21 @@
-# dalan product plan
+# Dalan product plan
 
-Status: planning proposal. No application functionality or finished UI is implemented or claimed by this document. Explicit user requirements below are constraints; other choices are proposals pending validation. The confirmed app name is `dalan`, meaning “ways” in Javanese.
+Status: experimental read-only MySQL/MariaDB source workflow plus broader product planning. The [UI foundation](ui-foundation.md) includes a real source form and table view; most release workflows below and all agent sessions remain planned. See [current source scope](mysql-sources.md). Explicit user requirements below are constraints; other choices are proposals pending validation. The confirmed app name is `Dalan`, meaning “ways” in Javanese.
 
 ## Intent and confirmed constraints
 
 Build a Rust + GPUI native daily database tool that can replace the user's DataGrip workflow and, after the first release, MongoDB Compass workflow. The visual direction is Zed-like restraint with DataGrip-like information architecture and interaction patterns, not a copy of either product.
 
 - macOS first, prioritizing Apple Silicon. Intel support is a release gate decision still to be made. Linux second; Windows third.
-- First release: PostgreSQL, MySQL, MariaDB, and Redis. MongoDB is explicitly after the first release. Other drivers follow later.
-- Compact, keyboard-first IDE: left data-source tree, central tabbed consoles and table views, bottom results/output/sessions, optional right AI panel.
+- MySQL/MariaDB first by explicit user direction, replacing the earlier PostgreSQL-first sequence. PostgreSQL and Redis follow as future work. First release: PostgreSQL, MySQL, MariaDB, and Redis. MongoDB is explicitly after the first release. Other drivers follow later.
+- Database-only, compact, keyboard-first workspace: one database rail and one collapsible/resizable Database Explorer sidebar. The current shell includes a native titlebar, traffic lights, Layout controls, status strip, source form and read-only table view, a native About Dalan window, and an initially closed optional database-focused ACP right panel. Planned database views use central consoles/table views and bottom results/output/sessions; the ACP panel currently reports Not connected, with no transport, agent launch, text prompt input, or BYOK/provider settings.
+- Explicitly excluded: generic Files explorer, generic code viewer, Git UI, build/run integrations, generic terminal, and plugin/toolbox bloat. SQL query consoles, database script workflows, and database-focused data import/export remain allowed.
 - AI integration uses Agent Client Protocol (ACP) only. No direct provider adapters or application BYOK settings. An external agent owns authentication and billing and may itself use API keys.
 - Initial AI is suggestion-only. Users review or insert suggestions and explicitly execute database operations through normal application controls. There is no autonomous database execution.
 
 Reason: constrain the first release to the daily workflows and supported integrations the user actually requested.
+
+The shell sidebar defaults to 320 px with 200–480 px bounds. A 36 px rail, 6 px divider gap, and 6 px right padding reserve at least 240 px for content. The ACP panel prefers 300 px capped by available space; compact layout may temporarily hide Database Explorer while it is visible, preserving database visibility/width preferences for restoration after close. Layout has four rows: toggle Database Explorer, narrow, widen, and reset. macOS shortcuts are Cmd-B, Cmd-Alt-0, and Cmd-Shift-A for ACP, not Ctrl variants.
 
 ## Intended first-release workflow
 
@@ -22,7 +25,7 @@ Reason: a familiar layout should not hide engine-specific semantics or dangerous
 
 ## Proposed scope by engine
 
-Every entry is planned, not implemented. Supported server versions and edge cases must be selected and recorded in [drivers](drivers.md) before release.
+The table describes proposed full-release scope, not current compatibility. The narrow MySQL/MariaDB connection/discovery/read-view subset is experimental and implemented; consoles, writes, export and dedicated transaction UI are not. Supported server versions and edge cases must be selected and recorded in [drivers](drivers.md) before release.
 
 | Capability | PostgreSQL | MySQL / MariaDB | Redis |
 | --- | --- | --- | --- |
@@ -34,7 +37,7 @@ Every entry is planned, not implemented. Supported server versions and edge case
 | Writes | Staged grid edits only for rows with an unambiguous primary key; parameterized operations, review, affected-row checks | Same primary-key-only rule; honor storage-engine transaction support and concurrent-change checks | Guarded type-specific write/delete and TTL changes with key identity, preview, and confirmation; no SQL grid-edit emulation |
 | Safety and limits | Read-only connection mode, destructive-action review, configurable result limits | Same, with capability differences visible | TTL distinguishes expiry, persistent keys, and missing keys; binary key round-trip; explicit size limits and truncation; dangerous/blocking/admin commands denied or guarded by an explicit limited policy |
 
-Proposed exclusions: SSH tunnels in the MVP, database administration suites, ER diagram editors, routine debugging, collaborative editing, autonomous AI, direct AI provider configuration, SQL grid writes without primary keys, Redis Cluster/Sentinel topology management unless later admitted by the server-matrix decision. SSH tunnels are explicitly proposed deferred; required workflows would initially use an externally managed tunnel.
+Proposed exclusions: database administration suites, ER diagram editors, routine debugging, collaborative editing, autonomous AI, direct AI provider configuration, SQL grid writes without primary keys, Redis Cluster/Sentinel topology management unless later admitted by the server-matrix decision. Direct TCP, system SSH and anonymous HTTP/HTTPS CONNECT transports are implemented experimentally. Positive SSH/HTTPS live verification remains outstanding. CONNECT proxies are not SQL-over-HTTP gateways; a gateway requires a named protocol integration.
 
 Reason: bounded data inspection and explicit execution are achievable release units; broad administration features are not prerequisites for a daily client.
 
@@ -87,7 +90,7 @@ Reason: release confidence must come from measured behavior and failure-path tes
 - License, visual identity, and distribution model.
 - Minimum macOS version and Intel inclusion or explicit exclusion for the first release.
 - Supported server-version matrix, TLS/authentication methods, and Redis standalone/managed-service boundaries.
-- SSH tunnels: proposed deferred; validate whether that blocks the user's daily workflow.
+- Positive live trusted-CA, SSH and HTTPS CONNECT verification; named gateway scope if required.
 - SQL completion/parsing implementation: spike libraries, dialect coverage, latency, and licensing before choosing.
 - GPUI pre-1.0 risk: pin a known revision, validate accessibility and platform APIs, budget upgrades, and define fallback/release-blocking criteria.
 - Exact Redis allowed commands, editable types, size budgets, and persistence of local query history.

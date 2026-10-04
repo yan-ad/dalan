@@ -1,13 +1,21 @@
-# dalan roadmap
+# Dalan roadmap
 
-Status: sequencing proposal, not a delivery commitment. No phase is implemented or complete. There are no invented dates or staffing assumptions. The user requires Rust + GPUI, macOS first, first-release PostgreSQL/MySQL/MariaDB/Redis, MongoDB after first release, Linux second, and Windows third. Other scope and phase boundaries are proposals.
+Status: sequencing proposal, not a delivery commitment. Foundation and the experimental [MySQL/MariaDB read-only slice](mysql-sources.md) exist. No full phase is complete. There are no invented dates or staffing assumptions. The user requires Rust + GPUI, macOS first, first-release PostgreSQL/MySQL/MariaDB/Redis, MongoDB after first release, Linux second, and Windows third. Other scope and phase boundaries are proposals.
+
+MySQL/MariaDB-first is now explicit user direction and supersedes the earlier PostgreSQL-first sequence. PostgreSQL and Redis remain future work; MongoDB remains post-first-release. Implemented does not mean a full phase or release gate is complete.
+
+## One-by-one workflow completion
+
+Track confirmed experimental completions and remaining gates in the [feature checklist](feature-checklist.md). Current priority is zero-version workflow parity one slice at a time, not a claim of DataGrip/Compass parity or a reason to overscope. After sorting and loaded CSV, improve column resizing and cell inspection/copy. Then scope a read-oriented query console with a new ADR for dialect-aware parser boundaries, cancellation and session ownership before SQL editor completion/history. Guarded transactions and staged writes follow later. Commit/push is authorized by the user, but remains an execution gate until the primary workflow performs and verifies it.
 
 ## Proposed sequence and exit criteria
 
 ### 1. Foundation
 
 - Establish Rust workspace, pinned GPUI revision, macOS Apple Silicon packaging path, configuration model, and engine capability interfaces.
-- Prototype the compact shell and keyboard/focus model: left data sources, center tabs, bottom results/output/sessions, optional right AI.
+- Maintain the database-only shell and keyboard/focus model: one database rail, one collapsible/resizable Database Explorer sidebar, native titlebar/traffic lights, four-row Layout menu, status strip, source form and read-only table view, and an initially closed, explicitly permitted database-focused ACP right panel. About Dalan and the disconnected AI · ACP panel are tested shell features only; [validation](ui-foundation.md#current-change-validation) does not imply working agent connections. Planned database consoles, results/output/sessions, and real ACP sessions have separate milestones.
+- Keep generic Files explorer, code viewer, Git UI, build/run integrations, generic terminal, and plugin/toolbox chrome out of scope. Preserve SQL parsing, query consoles, database script workflows, and database-focused import/export requirements.
+- Validate the 320 px preferred sidebar width, 200–480 px bounds, 36 px rail, 6 px divider gap, 6 px right padding, and at least 240 px content. Compact layout clamps one pane and preserves preference. Layout rows toggle, narrow, widen, and reset Database Explorer; macOS shortcuts are Cmd-B and Cmd-Alt-0, not Ctrl variants. Revalidate layout and GPUI controls, including absence of file selectors; current suite counts and boundaries are recorded in [testing](testing.md).
 - Spike GPUI rendering, accessibility, clipboard, native menus, and virtualized grids. Do not assume framework support guarantees screen-reader compatibility.
 - Spike SQL parsing/completion and Redis binary argument representation before committing to libraries.
 - Define credential boundaries, cancellation/outcome states, test fixtures, minimum macOS target, Intel gate, and supported server matrix.
@@ -16,26 +24,24 @@ Exit: documented architecture/ADRs, working internal shell proof of concept, exp
 
 Reason: session semantics and platform constraints are harder to change after drivers depend on them.
 
-### 2. PostgreSQL vertical slice
+### 2. MySQL and MariaDB first
 
-- Connect with validated TLS and Keychain-backed optional persistence.
-- Browse metadata; open a SQL console; correctly split supported scripts; execute with explicit scope.
-- Add dedicated transaction sessions, bounded result browsing/export, cancellation states, and primary-key-only staged edits with conflict handling.
-- Exercise real-server success, failure, reconnect, credential failure, and uncertain-write outcomes.
+Implemented experimentally: stable UUID profiles in version 1 JSON without passwords, opt-in native macOS Keychain, Test/Save/Connect separation, database discovery, BASE TABLE reads, seven bound-value filters, bounded pages, metadata-validated column sorting and loaded-page CSV export. Direct TCP, SSH and anonymous HTTP/HTTPS CONNECT carry the database protocol; they are not a SQL-over-HTTP gateway. The main UI is no longer blank. See [source setup and scope](mysql-sources.md).
 
-Exit: end-to-end acceptance scenarios pass on the selected PostgreSQL matrix; unsupported cases are explicit rather than silently approximated.
+Verified on MySQL 8.4.11 and MariaDB 11.4.13: six direct/HTTP CONNECT smoke tests, ten verified database TLS/proxy rejection tests, and six SSH reads/host-key/identity rejection tests. Native Keychain generated-item validation passed. Historical source-slice counts were 37 headless and 27 simulated UI tests, plus four bundle tests. Latest expected inventory is 48 headless and 42 simulated UI tests, pending final rerun confirmation. The 22 live cases were rerun with sorting on actual transport routes. Positive system-trusted HTTPS proxy success remains unverified; see [testing](testing.md).
 
-Reason: one full workflow establishes abstractions with actual database behavior.
+Remaining: wider auth/TLS/capability matrix, native keyboard/accessibility checks, SQL console/parser, transaction affinity, full-query/whole-table streaming export, staged edits, uncertain outcomes and broader cancellation evidence. Read-only transactions do not replace least-privilege roles. No arbitrary SQL or writes are implemented.
 
-### 3. MySQL and MariaDB
+Exit: independently verified full-release workflows on both selected server matrices, with unsupported capabilities explicit. An experimental read slice does not close this phase.
 
-- Implement and test both engines, not a shared label that implies unverified parity.
-- Cover metadata/capability differences, supported delimiter/stored-program parsing, autocommit, DDL implicit commits, charset behavior, TLS/authentication, and storage-engine transaction limits.
-- Reuse the shell while verifying result paging, export, staged edits, and transaction affinity independently.
+### 3. PostgreSQL vertical slice
 
-Exit: real-server coverage for each selected engine/version and all applicable SQL acceptance scenarios; dialect gaps documented.
+- Connect with verified TLS and optional credential persistence.
+- Discover schemas/metadata and add SQL console/script scope with dialect-aware parsing.
+- Validate dedicated transactions, bounded browsing/export, cancellation and primary-key staged edits.
+- Exercise real-server failure/reconnect, credential failures and uncertain writes.
 
-Reason: familiar SQL syntax does not make session or transaction behavior interchangeable.
+Exit: end-to-end acceptance scenarios on the selected PostgreSQL matrix. Reuse proven boundaries without assuming MySQL semantics transfer.
 
 ### 4. Redis
 
@@ -52,7 +58,7 @@ Reason: Redis requires a different data and safety model, not a SQL driver wrapp
 
 - Add optional external-agent ACP lifecycle, transcript/suggestion review, explicit insertion, and opt-in metadata context.
 - Exclude direct provider adapters, application BYOK, autonomous execution, and automatic row sharing.
-- Explain that the agent owns auth/billing and runs under its own privileges, not a dalan sandbox.
+- Explain that the agent owns auth/billing and runs under its own privileges, not a Dalan sandbox.
 - Complete security failure tests, keyboard/focus checks, both theme contrast checks, actual accessibility audit, measured performance budgets, export robustness, and packaging/signing validation.
 
 Exit: AI consent scenarios and cross-engine release gates pass; security and accessibility gaps receive explicit disposition. Core non-AI use works when the agent is unavailable.
@@ -95,12 +101,12 @@ Reason: Windows is third and depends on verified toolkit/platform readiness.
 
 ## Track and dependency notes
 
-The default sequence is foundation -> PostgreSQL -> MySQL/MariaDB -> Redis -> ACP and hardening -> first release -> MongoDB -> Linux -> Windows. After the first release, MongoDB and Linux may run as separate tracks if resources permit; MongoDB must remain post-first-release and Linux must remain ahead of Windows in platform ordering. This is not a promise of parallel staffing.
+The default sequence is foundation -> MySQL/MariaDB -> PostgreSQL -> Redis -> ACP and hardening -> first release -> MongoDB -> Linux -> Windows. After the first release, MongoDB and Linux may run as separate tracks if resources permit; MongoDB must remain post-first-release and Linux must remain ahead of Windows in platform ordering. This is not a promise of parallel staffing.
 
-Other drivers, SSH tunnels, expanded Redis topology support, administration tooling, and richer AI actions require new scope decisions. SSH tunnels are proposed deferred from the MVP; an externally managed tunnel is the initial workaround, subject to user-workflow validation.
+Other drivers, named HTTP query gateways, expanded Redis topologies, administration tooling and richer AI require new scope decisions. SSH and CONNECT transports exist experimentally but need their outstanding live verification gates.
 
 ## Decisions needed before commitment
 
-License and visual identity; minimum macOS and Intel gate; server matrix; SQL parser/completion spike result; GPUI pre-1.0 upgrade policy and accessibility findings; Redis command and payload bounds; SSH defer confirmation; post-release track allocation. The app name `dalan` is confirmed. Performance numbers in the product plan are proposed measurement targets, not existing results.
+License and visual identity; minimum macOS and Intel gate; server matrix; SQL parser/completion spike result; GPUI pre-1.0 upgrade policy and accessibility findings; Redis command and payload bounds; trusted-CA/SSH/HTTPS positive-path evidence; post-release track allocation. The app name `Dalan` is confirmed. Performance numbers in the product plan are proposed measurement targets, not existing results.
 
 [Overview](../README.md) · [Product plan](product-plan.md) · [UX](ux.md) · [Design](../DESIGN.md) · [Architecture](architecture.md) · [Drivers](drivers.md) · [ACP](acp.md) · [Security](security.md) · [Development](development.md) · [Testing](testing.md) · [ADRs](adr/README.md)

@@ -1,8 +1,18 @@
+pub mod mysql;
+mod relay;
+pub mod sources;
+pub use mysql::{
+    BrowseRequest, CellValue, ColumnInfo, ConnectionReport, FilterOperator, SortDirection,
+    TableFilter, TableInfo, TablePage, TableSort, browse, columns, tables, test_connection,
+};
+pub use sources::{DbEngine, SourceProfile, TlsMode, Transport};
+
 use dalan_core::Engine;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverStatus {
     Planned,
+    Experimental,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,13 +30,13 @@ pub const PLANNED_DRIVERS: [DriverDescriptor; 4] = [
     },
     DriverDescriptor {
         engine: Engine::MySql,
-        proposed_backend: "sqlx::MySql",
-        status: DriverStatus::Planned,
+        proposed_backend: "mysql_async",
+        status: DriverStatus::Experimental,
     },
     DriverDescriptor {
         engine: Engine::MariaDb,
-        proposed_backend: "sqlx::MySql",
-        status: DriverStatus::Planned,
+        proposed_backend: "mysql_async",
+        status: DriverStatus::Experimental,
     },
     DriverDescriptor {
         engine: Engine::Redis,
@@ -40,9 +50,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_release_catalog_has_unique_engines_and_no_implemented_claims() {
+    fn catalog_has_unique_engines_and_experimental_mysql() {
         for (index, driver) in PLANNED_DRIVERS.iter().enumerate() {
-            assert_eq!(driver.status, DriverStatus::Planned);
+            assert_eq!(
+                driver.status,
+                if matches!(driver.engine, Engine::MySql | Engine::MariaDb) {
+                    DriverStatus::Experimental
+                } else {
+                    DriverStatus::Planned
+                }
+            );
             assert!(
                 !PLANNED_DRIVERS[..index]
                     .iter()

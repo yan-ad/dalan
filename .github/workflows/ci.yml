@@ -45,5 +45,26 @@ jobs:
         run: cargo check -p dalan-app --bin dalan --features desktop --locked
       - name: Lint
         run: cargo clippy -p dalan-app --bin dalan --features desktop --locked -- -D warnings
+      - name: Shell input tests
+        run: cargo test -p dalan-app --bin dalan --features desktop,ui-tests --locked
+      - name: Shell test lint
+        run: cargo clippy -p dalan-app --bin dalan --features desktop,ui-tests --all-targets --locked -- -D warnings
       - name: Build
         run: cargo build -p dalan-app --bin dalan --features desktop --locked
+      - name: Bundle helper tests
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Debug application bundle
+        run: ./scripts/macos --offline-shaders
+
+  database-fixtures:
+    name: MySQL and MariaDB read-only fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup show
+      - name: Direct and HTTP CONNECT
+        run: ./scripts/test-databases
+      - name: Verified TLS and proxy rejection
+        run: ./scripts/test-secure-transports

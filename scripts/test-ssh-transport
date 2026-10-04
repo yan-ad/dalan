@@ -1,0 +1,5 @@
+#!/bin/sh
+# Local disposable keys/trust only; never modifies user SSH or OS trust state.
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec python3 "$ROOT/scripts/tests/ssh_transport_fixture.py" "$@"

@@ -2,7 +2,7 @@ use dalan_acp::SUPPORTED_PROTOCOL_VERSION;
 use dalan_drivers::PLANNED_DRIVERS;
 
 fn main() {
-    println!("dalan: planning scaffold, not a database client yet.");
+    println!("Dalan: experimental MySQL/MariaDB source management and read-only browsing.");
     println!("Desktop target: macOS first; Linux next; Windows later.");
     println!(
         "AI boundary: ACP v{SUPPORTED_PROTOCOL_VERSION} only; no app BYOK. Transport not implemented."
