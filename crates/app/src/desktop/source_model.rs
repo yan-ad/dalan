@@ -250,6 +250,10 @@ impl SourceModel {
         if self.saving || (!self.storage_ready && self.busy) {
             return;
         }
+        if self.form_open {
+            cx.notify();
+            return;
+        }
         self.invalidate();
         self.form_generation += 1;
         self.form_open = true;
@@ -270,6 +274,10 @@ impl SourceModel {
                 "Source settings did not load successfully; resolve that error before saving."
                     .into(),
             );
+            cx.notify();
+            return;
+        }
+        if self.form_open {
             cx.notify();
             return;
         }

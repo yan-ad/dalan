@@ -200,11 +200,12 @@ impl SourceForm {
         self.inputs["source-password"].read(cx).value()
     }
 
+    pub(super) fn preferred_first_focus(&self, cx: &App) -> FocusHandle {
+        self.inputs["source-name"].read(cx).focus_handle()
+    }
+
     pub(super) fn focus(&self, window: &mut Window, cx: &App) {
-        self.inputs["source-name"]
-            .read(cx)
-            .focus_handle()
-            .focus(window);
+        self.preferred_first_focus(cx).focus(window);
     }
 
     pub(super) fn profile(&self, cx: &App) -> Result<SourceProfile> {
@@ -386,6 +387,8 @@ impl SourceForm {
             .items_center()
             .gap(px(10.))
             .w_full()
+            .min_w(px(0.))
+            .flex_shrink_0()
             .child(
                 div()
                     .w(px(140.))
@@ -404,7 +407,40 @@ impl SourceForm {
                 .id(id)
                 .debug_selector(move || id.into())
                 .w_full()
+                .min_w(px(0.))
                 .child(self.inputs[id].clone()),
+        )
+    }
+
+    // Wrappers deliberately do not track focus: native traversal visits each input once.
+    fn host_port_row(&self, label: &'static str, host: &'static str, port: &'static str) -> Div {
+        self.row(
+            label,
+            div()
+                .flex()
+                .items_center()
+                .w_full()
+                .min_w(px(0.))
+                .h(px(30.))
+                .gap(px(12.))
+                .child(
+                    div()
+                        .id(host)
+                        .debug_selector(move || host.into())
+                        .flex_1()
+                        .min_w(px(120.))
+                        .child(self.inputs[host].clone()),
+                )
+                .child(div().w(px(30.)).flex_shrink_0().child("Port"))
+                .child(
+                    div()
+                        .id(port)
+                        .debug_selector(move || port.into())
+                        .w(px(96.))
+                        .min_w(px(80.))
+                        .flex_shrink_0()
+                        .child(self.inputs[port].clone()),
+                ),
         )
     }
 
@@ -466,6 +502,7 @@ impl SourceForm {
                     div()
                         .id("source-color")
                         .debug_selector(|| "source-color".into())
+                        .min_w(px(0.))
                         .w_full()
                         .child(self.inputs["source-color"].clone()),
                 )
@@ -673,6 +710,8 @@ impl SourceForm {
             .tab_index(0)
             .w_full()
             .h(px(30.0))
+            .min_w(px(0.))
+            .flex_shrink_0()
             .flex()
             .items_center()
             .px(px(8.0))
@@ -694,7 +733,7 @@ impl SourceForm {
                     }
                 }),
             )
-            .child(label)
+            .child(div().min_w(px(0.)).flex_1().text_ellipsis().child(label))
     }
 }
 
@@ -703,6 +742,9 @@ impl Render for SourceForm {
         let feedback = self.model.read(cx).form_feedback.clone();
         let busy = self.model.read(cx).form_busy;
         let mut body = div()
+            .debug_selector(|| "source-form-body".into())
+            .min_w(px(0.))
+            .flex_shrink_0()
             .w_full()
             .max_w(px(720.))
             .flex()
@@ -732,8 +774,7 @@ impl Render for SourceForm {
             )
             .child(self.field("source-name", "Name", 3, cx))
             .child(self.color_row(cx))
-            .child(self.field("source-host", "Host", 4, cx))
-            .child(self.field("source-port", "Port", 5, cx))
+            .child(self.host_port_row("Host", "source-host", "source-port"))
             .child(self.field("source-user", "User", 6, cx))
             .child(
                 self.row(
@@ -741,6 +782,8 @@ impl Render for SourceForm {
                     div()
                         .flex()
                         .flex_wrap()
+                        .w_full()
+                        .min_w(px(0.))
                         .items_center()
                         .gap(px(8.0))
                         .child(
@@ -782,8 +825,7 @@ impl Render for SourceForm {
             );
         if self.transport == 1 {
             body = body
-                .child(self.field("source-tunnel-host", "SSH host", 13, cx))
-                .child(self.field("source-tunnel-port", "SSH port", 14, cx))
+                .child(self.host_port_row("SSH host", "source-tunnel-host", "source-tunnel-port"))
                 .child(self.field("source-tunnel-user", "SSH user", 15, cx))
                 .child(self.field("source-tunnel-key", "Identity file", 16, cx))
                 .child(self.field("source-known-hosts", "Known hosts file", 17, cx))
@@ -796,6 +838,8 @@ impl Render for SourceForm {
                     .id("ssh-key-picker")
                     .debug_selector(|| "ssh-key-picker".into())
                     .w_full()
+                    .min_w(px(0.))
+                    .flex_shrink_0()
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
@@ -820,6 +864,10 @@ impl Render for SourceForm {
                 picker = picker.child(
                     div()
                         .id("ssh-key-list")
+                        .debug_selector(|| "ssh-key-list".into())
+                        .w_full()
+                        .min_w(px(0.))
+                        .flex_shrink_0()
                         .max_h(px(150.0))
                         .overflow_y_scroll()
                         .flex()
@@ -839,18 +887,15 @@ impl Render for SourceForm {
                 body = body.child(self.row("", picker));
             }
         } else if self.transport == 2 || self.transport == 3 {
-            body = body
-                .child(self.field("source-proxy-host", "Proxy host", 13, cx))
-                .child(self.field(
-                    if self.transport == 3 {
-                        "source-https-port"
-                    } else {
-                        "source-proxy-port"
-                    },
-                    "Proxy port",
-                    14,
-                    cx,
-                ));
+            body = body.child(self.host_port_row(
+                "Proxy host",
+                "source-proxy-host",
+                if self.transport == 3 {
+                    "source-https-port"
+                } else {
+                    "source-proxy-port"
+                },
+            ));
         }
         body = body
             .child(
@@ -884,6 +929,8 @@ impl Render for SourceForm {
                 self.row(
                     "CA file (optional)",
                     div()
+                        .w_full()
+                        .min_w(px(0.))
                         .flex()
                         .items_center()
                         .gap(px(8.0))
@@ -939,6 +986,8 @@ impl Render for SourceForm {
                 div()
                     .id("source-form-scroll")
                     .debug_selector(|| "source-form-scroll".into())
+                    .w_full()
+                    .min_w(px(0.))
                     .flex_1()
                     .min_h(px(0.))
                     .overflow_y_scroll()
@@ -950,6 +999,7 @@ impl Render for SourceForm {
             )
             .child(
                 div()
+                    .debug_selector(|| "source-form-footer".into())
                     .flex_shrink_0()
                     .p(px(16.))
                     .flex()
@@ -1032,6 +1082,132 @@ mod tests {
         let input = form.read_with(cx, |form, _| form.inputs[id].clone());
         input.update(cx, |input, cx| input.set_value(value.to_owned(), cx));
         cx.run_until_parked();
+    }
+
+    fn assert_inline_ports(cx: &mut VisualTestContext, host: &'static str, port: &'static str) {
+        let host = cx.debug_bounds(host).unwrap();
+        let port = cx.debug_bounds(port).unwrap();
+        assert!(host.size.width >= px(300.), "host width: {:?}", host);
+        assert!(port.left() > host.right());
+        assert_eq!(host.top(), port.top());
+        assert_eq!(host.size.height, px(28.));
+        assert_eq!(port.size.height, px(28.));
+        assert_eq!(port.size.width, px(96.));
+    }
+
+    #[gpui::test]
+    fn inline_ports_keep_native_visual_order_for_all_transports(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        cx.simulate_resize(gpui::size(px(1040.), px(760.)));
+        for (transport, host, port) in [
+            (0, "source-host", "source-port"),
+            (1, "source-tunnel-host", "source-tunnel-port"),
+            (2, "source-proxy-host", "source-proxy-port"),
+            (3, "source-proxy-host", "source-https-port"),
+        ] {
+            form.update(cx, |form, cx| {
+                form.transport = transport;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_inline_ports(cx, host, port);
+            cx.update(|window, app| {
+                form.read(app).inputs[host]
+                    .read(app)
+                    .focus_handle()
+                    .focus(window)
+            });
+            cx.simulate_keystrokes("tab");
+            assert_input_focus(&form, cx, port);
+            cx.simulate_keystrokes("shift-tab");
+            assert_input_focus(&form, cx, host);
+        }
+    }
+
+    #[gpui::test]
+    fn expanding_keys_and_draft_edits_do_not_shrink_fields_or_footer(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        for (width, height) in [(1040., 760.), (850., 600.)] {
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            form.update(cx, |form, cx| {
+                form.transport = 1;
+                form.key_picker_open = false;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let before_host = cx.debug_bounds("source-host").unwrap();
+            let before_ssh = cx.debug_bounds("source-tunnel-user").unwrap();
+            let before_footer = cx.debug_bounds("source-form-footer").unwrap();
+            assert!(before_ssh.size.width >= px(420.));
+            for value in ["a".repeat(400), "short".into()] {
+                for id in [
+                    "source-host",
+                    "source-tunnel-user",
+                    "source-tunnel-key",
+                    "source-password",
+                ] {
+                    set(&form, cx, id, &value);
+                }
+                set(&form, cx, "source-color", "#123456");
+                form.update(cx, |form, cx| {
+                    form.save_password = !form.save_password;
+                    form.key_picker_open = true;
+                    // Inject metadata, never discover the developer's ~/.ssh files.
+                    form.ssh_keys = (0..12)
+                        .map(|index| dalan_app::ssh_keys::SshKeyCandidate {
+                            name: format!("key-{index}-{}", "long-name".repeat(50)),
+                            path: format!("/tmp/dalan-layout/key-{index}").into(),
+                        })
+                        .collect();
+                    cx.notify();
+                });
+                cx.run_until_parked();
+                assert_inline_ports(cx, "source-host", "source-port");
+                assert_inline_ports(cx, "source-tunnel-host", "source-tunnel-port");
+                assert_eq!(
+                    cx.debug_bounds("source-host").unwrap().size,
+                    before_host.size
+                );
+                assert_eq!(
+                    cx.debug_bounds("source-tunnel-user").unwrap().size,
+                    before_ssh.size
+                );
+                assert_eq!(before_ssh.size.height, px(28.));
+                let list = cx.debug_bounds("ssh-key-list").unwrap();
+                assert_eq!(list.size.height, px(150.));
+                for id in [
+                    "ssh-key-0",
+                    "ssh-key-1",
+                    "ssh-key-2",
+                    "ssh-key-3",
+                    "ssh-key-4",
+                    "ssh-key-5",
+                    "ssh-key-6",
+                    "ssh-key-7",
+                    "ssh-key-8",
+                    "ssh-key-9",
+                    "ssh-key-10",
+                    "ssh-key-11",
+                ] {
+                    let key = cx.debug_bounds(id).unwrap();
+                    assert_eq!(key.size.height, px(30.));
+                    assert!(key.right() <= list.right());
+                }
+                let body = cx.debug_bounds("source-form-body").unwrap();
+                let scroll = cx.debug_bounds("source-form-scroll").unwrap();
+                assert!(body.size.height > scroll.size.height);
+                assert_eq!(body.size.width, px(720.));
+                let footer = cx.debug_bounds("source-form-footer").unwrap();
+                assert_eq!(footer.size.height, before_footer.size.height);
+                assert_eq!(footer.bottom(), px(height));
+                for id in ["source-test", "source-save", "source-cancel"] {
+                    let button = cx.debug_bounds(id).unwrap();
+                    assert!(button.top() >= footer.top());
+                    assert!(button.bottom() <= footer.bottom());
+                }
+                assert!(cx.debug_bounds("source-form-header").is_none());
+            }
+        }
     }
 
     #[gpui::test]

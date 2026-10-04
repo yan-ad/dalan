@@ -2,6 +2,7 @@ mod about;
 mod icons;
 mod input;
 mod source_browser;
+mod source_dialog;
 mod source_form;
 mod source_model;
 mod source_workspace;
@@ -542,6 +543,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("tab", NextFocus, Some("SourceForm")),
         KeyBinding::new("shift-tab", PreviousFocus, Some("SourceForm")),
         KeyBinding::new("escape", Dismiss, Some("SourceForm")),
+        KeyBinding::new("cmd-w", CloseWindow, Some("SourceDialog")),
     ]);
 }
 

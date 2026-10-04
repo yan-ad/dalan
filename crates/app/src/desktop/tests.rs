@@ -14,9 +14,11 @@ fn center_connect_action_works_with_explorer_hidden(cx: &mut TestAppContext) {
     let action = cx.debug_bounds("connect-empty-source").unwrap();
     assert!((f32::from(action.center().x) - f32::from(content.center().x)).abs() < 2.0);
     click(cx, "connect-empty-source");
-    assert!(cx.debug_bounds("source-name").is_some());
-    assert!(cx.debug_bounds("source-test").is_some());
-    cx.simulate_keystrokes("escape");
+    let mut dialog = source_dialog_context(cx);
+    assert!(dialog.debug_bounds("source-name").is_some());
+    assert!(dialog.debug_bounds("source-test").is_some());
+    dialog.simulate_keystrokes("escape");
+    cx.run_until_parked();
     assert!(!state(&view, cx).database_visible);
     assert!(cx.debug_bounds("connect-empty-source").is_some());
 }
@@ -25,13 +27,35 @@ fn center_connect_action_works_with_explorer_hidden(cx: &mut TestAppContext) {
 fn add_source_opens_real_form_and_cancel_returns_browser(cx: &mut TestAppContext) {
     let (_, cx) = fixture(cx);
     click(cx, "add-source");
-    assert!(cx.debug_bounds("source-form").is_some());
-    assert!(cx.debug_bounds("source-host").is_some());
-    assert!(cx.debug_bounds("source-test").is_some());
-    cx.simulate_keystrokes("escape");
+    assert!(
+        cx.debug_bounds("source-form").is_none(),
+        "Form must not replace the main workspace"
+    );
+    let mut dialog = source_dialog_context(cx);
+    assert!(dialog.debug_bounds("source-form").is_some());
+    assert!(dialog.debug_bounds("source-host").is_some());
+    assert!(dialog.debug_bounds("source-test").is_some());
+    dialog.simulate_keystrokes("escape");
+    cx.run_until_parked();
     assert!(cx.debug_bounds("source-browser").is_some());
+    assert_eq!(cx.cx.read(|app| app.windows().len()), 1);
     click(cx, "add-source");
-    click(cx, "source-cancel");
+    let mut dialog = source_dialog_context(cx);
+    click(&mut dialog, "source-cancel");
+    cx.run_until_parked();
+    assert_eq!(cx.cx.read(|app| app.windows().len()), 1);
+}
+
+fn source_dialog_context(cx: &VisualTestContext) -> VisualTestContext {
+    let handle = cx.cx.read(|app| {
+        app.windows()
+            .into_iter()
+            .find(|handle| handle.downcast::<source_dialog::SourceDialog>().is_some())
+            .expect("source dialog opened")
+    });
+    let dialog = VisualTestContext::from_window(handle, &cx.cx);
+    dialog.run_until_parked();
+    dialog
 }
 
 #[gpui::test]

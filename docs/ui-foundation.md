@@ -1,17 +1,17 @@
 # UI foundation
 
-Implemented scope: macOS dark desktop shell, following the user's supplied DataGrip screenshot for chrome and sidebar organization, with restrained editor styling. Main content now hosts an experimental MySQL/MariaDB source form and read-only table view. This is not a completed SQL client or accessibility/theme system.
+Implemented scope: macOS dark desktop shell, following the user's supplied DataGrip screenshot for chrome and sidebar organization, with restrained editor styling. Main content hosts the experimental MySQL/MariaDB browser/read-only table workspace; source setup uses a separate dedicated dialog window. This is not a completed SQL client or accessibility/theme system.
 
 ## Composition and purpose
 
 ```text
 [ native window controls | Dalan   Database workspace          Layout ]
-[ 6 px ][ Database Explorer ][ source form / table view ][ optional ACP ][ 6 px ]
+[ 6 px ][ Database Explorer ][ database browser / table view ][ optional ACP ][ 6 px ]
 [ panel-left | UI foundation / focused-control help         | bot-message-square ]
 ```
 
 - Native macOS traffic lights remain real OS controls. A transparent titlebar allows the compact custom top bar; its workspace-label region drags the window, and double-click requests the native zoom behavior.
-- A 38 px top bar, 32 px pane headers, a separate 32 px explorer toolbar, and 32 px status strip retain the dense proportions of the reference. Main content has a source form and bounded table results, but no SQL editor, welcome cards or gradients.
+- A 38 px top bar, 32 px pane headers, a separate 32 px explorer toolbar, and 32 px status strip retain the dense proportions of the reference. Main content has database browsing and bounded table results, but no SQL editor, welcome cards or gradients.
 - The single Database Explorer sidebar defaults to 320 px, bounded to 200–480 px. Dark inset surfaces use 6 px structural corner radii, a 6 px divider gap, and 6 px outer padding on both sides, not floating cards or reserved rail space. The optional scoped right ACP panel is initially closed; there is no Files rail.
 - System UI typography is a calm, dense 13 pt, with 12 px secondary copy and an 11 px status strip. No font assets or logo are introduced.
 - Fourteen pinned Lucide SVGs provide utility glyphs: database, database-zap, plus, settings-2, refresh-cw, trash-2, panel-left, chevron-down, minus, bot-message-square, arrow-up, arrow-down, download and check. Local trash-2.svg is the unchanged upstream trash.svg alias from the same pin; see the [asset README](../crates/app/assets/README.md). No vendor-brand artwork, decorative AI sparkle or icon-font dependency.
@@ -20,18 +20,18 @@ Implemented scope: macOS dark desktop shell, following the user's supplied DataG
 
 The activity rail and header hide/minimise button are removed. Database Explorer has one 32 px title header without add text or a repeated title row, followed by a 32 px toolbar with four 28 px icon buttons. Add, Manage, Refresh and Remove have action-specific tooltips; no inactive DDL, console or advanced-option icons are shown. Source selection rows show name, readable engine label and abstract Lucide database/MySQL or database-zap/MariaDB cue, not vendor logos or branded driver icons. Optional color affects only the small marker; selection/focus and names stay independently readable.
 
-With no sources, the main area centers a working Connect to a Source action, not a demo/trial welcome screen. It opens the same source form by mouse, Enter or Space and remains available when Database Explorer is hidden. Loading and sanitized errors remain visible in the appropriate source/browse state.
+With no sources, the main area centers a working Connect to a Source action, not a demo/trial welcome screen. It opens the same dedicated source dialog window by mouse, Enter or Space and remains available when Database Explorer is hidden. Loading and sanitized errors remain visible in the appropriate source/browse state.
 
 ## Controls
 
 | Control | Behavior |
 | --- | --- |
 | Bottom-left 28 px panel-left | Toggle Database Explorer; retain the closed preference until toggled or reset |
-| Explorer Add / plus | Open the same source form; disabled during saving |
+| Explorer Add / plus | Open/reuse the dedicated source dialog window; disabled during saving |
 | Explorer Manage / settings-2 | Edit selected source; disabled without selection or while busy/saving |
 | Explorer Refresh / refresh-cw | Refresh selected source; disabled without selection or while busy/saving |
 | Explorer Remove / trash-2 | Request confirmed local removal; disabled without selection or while busy/saving |
-| Main Connect to a Source | With no sources, open the source form by mouse or Enter/Space, even with explorer hidden |
+| Main Connect to a Source | With no sources, open/reuse the dedicated source dialog window by mouse or Enter/Space, even with explorer hidden |
 | Layout | Open/close the layout menu |
 | Menu toggle row | Toggle Database Explorer; show requested Shown/Hidden preference |
 | Menu narrow/widen rows | Adjust Database Explorer preference by 32 px, bounded to 200–480 px |
@@ -131,11 +131,19 @@ Generic Files explorer, generic code viewer, Git, build/run integrations, generi
 
 The historical blank-main state above is superseded by the source slice below. SQL editor work requires its own scoped milestone. Light/system theme, text scaling, and native accessibility remain required before release.
 
+## Dedicated source dialog window
+
+**Data Sources · Dalan** is one application-wide, resizable normal GPUI window: initial 1040 × 760, minimum 780 × 560. It is not an OS modal sheet and does not trap or block the main window. Add, Manage and the centered connection action activate/reuse it, preserving draft edits. A new form or model `form_generation` refresh (including loaded passwords) replaces the form inside the existing window and focuses Name; ordinary notifications do not reset it. Cancel/Escape/Cmd-W/native close discard the draft and cancel testing. Native close and Cmd-W refuse dismissal while credential/JSON saving is active. Model-observed successful Save closes the window, without auto-connect.
+
+The form starts at Engine, without a redundant internal title strip. Database, SSH, HTTP and HTTPS Host/Port fields share horizontal rows, defaulting to localhost and 3306/22/8080/443 respectively. Port is 96 px wide, minimum 80 px; native-input Tab still moves Host → Port. The explicit body maximum is 720 px; zero minimum widths allow text truncation, while nonshrinking rows retain 28 px input and 30 px candidate heights. The viewport scrolls a natural-height body instead of vertically compressing it. The key list is capped at 150 px and long labels ellipsize.
+
+The supplied screenshot may predate the full-width form, but it exposed a real flex-shrink defect, not merely an old sidebar layout. Draw-bound regressions at 1040 × 760 and 850 × 600 exercise long values, key labels and password/color changes, proving fields no longer collapse to single-character widths in simulation. Current local suites passed 54 headless, 63 simulated UI and four Python tests. Native visual/accessibility review remains unverified; existing capture attempts were blocked by Screen Recording permissions, which were not changed. See [testing](testing.md#source-dialog-window-and-windows-fixture-fix) for CI evidence and the pending next-main gate.
+
 ## Current source and read-view slice
 
 Source setup has no separate Data Source/repeated-engine header. Password and its labeled Keychain checkbox share a row; the checkbox has an 18 px visible indicator and Lucide check rather than a Unicode glyph. CA path accepts both manual edits and a native single-file Browse action. Cancel preserves the path, stale selections do not replace newer manual edits, and focus returns to the path after the dialog. Native Open-dialog behavior remains a manual macOS check; shared completion and form control behavior have regression tests.
 
-The main area is no longer blank. Add/Edit Source has engine, name, endpoint, user, optional database and password fields, plus transport/TLS choices. Database defaults to None, host/port to localhost:3306 and user to root; recommend a least-privilege account. Opening Add/Edit focuses Name; Escape cancels. SSH exposes an optional Known hosts file field requiring an absolute existing file. Test does not save. Save persists a profile without connecting; Connect on the selected source triggers real discovery. Delete is confirmed and removes local settings/Keychain only, not server objects.
+The main area remains the browser/table workspace. The dedicated Add/Edit Source dialog has engine, name, endpoint, user, optional database and password fields, plus transport/TLS choices. Database defaults to None, host/port to localhost:3306 and user to root; recommend a least-privilege account. Opening Add/Edit focuses Name; Escape cancels. SSH exposes an optional Known hosts file field requiring an absolute existing file. Test does not save. Save persists a profile without connecting; Connect on the selected source triggers real discovery. Delete is confirmed and removes local settings/Keychain only, not server objects.
 
 Passwords are session-only unless saved explicitly to native macOS Keychain. After restart, Edit/re-enter a session-only password. Profiles use stable UUIDs and version 1 JSON without passwords. JSON/Keychain changes are not atomic across resources and compensation failures remain visible. Session-only Save is tested without a Keychain call, save failures are visible and a failed profile load blocks overwriting settings. The file limit is 1 MiB with at most 100 profiles.
 
@@ -151,9 +159,9 @@ The input control adapts GPUI Apache-2.0 code with attribution. Lucide SVGs are 
 
 Color (optional) sits below Name, with manual `#RRGGBB` entry and labeled Default, Blue, Green, Amber, Red and Purple swatches. Default stores None. Color is a marker, not a production/risk classification; custom colors are not guaranteed AA. Version 1 JSON uses an optional `color` field with `serde(default)` for legacy profiles. Legacy load produces None without automatic rewrite, preserves exact mixed-case hex on round-trip, and does not touch Keychain. The source-field whitelist accepts color while password rejection and failed-load overwrite protection remain unchanged.
 
-Verified migration/color tests preserve legacy None and mixed-case hex and reject malformed values without overwriting settings. Current totals: **54 headless**, **57 simulated UI** and **four Python bundle tests** passed, along with formatting, strict lint, bundle build and plist/signature/license checks. Native visual/accessibility, hosted CI, live transports and Keychain were not rerun for this UI/profile-only iteration.
+Verified migration/color tests preserve legacy None and mixed-case hex and reject malformed values without overwriting settings. Historical redesign totals: **54 headless**, **57 simulated UI** and **four Python bundle tests** passed, along with formatting, strict lint, bundle build and plist/signature/license checks. Native visual/accessibility, hosted CI, live transports and Keychain were not rerun for this UI/profile-only iteration.
 
-## Current change validation
+## Historical source-slice validation
 
 - Six live fixture smokes passed on MySQL 8.4.11 and MariaDB 11.4.13: direct TCP/HTTP CONNECT, all filter operators and fixture values, view rejection and untrusted default-TLS rejection.
 - Historical source-slice evidence: passed 37 default headless Rust tests (4 ACP, 13 app, 5 core, 15 driver), 27 simulated GPUI tests (3 native-input, 5 source-form, 4 source-model, 3 browser, 12 shell) and four Python bundle-helper tests. One generated native Keychain round-trip passed with cleanup. Historical counts above are not evidence for this slice.
@@ -166,6 +174,6 @@ Previous icon/sorting/export results: 48 headless and 42 simulated GPUI tests, f
 
 Connection-UX revision: 23 unique live cases passed (7 direct/CONNECT/authentication, 10 TLS, 6 SSH), including first login by a fresh uncached MySQL SHA2 account with TLS disabled and RSA authentication. The standalone repetition is counted once. 52 headless, 46 simulated UI and four Python tests passed; formatting, strict lint and debug bundle plist/signature checks passed; no Keychain rerun is claimed. The reported remote account remains unconfirmed: a credential-free probe reached TCP but reset before the greeting. The next evidence is a user retry with the sanitized diagnostic, not an assumption that the password or account was fixed. No new dependency or license change is introduced.
 
-Current gate: confirm the final rerun/build results, verify system-trusted HTTPS proxy success, then exercise real macOS source/browse keyboard and error/cancel flows. Light/system theme, scaled text and assistive-technology validation remain release requirements. Preserve the historical records and [initial validation](initial-validation.md) as evidence of their own iterations, not current compatibility.
+Current gate: verify all five hosted jobs on the next main push, verify system-trusted HTTPS proxy success, then exercise real macOS source-dialog/browse keyboard and error/cancel flows. Light/system theme, scaled text and assistive-technology validation remain release requirements. Preserve the historical records and [initial validation](initial-validation.md) as evidence of their own iterations, not current compatibility.
 
 [Overview](../README.md) · [Design direction](../DESIGN.md) · [Testing](testing.md) · [Development](development.md)

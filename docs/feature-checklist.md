@@ -20,10 +20,14 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 - [x] Bottom-left 28 px panel-left toggle retaining the closed preference; Cmd-B and View/Layout alternatives unchanged. Both body sides have 6 px padding; 320 px preferred sidebar, 200–480 px bounds and 462 px maximum at 720 px retain main 240 px and compact ACP behavior.
 - [x] Source rows with readable name/engine labels and abstract Lucide database/MySQL and database-zap/MariaDB cues, not vendor logos. Optional marker color, manual hex and labeled Default/Blue/Green/Amber/Red/Purple form presets; no color-only risk meaning or arbitrary-color AA claim.
 - [x] Backward-compatible version 1 color metadata with absent None, case-preserving hex, unchanged password rejection and no automatic rewrite/Keychain migration. Scoped migration and malformed-color no-overwrite tests passed.
-- [x] Working centered no-source Connect to a Source action using the same form by mouse/Enter/Space, including with explorer hidden; no demo/trial welcome.
-- [x] Current explorer redesign verified: 54 headless, 57 simulated UI and four Python tests passed, including legacy color migration and centered connection with the sidebar hidden; formatting/lint/bundle checks passed. See [testing](testing.md#database-explorer-redesign-verified).
+- [x] Working centered no-source Connect to a Source action using the same dedicated source dialog window by mouse/Enter/Space, including with explorer hidden; no demo/trial welcome.
+- [x] Historical explorer redesign verified: 54 headless, 57 simulated UI and four Python tests passed, including legacy color migration and centered connection with the sidebar hidden; formatting/lint/bundle checks passed. See [testing](testing.md#database-explorer-redesign-verified).
 
 Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the same pin, with full ISC and retained Feather MIT notices. No invented branding, dependencies or generic tools are added.
+
+- [x] Dedicated resizable Data Sources · Dalan window (1040 × 760 initially, minimum 780 × 560), separate from the main browser/table workspace; one reused application-wide draft, Name focus, generation-aware refresh, discard/test cancellation and saving close guards. Not an OS modal sheet.
+- [x] Inline Host/Port rows and nonshrinking scrolling body/key-list layout, with draw-bound regressions at 1040 × 760 and 850 × 600. Local suites passed 54 headless, 63 simulated UI and four Python tests; native visual/accessibility review is not implied.
+- [x] Windows SSH-key fixture portability fix: control-character filenames are Unix-only; Windows metadata-discovery assertions and CI workflow remain intact. See [historical run and pending main verification](testing.md#hosted-ci-historical-failure-and-pending-main-verification).
 
 ## Next read-workflow slices, in order
 
@@ -35,7 +39,7 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 
 ## Remaining platform and release work
 
-- [ ] Final current-revision test/lint rerun, bundle resource/signature verification and optional generated Keychain rerun. Expected counts are not final pass claims.
+- [ ] Verify all five CI jobs on the actual next main push. Historical run 37192402473 passed four jobs and failed the Windows fixture; the fixed revision is not yet claimed green. Live database and generated Keychain reruns are not required for this window/layout/test-fixture-only change; their historical evidence remains preserved.
 - [ ] Native macOS source/browse/sort/save-picker keyboard and error/cancel interaction, visual review, VoiceOver and scaled text. Simulated tests do not close these gates.
 - [ ] Broader MySQL/MariaDB auth/TLS/server matrix and positive trusted HTTPS proxy fixture.
 - [ ] PostgreSQL adapter and workflow slice; Redis engine-native key/type/TTL/binary workflows. Neither adapter is working yet.

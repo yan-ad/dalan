@@ -128,13 +128,19 @@ mod tests {
             "authorized_keys",
             "README",
             ".hidden.key",
-            "id_bad\nname",
         ] {
             fs::write(
                 sandbox.0.join(name),
                 "not a private key: discovery must not inspect or expose contents",
             )
             .unwrap();
+        }
+        // Windows forbids control characters in filenames, so exercise their
+        // discovery-time rejection only on filesystems that can represent them.
+        // The metadata-only discovery assertions below still run on every OS.
+        #[cfg(unix)]
+        for name in ["id_bad\nname", "id_bad\rname", "id_bad\tname"] {
+            fs::write(sandbox.0.join(name), "not a private key").unwrap();
         }
         fs::create_dir(sandbox.0.join("id_directory")).unwrap();
         #[cfg(unix)]
