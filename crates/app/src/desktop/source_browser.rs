@@ -279,6 +279,12 @@ impl SourceExplorer {
             .profiles
             .iter()
             .find(|profile| profile.id == row.key.source());
+        if source_row && let Some(profile) = profile {
+            tooltip.push_str(&format!("\n{}", profile.engine.display_name()));
+        }
+        if let Some(count) = row.count {
+            tooltip.push_str(&format!("\n{count} items"));
+        }
         let glyph = match &row.key {
             TreeKey::Source(_) => match profile.map(|p| p.engine) {
                 Some(DbEngine::MariaDb) => Icon::MariaDb,
@@ -389,40 +395,46 @@ impl SourceExplorer {
                 .text_ellipsis()
                 .child(row.label),
         );
-        if let Some(count) = row.count
-            && status_label.is_none()
-        {
-            element = element.child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(10.))
-                    .text_color(rgb(MUTED))
-                    .child(count.to_string()),
-            );
-        }
         if let Some(status) = status_label {
             let status_id = format!("cached-status-{}", row.key.source());
+            tooltip.push_str(&format!("\n{status}"));
+            let marker_tooltip = tooltip.clone();
+            let glyph = match status {
+                "Refreshing…" => Icon::Loading,
+                "Stale" => Icon::Warning,
+                _ => Icon::Cached,
+            };
             element = element.child(
                 div()
                     .id(gpui::SharedString::from(status_id.clone()))
                     .debug_selector(move || status_id.clone())
+                    .tab_stop(false)
+                    .w(px(18.))
+                    .h(px(18.))
                     .flex_shrink_0()
-                    .text_size(px(10.))
-                    .text_color(rgb(if status == "Stale" { WARNING } else { MUTED }))
-                    .child(status),
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(glyph, if status == "Stale" { WARNING } else { MUTED }))
+                    .tooltip(move |_, cx| cx.new(|_| TreeTooltip(marker_tooltip.clone())).into()),
             );
-            tooltip.push_str(&format!("\n{status}"));
         } else if !source_row && row.status.is_some() {
             element = element.child(
                 div()
+                    .w(px(18.))
+                    .h(px(18.))
                     .flex_shrink_0()
-                    .text_size(px(10.))
-                    .text_color(rgb(WARNING))
-                    .child(if model.tree.loading.contains(&row.key) {
-                        "Loading…"
-                    } else {
-                        "Stale"
-                    }),
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(
+                        if model.tree.loading.contains(&row.key) {
+                            Icon::Loading
+                        } else {
+                            Icon::Warning
+                        },
+                        WARNING,
+                    )),
             );
         }
         element = element.tooltip(move |_, cx| cx.new(|_| TreeTooltip(tooltip.clone())).into());
@@ -754,7 +766,20 @@ impl Render for SourceBrowser {
                         .child("Configure a MySQL or MariaDB connection to begin."),
                 )
                 .when(loading, |el| {
-                    el.child(div().text_color(rgb(MUTED)).child("Loading data sources…"))
+                    el.child(
+                        div()
+                            .id("table-browser-loading")
+                            .debug_selector(|| "table-browser-loading".into())
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_color(rgb(MUTED))
+                            .child(icon(Icon::Loading, MUTED))
+                            .child("Loading data sources…")
+                            .tooltip(|_, cx| {
+                                cx.new(|_| super::ControlTooltip("Loading...")).into()
+                            }),
+                    )
                 })
                 .when_some(load_error, |el, error| {
                     el.child(div().text_color(rgb(WARNING)).child(error))
@@ -771,21 +796,16 @@ impl Render for SourceBrowser {
             .iter()
             .find(|p| Some(&p.id) == m.selected_source.as_ref())
             .map(|p| p.name.clone());
+        let show_header = m.selected_table.is_some() || page.is_some();
         let title = match (&source, &m.selected_database, &m.selected_table) {
             (Some(source), Some(db), Some(table)) => format!("{source} / {db}.{table}"),
+            (_, Some(db), Some(table)) => format!("{db}.{table}"),
+            (_, _, Some(table)) => table.clone(),
             (Some(source), _, _) => source.clone(),
-            _ => "Table browser".into(),
+            _ => String::new(),
         };
-        let empty = if m.profiles.is_empty() {
-            "Add a data source in the Database Explorer to browse its tables."
-        } else if m.selected_source.is_none() {
-            "Connect to a data source in the Database Explorer."
-        } else if m.selected_database.is_none() {
-            "Select a database in the Database Explorer."
-        } else if m.selected_table.is_none() {
-            "Select a base table to browse its rows. Views are unavailable."
-        } else if busy {
-            "Loading table…"
+        let empty = if m.selected_table.is_none() {
+            "Select a table"
         } else {
             "No table page loaded. Use Refresh to retry."
         };
@@ -798,9 +818,12 @@ impl Render for SourceBrowser {
             .flex_col()
             .bg(rgb(PANEL))
             .text_color(rgb(TEXT))
-            .text_size(px(12.))
-            .child(
+            .text_size(px(12.));
+        if show_header {
+            body = body.child(
                 div()
+                    .id("table-browser-header")
+                    .debug_selector(|| "table-browser-header".into())
                     .flex_shrink_0()
                     .px(px(10.))
                     .py(px(6.))
@@ -810,31 +833,69 @@ impl Render for SourceBrowser {
                     .items_center()
                     .justify_between()
                     .gap(px(12.))
-                    .child(div().flex_1().min_w(px(0.)).child(title.clone()))
                     .child(
                         div()
+                            .id("table-browser-title")
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_ellipsis()
+                            .child(title.clone())
+                            .tooltip({
+                                let title = title.clone();
+                                move |_, cx| cx.new(|_| TreeTooltip(title.clone())).into()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("read-only-indicator")
+                            .debug_selector(|| "read-only-indicator".into())
+                            .tab_stop(false)
+                            .w(px(28.))
+                            .h(px(28.))
                             .flex_shrink_0()
-                            .text_color(rgb(MUTED))
-                            .child("Read-only"),
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(Icon::ReadOnly, MUTED))
+                            .tooltip(|_, cx| {
+                                cx.new(|_| {
+                                    super::ControlTooltip(
+                                        "Read-only preview. Editing isn't implemented.",
+                                    )
+                                })
+                                .into()
+                            }),
                     ),
             );
+        }
         if busy {
             body = body.child(
                 div()
                     .px(px(12.))
                     .py(px(6.))
+                    .id("table-browser-loading")
+                    .debug_selector(|| "table-browser-loading".into())
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
                     .text_color(rgb(MUTED))
-                    .child(format!("Loading {title}…")),
+                    .child(icon(Icon::Loading, MUTED))
+                    .child(if title.is_empty() {
+                        "Loading…".into()
+                    } else {
+                        format!("Loading {title}…")
+                    })
+                    .tooltip(|_, cx| cx.new(|_| super::ControlTooltip("Loading...")).into()),
             );
         }
         if let Some(error) = error {
-            body = body.child(
-                div()
-                    .px(px(12.))
-                    .py(px(6.))
-                    .text_color(rgb(ERROR))
-                    .child(format!("{title}: {error}")),
-            );
+            body = body.child(div().px(px(12.)).py(px(6.)).text_color(rgb(ERROR)).child(
+                if title.is_empty() {
+                    error
+                } else {
+                    format!("{title}: {error}")
+                },
+            ));
         }
         if let Some(page) = page {
             if let Some(feedback) = export_feedback {
@@ -856,7 +917,7 @@ impl Render for SourceBrowser {
             let column_label = page
                 .columns
                 .get(self.column)
-                .map(|c| format!("Column: {}", c.name))
+                .map(|c| c.name.clone())
                 .unwrap_or_else(|| "No columns".into());
             let no_columns = page.columns.is_empty();
             let unary = matches!(
@@ -872,36 +933,48 @@ impl Render for SourceBrowser {
                     .flex_wrap()
                     .items_center()
                     .gap(px(6.))
-                    .child(button(
-                        "filter-column",
-                        column_label,
-                        false,
-                        busy || no_columns,
-                        cx,
-                        |this, cx| {
-                            let count = this
-                                .model
-                                .read(cx)
-                                .page
-                                .as_ref()
-                                .map_or(0, |p| p.columns.len());
-                            if count > 0 {
-                                this.column = (this.column + 1) % count;
+                    .child(
+                        button(
+                            "filter-column",
+                            column_label,
+                            false,
+                            busy || no_columns,
+                            cx,
+                            |this, cx| {
+                                let count = this
+                                    .model
+                                    .read(cx)
+                                    .page
+                                    .as_ref()
+                                    .map_or(0, |p| p.columns.len());
+                                if count > 0 {
+                                    this.column = (this.column + 1) % count;
+                                    cx.notify();
+                                }
+                            },
+                        )
+                        .tooltip(|_, cx| {
+                            cx.new(|_| super::ControlTooltip("Choose filter column"))
+                                .into()
+                        }),
+                    )
+                    .child(
+                        button(
+                            "filter-operator",
+                            OPERATORS[self.operator].1,
+                            false,
+                            busy,
+                            cx,
+                            |this, cx| {
+                                this.operator = (this.operator + 1) % OPERATORS.len();
                                 cx.notify();
-                            }
-                        },
-                    ))
-                    .child(button(
-                        "filter-operator",
-                        OPERATORS[self.operator].1,
-                        false,
-                        busy,
-                        cx,
-                        |this, cx| {
-                            this.operator = (this.operator + 1) % OPERATORS.len();
-                            cx.notify();
-                        },
-                    ))
+                            },
+                        )
+                        .tooltip(|_, cx| {
+                            cx.new(|_| super::ControlTooltip("Choose filter operator"))
+                                .into()
+                        }),
+                    )
                     .when(!unary, |el| {
                         el.child(
                             div()
@@ -911,18 +984,18 @@ impl Render for SourceBrowser {
                                 .child(self.value.clone()),
                         )
                     })
-                    .child(button(
+                    .child(toolbar_button(
                         "apply-filter",
-                        "Apply",
-                        false,
+                        Icon::Check,
+                        "Apply filter",
                         busy || no_columns,
                         cx,
                         |this, cx| this.apply(cx),
                     ))
-                    .child(button(
+                    .child(toolbar_button(
                         "clear-filter",
-                        "Clear",
-                        false,
+                        Icon::Hide,
+                        "Clear filter",
                         busy,
                         cx,
                         |this, cx| {
@@ -936,15 +1009,18 @@ impl Render for SourceBrowser {
             body = body.child(self.grid.clone());
             let count = page.rows.len().min(100);
             let summary = if count == 0 {
-                format!("0 rows · offset {}", page.offset)
+                "0 rows".into()
             } else {
-                format!(
-                    "{} rows · {}–{}",
-                    count,
-                    page.offset + 1,
-                    page.offset + count as u64
-                )
+                format!("{}–{}", page.offset + 1, page.offset + count as u64)
             };
+            let summary_tooltip = format!(
+                "{count} loaded rows; {}",
+                if page.has_more {
+                    "more rows available"
+                } else {
+                    "no more rows"
+                }
+            );
             body = body.child(
                 div()
                     .px(px(10.))
@@ -957,8 +1033,12 @@ impl Render for SourceBrowser {
                     .gap(px(6.))
                     .child(
                         div()
+                            .id("table-page-summary")
                             .text_color(rgb(MUTED))
                             .child(summary)
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| TreeTooltip(summary_tooltip.clone())).into()
+                            })
                             .when(page.truncated, |el| {
                                 el.child(" · Values truncated by the reader's safety limits")
                             }),
@@ -967,23 +1047,20 @@ impl Render for SourceBrowser {
                         div()
                             .flex()
                             .gap(px(6.))
-                            .child(
-                                button(
-                                    "export-loaded-page",
-                                    "Export loaded CSV",
-                                    false,
-                                    stale || page.truncated || export_busy,
-                                    cx,
-                                    |this, cx| {
-                                        this.model.update(cx, |model, cx| model.request_export(cx))
-                                    },
-                                )
-                                .child(icon(Icon::Download, MUTED)),
-                            )
-                            .child(button(
+                            .child(toolbar_button(
+                                "export-loaded-page",
+                                Icon::Download,
+                                "Export loaded CSV",
+                                stale || page.truncated || export_busy,
+                                cx,
+                                |this, cx| {
+                                    this.model.update(cx, |model, cx| model.request_export(cx))
+                                },
+                            ))
+                            .child(toolbar_button(
                                 "previous-page",
-                                "Previous",
-                                false,
+                                Icon::Previous,
+                                "Previous page",
                                 stale || page.offset == 0,
                                 cx,
                                 |this, cx| {
@@ -998,10 +1075,10 @@ impl Render for SourceBrowser {
                                     }
                                 },
                             ))
-                            .child(button(
+                            .child(toolbar_button(
                                 "next-page",
-                                "Next",
-                                false,
+                                Icon::ChevronRight,
+                                "Next page",
                                 stale || !page.has_more,
                                 cx,
                                 |this, cx| {
@@ -1018,12 +1095,20 @@ impl Render for SourceBrowser {
                             )),
                     ),
             );
-        } else {
+        } else if !busy {
             body = body.child(
                 div()
+                    .id("table-browser-empty")
+                    .debug_selector(|| "table-browser-empty".into())
                     .flex_1()
+                    .min_h(px(0.))
                     .p(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
                     .text_color(rgb(MUTED))
+                    .child(icon(Icon::Table, MUTED))
                     .child(empty),
             );
         }
@@ -1471,7 +1556,8 @@ mod tests {
         cx.refresh().unwrap();
         cx.run_until_parked();
         assert!(cx.debug_bounds("source-metadata-notice").is_some());
-        assert!(cx.debug_bounds("cached-status-offline").is_some());
+        let marker = cx.debug_bounds("cached-status-offline").unwrap();
+        assert_eq!(marker.size, gpui::size(px(18.), px(18.)));
         let db = TreeKey::Database {
             source: "offline".into(),
             database: "db".into(),
@@ -2021,6 +2107,72 @@ mod tests {
         });
         click(cx, "connect-empty-source");
         assert!(!model.read_with(cx, |m, _| m.form_open));
+    }
+
+    #[gpui::test]
+    fn cached_browser_without_selection_has_only_centered_table_prompt(cx: &mut TestAppContext) {
+        let model = cx.new(|_| {
+            let mut m = SourceModel::for_tests(vec![SourceProfile {
+                id: "offline-prompt".into(),
+                ..SourceProfile::default()
+            }]);
+            m.cached_offline.insert("offline-prompt".into());
+            m.tree
+                .databases
+                .insert("offline-prompt".into(), vec!["cached_db".into()]);
+            m
+        });
+        let (_, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
+        cx.simulate_resize(gpui::size(px(1000.), px(800.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("table-browser-header").is_none());
+        assert!(cx.debug_bounds("read-only-indicator").is_none());
+        assert!(cx.debug_bounds("connect-empty-source").is_none());
+        let root = cx.debug_bounds("source-browser").unwrap();
+        let prompt = cx.debug_bounds("table-browser-empty").unwrap();
+        assert!((prompt.center().x - root.center().x).abs() < px(1.));
+        assert!((prompt.center().y - root.center().y).abs() < px(1.));
+        model.read_with(cx, |m, _| {
+            assert!(m.selected_source.is_none());
+            assert!(m.tree.loading.is_empty());
+        });
+        model.update(cx, |m, cx| {
+            m.busy = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("table-browser-loading").is_some());
+        // GPUI retains debug bounds for removed elements; state and loading
+        // marker verify this transition without treating stale bounds as live UI.
+        assert!(model.read_with(cx, |m, _| m.busy && m.page.is_none()));
+        assert!(cx.debug_bounds("table-browser-header").is_none());
+    }
+
+    #[gpui::test]
+    fn preview_indicator_is_passive_and_controls_are_compact(cx: &mut TestAppContext) {
+        let (model, cx) = sorting_fixture(cx);
+        let indicator = cx.debug_bounds("read-only-indicator").unwrap();
+        assert_eq!(indicator.size, gpui::size(px(28.), px(28.)));
+        click(cx, "read-only-indicator");
+        model.read_with(cx, |m, _| {
+            assert!(!m.form_open);
+            assert!(!m.busy);
+            assert_eq!(m.selected_table.as_deref(), Some("items"));
+        });
+        for id in [
+            "export-loaded-page",
+            "previous-page",
+            "next-page",
+            "apply-filter",
+            "clear-filter",
+        ] {
+            let bounds = cx.debug_bounds(id).unwrap();
+            assert_eq!(
+                bounds.size,
+                gpui::size(px(CONTROL_HEIGHT), px(CONTROL_HEIGHT))
+            );
+        }
     }
 
     #[gpui::test]

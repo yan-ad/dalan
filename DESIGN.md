@@ -36,11 +36,11 @@ Reason: exact provenance makes the permitted palette reproducible without borrow
 | ERROR | `#ee5396` | Error with text/icon |
 | SUCCESS | `#25be6a` | Success with text/icon |
 
-Upstream alpha-bearing toolbar, selection and border colors are composited over PANEL into opaque RGB, while the vendored reference stays unchanged. Main, source and About windows explicitly use opaque backgrounds: no blur, transparency, theme toggle or fake light mode. Normal status identifies **Carbonfox - opaque**; focused-control help temporarily overrides it as before. Inputs share the tokens, opaque text selection, FOCUS cursor and MUTED placeholder rather than hardcoded colors.
+Upstream alpha-bearing toolbar, selection and border colors are composited over PANEL into opaque RGB, while the vendored reference stays unchanged. Main, source and About windows explicitly use opaque backgrounds: no blur, transparency, theme toggle or fake light mode. The status spacer exposes **Carbonfox - opaque** only in a tooltip; no persistent theme name or focused-control help is painted. Inputs share the tokens, opaque text selection, FOCUS cursor and MUTED placeholder rather than hardcoded colors.
 
 Reason: one honest default gives every window the same calm material and readable states.
 
-Blue marks focus/active state and Save/Connect primary actions with dark text. Other controls are neutral with minimal borders and hover feedback. Disabled labels use MUTED, not opacity. Semantic pink error text is supported on panel/input backgrounds, not filled hover controls. User-owned source colors remain unchanged marker-only metadata; name and engine labels remain readable independently, and arbitrary marker colors have no AA guarantee or risk meaning.
+Blue marks focus/active state and Save/Connect primary actions with dark text. Other controls are neutral with minimal borders and hover feedback. Disabled labels use MUTED, not opacity. Semantic pink error text is supported on panel/input backgrounds, not filled hover controls. User-owned source colors remain unchanged marker-only metadata; source names remain readable and tooltips identify engines independently of color. Arbitrary marker colors have no AA guarantee or risk meaning.
 
 Reason: accent should communicate action or focus, not decorate every button.
 
@@ -68,7 +68,7 @@ Source setup remains one normal **Data Sources · Dalan** window, initial 1040 �
 
 Reason: tighter spacing must not shrink controls or change familiar source workflows.
 
-System UI fonts require no external font assets. No monospace font or SQL editor is implemented. The nineteen pinned Lucide utility SVGs remain unchanged, dynamically colored through existing rendering, with no generated brand assets or app icon. [Asset provenance](crates/app/assets/README.md) retains complete ISC/Feather MIT attribution.
+System UI fonts require no external font assets. No monospace font or SQL editor is implemented. Twenty-four pinned Lucide utility SVGs are dynamically colored through existing rendering: the previous nineteen plus hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. No generated brand assets or app icon are added. [Asset provenance](crates/app/assets/README.md) retains complete ISC/Feather MIT attribution; Carbonfox and SQLite notices and bundle-resource contracts are unchanged.
 
 Reason: existing native typography and permitted utility icons are sufficient for this slice.
 
@@ -89,5 +89,15 @@ The theme/layout change does not change database I/O, cache, SSH/TLS, passwords,
 A retained `DataGrid` virtualizes both axes of the database page, with fixed 180 px columns, unchanged 22 px rows, 28 px pinned headers and 12 px browse text. Headers and cells share a pixel-calculated horizontal offset; the body alone scrolls vertically. Two-axis tracks have draggable minimum 20 px thumbs and track-click support. This is not screenshot-matched native evidence.
 
 Wheel/trackpad, Shift-wheel and grid-focused arrows/PageUp/PageDown/Home/End/Ctrl-or-Cmd-Home/End scroll the viewport, not an active-cell selection. Only mounted visible/overscan headers enter Tab sorting traversal; offscreen headers are not focus stops. An unchanged stale page retains scroll during busy/saving/error updates with sorting disabled; new snapshots or selected targets reset it. Column resizing and cell inspection/copy remain future work. Carbonfox styling and other geometry are unchanged. See [UI foundation](docs/ui-foundation.md#two-axis-data-grid) and [operation counts](docs/testing.md#wide-grid-performance-revision).
+
+## Icon-led chrome
+
+The titlebar brand is only **Dalan**; a 28 px Layout icon opens the existing four-row popover with unchanged shortcuts/focus return. Bottom-left explorer and bottom-right ACP icons remain. Action labels live in tooltips, not persistent status help; visible focus outlines remain. No extra Theme button or debug status is introduced.
+
+Source rows show their glyph, marker and name, not a duplicate engine badge. Engine/full name and real known counts are in tooltips; Tables and Views keep their meaningful grouping labels. Fixed 18 px hard-drive, warning-triangle and static loader-circle markers mean Cached, Stale and Refreshing, with timestamp/sanitized error in tooltips. Important connection errors, stale-page feedback and cache warnings stay visible text.
+
+With saved sources but no selected/loaded table, center a small table icon and **Select a table**, without Table browser/read-only chrome or a giant welcome. With no profiles, retain the working **Connect to a Source** action. A selected/loaded table shows its actual qualified title and passive 28 px read-only lock tooltip, not an edit button. Apply/check, Clear/minus, Export/download and Previous/Next chevrons are 28 px controls with unchanged IDs, guards and keyboard actions. Filter column names (without a Column prefix), operators and values remain visible. The footer's `1–100` range exposes loaded count and `has_more` in a tooltip, not a fabricated total.
+
+This UI-only slice preserves virtual tree/grid rendering, `Arc<TablePage>`, cached rows and connection/selection/credential behavior. Historical credential fix `9b3d3d8` passed all five jobs in [run 37212641100](https://github.com/yan-ad/dalan/actions/runs/37212641100). Expected current totals are 74 headless, 106 simulated UI and four Python tests, **pending owner-run validation and this revision's own main CI**. No native screenshot, manual/VoiceOver or performance pass is claimed; capture was previously blocked. Existing native source values must not become documentation fixtures or published screenshots.
 
 [Overview](README.md) · [UI foundation](docs/ui-foundation.md) · [Architecture](docs/architecture.md) · [Development](docs/development.md) · [Testing](docs/testing.md) · [Feature checklist](docs/feature-checklist.md)

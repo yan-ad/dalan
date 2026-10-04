@@ -253,16 +253,12 @@ impl Shell {
                             .debug_selector(|| "product-name".into())
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Dalan"),
-                    )
-                    .child(div().text_color(rgb(MUTED)).child("Database workspace")),
+                    ),
             )
             .child(
                 self.button("layout-menu", Control::LayoutMenu, self.state.menu_open, cx)
-                    .w(px(96.0))
-                    .gap(px(6.0))
-                    .child(icon(Icon::Layout, MUTED))
-                    .child("Layout")
-                    .child(icon(Icon::Chevron, MUTED)),
+                    .w(px(CONTROL_HEIGHT))
+                    .child(icon(Icon::Layout, MUTED)),
             )
             .child(div().w(px(8.0)))
     }
@@ -351,7 +347,8 @@ impl Shell {
                     // The trigger handles its own toggle on click; closing it on
                     // mouse-down would reopen the popover on the following click.
                     if event.position.y < px(TITLEBAR_HEIGHT)
-                        && event.position.x > window.viewport_size().width - px(104.0)
+                        && event.position.x
+                            > window.viewport_size().width - px(CONTROL_HEIGHT + 8.0)
                     {
                         return;
                     }
@@ -405,11 +402,6 @@ impl Shell {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let layout = self.state.layout(window.viewport_size().width.into());
-        let focus_help = self
-            .controls
-            .iter()
-            .find(|(_, handle)| handle.is_focused(window))
-            .map_or(NAME, |(id, _)| control_label(id));
         div()
             .id("shell")
             .track_focus(&self.root_focus)
@@ -518,10 +510,11 @@ impl Render for Shell {
                     )
                     .child(
                         div()
+                            .id("status-theme-hint")
                             .flex_1()
                             .min_w(px(0.0))
                             .overflow_hidden()
-                            .child(focus_help),
+                            .tooltip(|_, cx| cx.new(|_| ControlTooltip(NAME)).into()),
                     )
                     .child(
                         self.button("acp-toggle", Control::ToggleAcp, self.state.acp_visible, cx)

@@ -4,7 +4,7 @@ The main UI icon set is [Lucide](https://github.com/lucide-icons/lucide), explic
 
 ## Provenance
 
-All nineteen SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
+All twenty-four SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
 
 `500620a2e8123f8d1db191538886dc0c223f69a9`
 
@@ -31,6 +31,13 @@ The revision was resolved once using `https://api.github.com/repos/lucide-icons/
 | SortDescending | arrow-down.svg |
 | Download | download.svg |
 | Check | check.svg |
+| Cached | hard-drive.svg |
+| Warning | triangle-alert.svg |
+| Loading | loader-circle.svg |
+| ReadOnly | lock-keyhole.svg |
+| Previous | chevron-left.svg |
+
+The main user-facing chrome is icon-led, using functional glyphs rather than a brand icon. **Cached** uses **HardDrive** to mark locally cached metadata, **Warning** uses **TriangleAlert** for warnings, **Loading** uses a static **LoaderCircle** glyph, **ReadOnly** uses **LockKeyhole**, and **Previous** uses **ChevronLeft**. Next reuses **ChevronRight**; Download, Hide (Minus), and Check reuse their existing assets. These assets alone add no buttons, state updates, or animation. At the pinned revision, `icons/triangle-alert.svg` exists under that exact name; `alert-triangle` is only a deprecated alias in `icons/triangle-alert.json`. The five additions were fetched through GitHub's authenticated contents API (`https://api.github.com/repos/lucide-icons/lucide/contents/icons/<name>.svg?ref=500620a2e8123f8d1db191538886dc0c223f69a9`), over verified TLS, then base64-decoded unchanged and checked against the returned Git blob SHA.
 
 The compact explorer reuses **Database** for schema/database children, **Folder** for the Tables group, and **Table** for table children. **ExpandTree** denotes expanding loaded nodes and **CollapseTree** denotes collapsing all nodes. The upstream `icons/table.svg` exists at this revision and is vendored under the same filename; no table alias or substitution is needed.
 

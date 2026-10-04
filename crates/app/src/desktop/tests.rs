@@ -352,3 +352,20 @@ fn carbonfox_shell_is_compact_and_flush(cx: &mut TestAppContext) {
     assert_eq!(TITLEBAR_HEIGHT, 34.0);
     assert_eq!(NAME, "Carbonfox - opaque");
 }
+
+#[gpui::test]
+fn layout_trigger_is_icon_sized_and_popover_still_operates(cx: &mut TestAppContext) {
+    let (view, cx) = fixture(cx);
+    let trigger = cx.debug_bounds("layout-menu").unwrap();
+    assert_eq!(trigger.size.width, px(CONTROL_HEIGHT));
+    assert_eq!(trigger.size.height, px(CONTROL_HEIGHT));
+    click(cx, "layout-menu");
+    assert!(state(&view, cx).menu_open);
+    click(cx, "layout-menu");
+    assert!(!state(&view, cx).menu_open);
+    cx.update(|window, app| view.read(app).controls["layout-menu"].focus(window));
+    cx.simulate_keystrokes("enter");
+    assert!(state(&view, cx).menu_open);
+    cx.simulate_keystrokes("escape");
+    assert!(!state(&view, cx).menu_open);
+}

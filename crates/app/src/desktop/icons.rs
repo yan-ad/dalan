@@ -23,6 +23,11 @@ pub enum Icon {
     SortDescending,
     Download,
     Check,
+    Cached,
+    Warning,
+    Loading,
+    ReadOnly,
+    Previous,
 }
 
 impl Icon {
@@ -47,6 +52,11 @@ impl Icon {
             Self::SortDescending => "icons/arrow-down.svg",
             Self::Download => "icons/download.svg",
             Self::Check => "icons/check.svg",
+            Self::Cached => "icons/hard-drive.svg",
+            Self::Warning => "icons/triangle-alert.svg",
+            Self::Loading => "icons/loader-circle.svg",
+            Self::ReadOnly => "icons/lock-keyhole.svg",
+            Self::Previous => "icons/chevron-left.svg",
         }
     }
 }
@@ -134,6 +144,26 @@ const ASSETS: &[(&str, &[u8])] = &[
         "icons/database-zap.svg",
         include_bytes!("../../assets/icons/database-zap.svg"),
     ),
+    (
+        "icons/hard-drive.svg",
+        include_bytes!("../../assets/icons/hard-drive.svg"),
+    ),
+    (
+        "icons/triangle-alert.svg",
+        include_bytes!("../../assets/icons/triangle-alert.svg"),
+    ),
+    (
+        "icons/loader-circle.svg",
+        include_bytes!("../../assets/icons/loader-circle.svg"),
+    ),
+    (
+        "icons/lock-keyhole.svg",
+        include_bytes!("../../assets/icons/lock-keyhole.svg"),
+    ),
+    (
+        "icons/chevron-left.svg",
+        include_bytes!("../../assets/icons/chevron-left.svg"),
+    ),
 ];
 
 pub(super) struct IconAssets;
@@ -169,10 +199,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_nineteen_embedded_icons_are_listed_and_loaded() {
+    fn all_twentyfour_embedded_icons_are_listed_and_loaded() {
         let assets = IconAssets;
         let paths = assets.list("icons/").unwrap();
-        assert_eq!(paths.len(), 19);
+        assert_eq!(paths.len(), 24);
         for path in paths {
             let bytes = assets.load(path.as_ref()).unwrap().unwrap();
             assert!(matches!(bytes, Cow::Borrowed(_)));
@@ -270,6 +300,43 @@ mod tests {
                 Icon::Remove,
                 "icons/trash-2.svg",
                 include_bytes!("../../assets/icons/trash-2.svg").as_slice(),
+            ),
+        ] {
+            assert_eq!(kind.path(), path);
+            assert_eq!(
+                IconAssets.load(kind.path()).unwrap().unwrap().as_ref(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn status_and_previous_icons_load_the_expected_assets() {
+        for (kind, path, expected) in [
+            (
+                Icon::Cached,
+                "icons/hard-drive.svg",
+                include_bytes!("../../assets/icons/hard-drive.svg").as_slice(),
+            ),
+            (
+                Icon::Warning,
+                "icons/triangle-alert.svg",
+                include_bytes!("../../assets/icons/triangle-alert.svg").as_slice(),
+            ),
+            (
+                Icon::Loading,
+                "icons/loader-circle.svg",
+                include_bytes!("../../assets/icons/loader-circle.svg").as_slice(),
+            ),
+            (
+                Icon::ReadOnly,
+                "icons/lock-keyhole.svg",
+                include_bytes!("../../assets/icons/lock-keyhole.svg").as_slice(),
+            ),
+            (
+                Icon::Previous,
+                "icons/chevron-left.svg",
+                include_bytes!("../../assets/icons/chevron-left.svg").as_slice(),
             ),
         ] {
             assert_eq!(kind.path(), path);

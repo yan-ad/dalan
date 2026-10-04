@@ -6,7 +6,7 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 
 - [x] Rust workspace and macOS GPUI dark shell, native titlebar/menu, Database Explorer visibility/resizing and keyboard controls.
 - [x] About Dalan and optional ACP panel with honest **Not connected** state. No agent process, transport, prompt or provider-key integration.
-- [x] Main open-source icon set: nineteen embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`. Bottom-right 28 px bot-message-square replaces text in the ACP trigger, retaining AI · ACP tooltip/focus help and Cmd-Shift-A. No new app/brand icon.
+- [x] Main open-source icon set: twenty-four embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`, including hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. Bottom-right 28 px bot-message-square retains AI · ACP tooltip and Cmd-Shift-A. No new app/brand icon.
 - [x] Complete Lucide ISC and retained Feather MIT notices, with adapted GPUI input Apache-2.0 attribution in [third-party notices](../THIRD_PARTY_NOTICES.md), plus bundle resource wiring. Project license remains undecided.
 - [x] Experimental MySQL/MariaDB source form, version 1 password-free profile storage and optional database discovery. Test, Save and Connect remain separate actions.
 - [x] Session-only passwords and opt-in native macOS Keychain storage; explicit failure/compensation boundaries.
@@ -22,7 +22,7 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 - [x] Single-focus tree keyboard navigation and guarded toolbar Enter/Space activation; scoped 71-test simulated suite includes 1,000-database visible-range, scroll-to-900 and End regressions. No native smoothness/FPS claim.
 - [x] Compact-explorer local verification: 57 headless, 71 UI and four Python tests passed with formatting, strict lint and bundle verification; current hosted CI and native review remain pending. See [testing](testing.md#compact-lazy-explorer).
 - [x] Bottom-left 28 px panel-left toggle retaining the closed preference; Cmd-B and View/Layout alternatives unchanged. Flush body edges have 0 px outer padding and a 4 px divider hit area/1 px visible line; 320 px preferred sidebar, 200–480 px bounds and 476 px maximum at 720 px retain main 240 px and compact ACP behavior.
-- [x] Source rows with readable name/engine labels and abstract Lucide database/MySQL and database-zap/MariaDB cues, not vendor logos. Optional marker color, manual hex and labeled Default/Blue/Green/Amber/Red/Purple form presets; no color-only risk meaning or arbitrary-color AA claim.
+- [x] Source rows with readable names and abstract Lucide database/MySQL and database-zap/MariaDB cues, not vendor logos or duplicate engine badges; engine and known counts in full-name tooltips. Optional marker color, manual hex and labeled Default/Blue/Green/Amber/Red/Purple form presets; no color-only risk meaning or arbitrary-color AA claim.
 - [x] Backward-compatible version 1 color metadata with absent None, case-preserving hex, unchanged password rejection and no automatic rewrite/Keychain migration. Scoped migration and malformed-color no-overwrite tests passed.
 - [x] Working centered no-source Connect to a Source action using the same dedicated source dialog window by mouse/Enter/Space, including with explorer hidden; no demo/trial welcome.
 - [x] Historical explorer redesign verified: 54 headless, 57 simulated UI and four Python tests passed, including legacy color migration and centered connection with the sidebar hidden; formatting/lint/bundle checks passed. See [testing](testing.md#database-explorer-redesign-verified).
@@ -36,18 +36,18 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 ## Persistent metadata slice
 
 - [x] Separate version 1 embedded SQLite cache using pinned rusqlite 0.40.2 with only bundled enabled; normalized database/table/view names and kinds, no columns/indexes/DDL/rows or passwords. Profile JSON and native Keychain remain separate.
-- [x] Offline startup register/prune/restore without network or Keychain calls; cached-first expansion and textual Cached/Stale/Refreshing… timestamp/error feedback on unchanged virtual 22 px rows.
+- [x] Offline startup register/prune/restore without network or Keychain calls; cached-first expansion and fixed 18 px Cached/hard-drive, Stale/triangle-alert and Refreshing/static loader-circle markers with meaning/timestamp/error tooltips on unchanged virtual 22 px rows.
 - [x] Successful profile/credential commit closes the dialog before automatic full metadata-only discovery; all visible databases or explicit database scope, one serial owned connection/tunnel, no automatic data browse.
 - [x] Transactional bounded refresh, identity invalidation and globally monotonic ticket guards against stale/deleted/re-added/edit-away-back completions; old snapshots remain on refresh failure.
 - [x] Explicit explorer-selection-only Refresh, independent of table-page selection/paging; nonfatal disk-cache/save/delete warnings without suppressing profile JSON or inventing phantom sources.
 - [x] Historical metadata suites passed 67 headless, 83 simulated UI and four Python tests, formatting/lint/bundle checks and 7 direct/auth/CONNECT + 10 TLS + 6 SSH live cases. Commit `4c8af09` passed all five hosted jobs in [run 37201696519](https://github.com/yan-ad/dalan/actions/runs/37201696519).
-- [ ] Current wide-grid-revision hosted CI; native macOS offline/source-save/refresh/error/keyboard/accessibility review. Historical theme CI is recorded below; no native Keychain rerun or production endpoint success is claimed.
+- [ ] Current icon-led-revision hosted CI; native macOS offline/source-save/refresh/error/keyboard/accessibility review. Historical theme CI is recorded below; no native Keychain rerun or production endpoint success is claimed.
 
 ## Carbonfox compact foundation
 
 - [x] User-selected **Carbonfox - opaque** default and compact Zed-like UI. DataGrip visual styling/button-heavy layout explicitly rejected; database UX/workflows only remain references.
 - [x] Full exact variant vendored from Nightfox Zed port commit `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`, with both full MIT licenses and separate original-project license provenance. Runtime uses compiled tokens, not JSON; no affiliation or other Zed source/editor asset import. See [theme record](../crates/app/assets/themes/README.md).
-- [x] Shared opaque main/source/About/input theme; alpha toolbar/selection/border composited over PANEL; no blur/transparency/toggle/fake light. Theme-name status retains focused-help override.
+- [x] Shared opaque main/source/About/input theme; alpha toolbar/selection/border composited over PANEL; no blur/transparency/toggle/fake light. Status spacer has a Carbonfox - opaque tooltip only; no persistent theme/focus-help text or extra Theme button.
 - [x] Compact 34 px titlebar, 28 px headers/toolbars/status/controls, 22 px tree/grid, 3 px controls/0 px panes, flush 0 px outer padding and 4 px divider hit area/1 px line. System UI 13 px/data 12 px, no external font or implemented SQL monospace editor.
 - [x] Neutral controls/hover/selection, blue focus/active and Save/Connect primary with dark text; readable disabled MUTED labels without opacity; shared opaque input selection, cursor/placeholder and visible input borders. User source markers remain unchanged, separately labeled and not AA-guaranteed.
 - [x] Compact form gaps/scroll/footer styling while retaining source window size, APIs, focus/saving guards, 28 px inputs, 30 px endpoint parents/candidates and 18 px Keychain indicator. Compact table header/filter/footer without fake content; no DB/cache/SSH/password migration.
@@ -65,6 +65,13 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 - [x] Wide-grid verification: 74 headless, 99 simulated UI and four Python tests passed, including bounded text reuse, visible-only header focus and released-drag cancellation; formatting/lint/bundle checks passed. Hosted CI remains a separate gate. See [evidence](testing.md#wide-grid-performance-revision).
 - [ ] Native user retry, screenshot/manual review and high-DPI/GPU profiling on the latest macOS runtime-shader build; current-revision hosted CI, release/offline-Metal and accessibility gates remain open. Column resizing and cell inspection/copy remain next, not completed.
 
+## Icon-led chrome verification
+
+- [x] Dalan-only titlebar, 28 px Layout icon opening the existing four-row popover, preserved shortcuts/focus outlines/action tooltips and right ACP trigger.
+- [x] No Table browser/read-only header without a selected table or page; saved sources show small-icon Select a table, empty profiles retain working Connect to a Source. Actual qualified title and passive 28 px lock tooltip appear for selected/loaded tables only.
+- [x] Apply/check, Clear/minus, Export/download and Previous/Next chevron 28 px controls retain IDs, keyboard activation and guards; actual filter column/operator/value remain visible. Minimal loaded-range footer with loaded-count/has_more tooltip, no fabricated totals. Errors/stale feedback/cache warnings remain text; Tables/Views grouping names remain meaningful.
+- [x] Icon-led local verification: 74 headless, 106 simulated UI and four Python tests passed, plus formatting/lint/build/bundle checks. Current hosted CI and native visual/accessibility remain separate gates. Historical credential fix `9b3d3d8` passed all five jobs in run 37212641100. See [testing](testing.md#icon-led-chrome-revision).
+
 ## Next read-workflow slices, in order
 
 1. [ ] Column resizing and bounded cell inspection/copy, with keyboard/focus and value-fidelity tests. These are next, not already done.
@@ -75,7 +82,7 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 
 ## Remaining platform and release work
 
-- [ ] Verify all five CI jobs on the actual next main push. Historical run 37192402473 failed the Windows fixture; fix `3c4fdae` passed all five jobs in run 37194669634. Compact-tree `8dc3d27` passed run 37198333660 and metadata `4c8af09` passed run 37201696519; theme `0ca0221` passed all five jobs in run 37204370849. Current wide-grid needs its own run. Live database and generated Keychain reruns are not required for this rendering/shared-snapshot-only change; their historical evidence remains preserved.
+- [ ] Verify all five CI jobs on the actual next main push. Historical run 37192402473 failed the Windows fixture; fix `3c4fdae` passed all five jobs in run 37194669634. Compact-tree `8dc3d27` passed run 37198333660 and metadata `4c8af09` passed run 37201696519; theme `0ca0221` passed all five jobs in run 37204370849. Credential fix `9b3d3d8` passed all five jobs in [run 37212641100](https://github.com/yan-ad/dalan/actions/runs/37212641100). The current icon-led revision needs its own run. Live database and generated Keychain reruns are not required for this UI-only change; their historical evidence remains preserved.
 - [ ] Native macOS source/browse/sort/save-picker keyboard and error/cancel interaction, visual review, VoiceOver and scaled text. Simulated tests do not close these gates.
 - [ ] Broader MySQL/MariaDB auth/TLS/server matrix and positive trusted HTTPS proxy fixture.
 - [ ] PostgreSQL adapter and workflow slice; Redis engine-native key/type/TTL/binary workflows. Neither adapter is working yet.
