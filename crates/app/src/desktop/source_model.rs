@@ -111,6 +111,7 @@ pub(super) struct SourceModel {
     pub export_busy: bool,
     pub export_feedback: Option<String>,
     passwords: HashMap<String, String>,
+    secret_store: Arc<dyn SecretStore>,
     filter: Option<TableFilter>,
     generation: u64,
     operation: Option<AbortHandle>,
@@ -208,6 +209,7 @@ impl SourceModel {
         let cache = self.schema_cache.clone();
         let cache_admission = self.cache_admission.clone();
         let session = self.passwords.get(&id).cloned();
+        let secret_store = self.secret_store.clone();
         self.tree.expanded_sources.insert(id.clone());
         self.run_catalog(
             TreeKey::Source(id.clone()),
@@ -233,7 +235,7 @@ impl SourceModel {
                     );
                     None
                 };
-                let password = Self::resolve_password(&profile, session).await?;
+                let password = Self::resolve_password(&profile, session, secret_store).await?;
                 let snapshot = discover_catalog(&profile, &password).await?;
                 let fetched_at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)?
@@ -417,10 +419,11 @@ impl SourceModel {
             return;
         }
         let session = self.passwords.get(&source).cloned();
+        let secret_store = self.secret_store.clone();
         self.run_catalog(
             key,
             async move {
-                let password = Self::resolve_password(&profile, session).await?;
+                let password = Self::resolve_password(&profile, session, secret_store).await?;
                 let tables = dalan_drivers::tables(&profile, &password, &database).await?;
                 Ok((tables, password))
             },
@@ -615,6 +618,7 @@ impl SourceModel {
             export_busy: false,
             export_feedback: None,
             passwords: HashMap::new(),
+            secret_store: Arc::new(NativeSecretStore),
             filter: None,
             generation: 0,
             operation: None,
@@ -772,12 +776,28 @@ impl SourceModel {
         if profile.save_password && !self.passwords.contains_key(&profile.id) {
             let id = profile.id.clone();
             self.form_busy = true;
-            self.run(async move { tokio::task::spawn_blocking(move || NativeSecretStore.get(&id)).await? }, cx,
-                |this, result, cx| { this.form_busy = false; match result {
-                    Ok(Some(password)) => { if let Some(profile) = &this.form_profile { this.passwords.insert(profile.id.clone(), password); } this.form_generation += 1; },
-                    Ok(None) => this.form_feedback = Some("Saved Keychain password is missing; enter it again.".into()),
-                    Err(error) => this.form_feedback = Some(error.to_string()),
-                }; cx.notify(); });
+            let store = self.secret_store.clone();
+            self.run(
+                async move { tokio::task::spawn_blocking(move || store.get(&id)).await? },
+                cx,
+                |this, result, cx| {
+                    this.form_busy = false;
+                    match result {
+                        Ok(Some(password)) => {
+                            if let Some(profile) = &this.form_profile {
+                                this.passwords.insert(profile.id.clone(), password);
+                            }
+                            this.form_generation += 1;
+                        }
+                        Ok(None) => {
+                            this.form_feedback =
+                                Some("Saved Keychain password is missing; enter it again.".into())
+                        }
+                        Err(error) => this.form_feedback = Some(error.to_string()),
+                    };
+                    cx.notify();
+                },
+            );
         }
         cx.notify();
     }
@@ -924,13 +944,17 @@ impl SourceModel {
         self.previous_offsets.clear();
     }
 
-    async fn resolve_password(profile: &SourceProfile, session: Option<String>) -> Result<String> {
+    async fn resolve_password(
+        profile: &SourceProfile,
+        session: Option<String>,
+        store: Arc<dyn SecretStore>,
+    ) -> Result<String> {
         if let Some(password) = session {
             return Ok(password);
         }
         if profile.save_password {
             let id = profile.id.clone();
-            tokio::task::spawn_blocking(move || NativeSecretStore.get(&id))
+            tokio::task::spawn_blocking(move || store.get(&id))
                 .await??
                 .ok_or_else(|| {
                     anyhow!("Keychain password is missing. Edit this source to enter it again.")
@@ -963,7 +987,9 @@ impl SourceModel {
         self.invalidate();
         self.busy = true;
         self.error = None;
-        let password = self.password(&profile.id);
+        let id = profile.id.clone();
+        let session = self.passwords.get(&id).cloned();
+        let secret_store = self.secret_store.clone();
         let request = BrowseRequest {
             database,
             table,
@@ -973,12 +999,24 @@ impl SourceModel {
             limit: 100,
         };
         self.run(
-            async move { dalan_drivers::browse(&profile, &password, &request).await },
+            async move {
+                let password = Self::resolve_password(&profile, session, secret_store).await?;
+                let page = dalan_drivers::browse(&profile, &password, &request).await;
+                // Once macOS authorizes retrieval, keep it for this session even
+                // if the database subsequently fails. Do not prompt on every retry.
+                Ok((password, page))
+            },
             cx,
-            |this, result, cx| {
+            move |this, result, cx| {
                 this.busy = false;
                 match result {
-                    Ok(page) => this.page = Some(Arc::new(page)),
+                    Ok((password, page)) => {
+                        this.passwords.insert(id, password);
+                        match page {
+                            Ok(page) => this.page = Some(Arc::new(page)),
+                            Err(error) => this.error = Some(error.to_string()),
+                        }
+                    }
                     Err(error) => this.error = Some(error.to_string()),
                 };
                 cx.notify();
@@ -2224,5 +2262,176 @@ mod tests {
         );
         let json = std::fs::read_to_string(directory.0.join("sources.json")).unwrap();
         assert!(!json.contains("session-only-fixture"));
+    }
+    struct TestPasswordStore {
+        value: Option<String>,
+        deny: bool,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    impl SecretStore for TestPasswordStore {
+        fn get(&self, _: &str) -> Result<Option<String>> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.deny {
+                return Err(anyhow!("Keychain permission denied (test)"));
+            }
+            Ok(self.value.clone())
+        }
+        fn set(&self, _: &str, _: &str) -> Result<()> {
+            panic!("A read must not write credentials")
+        }
+        fn delete(&self, _: &str) -> Result<()> {
+            panic!("A read must not remove credentials")
+        }
+    }
+
+    #[test]
+    fn credential_resolution_prefers_session_and_does_not_persist_unchecked_passwords() {
+        let store = Arc::new(TestPasswordStore {
+            value: Some("saved-fixture".into()),
+            deny: false,
+            reads: Default::default(),
+        });
+        let mut profile = SourceProfile {
+            save_password: true,
+            ..Default::default()
+        };
+        runtime().block_on(async {
+            assert_eq!(
+                SourceModel::resolve_password(
+                    &profile,
+                    Some("session-fixture".into()),
+                    store.clone()
+                )
+                .await
+                .unwrap(),
+                "session-fixture"
+            );
+            assert_eq!(
+                SourceModel::resolve_password(&profile, None, store.clone())
+                    .await
+                    .unwrap(),
+                "saved-fixture"
+            );
+            profile.save_password = false;
+            assert_eq!(
+                SourceModel::resolve_password(&profile, None, store.clone())
+                    .await
+                    .unwrap(),
+                ""
+            );
+        });
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[gpui::test]
+    fn cached_table_load_reads_saved_password_without_settings_and_reuses_it(
+        cx: &mut TestAppContext,
+    ) {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let profile = SourceProfile {
+            host: "127.0.0.1".into(),
+            port: server.local_addr().unwrap().port(),
+            save_password: true,
+            tls: dalan_drivers::TlsMode::Disabled,
+            ..Default::default()
+        };
+        let id = profile.id.clone();
+        let store = Arc::new(TestPasswordStore {
+            value: Some("saved-fixture".into()),
+            deny: false,
+            reads: Default::default(),
+        });
+        let model = cx.new(|_| {
+            let mut model = SourceModel::for_tests(vec![profile]);
+            model.secret_store = store.clone();
+            model
+                .tree
+                .databases
+                .insert(id.clone(), vec!["offline".into()]);
+            model.tree.tables.insert(
+                (id.clone(), "offline".into()),
+                vec![TableInfo {
+                    name: "items".into(),
+                    kind: "BASE TABLE".into(),
+                }],
+            );
+            model
+        });
+        let mut connections = 0;
+        for _ in 0..2 {
+            model.update(cx, |model, cx| {
+                model.open_tree_table(id.clone(), "offline".into(), "items".into(), cx)
+            });
+            for _ in 0..200 {
+                cx.run_until_parked();
+                if let Ok((peer, _)) = server.accept() {
+                    connections += 1;
+                    drop(peer);
+                }
+                if !model.read_with(cx, |model, _| model.busy) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            model.read_with(cx, |model, _| {
+                assert!(!model.busy && !model.form_open);
+                assert_eq!(model.password(&id), "saved-fixture");
+                assert!(model.error.is_some(), "Fixture closes before greeting");
+                assert_eq!(model.selected_table.as_deref(), Some("items"));
+            });
+        }
+        assert_eq!(connections, 2);
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[gpui::test]
+    fn denied_or_missing_saved_password_stops_before_database_login(cx: &mut TestAppContext) {
+        for deny in [true, false] {
+            let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            server.set_nonblocking(true).unwrap();
+            let profile = SourceProfile {
+                host: "127.0.0.1".into(),
+                port: server.local_addr().unwrap().port(),
+                save_password: true,
+                ..Default::default()
+            };
+            let id = profile.id.clone();
+            let store = Arc::new(TestPasswordStore {
+                value: None,
+                deny,
+                reads: Default::default(),
+            });
+            let model = cx.new(|_| {
+                let mut model = SourceModel::for_tests(vec![profile]);
+                model.secret_store = store.clone();
+                model.selected_source = Some(id.clone());
+                model.selected_database = Some("offline".into());
+                model.selected_table = Some("items".into());
+                model
+            });
+            model.update(cx, |model, cx| model.load_page(0, cx));
+            for _ in 0..100 {
+                cx.run_until_parked();
+                if !model.read_with(cx, |model, _| model.busy) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert_eq!(
+                server.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            model.read_with(cx, |model, _| {
+                assert!(!model.busy && !model.form_open);
+                assert!(model.error.as_ref().unwrap().contains(if deny {
+                    "permission denied"
+                } else {
+                    "missing"
+                }));
+                assert!(!model.passwords.contains_key(&id));
+            });
+            assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
     }
 }

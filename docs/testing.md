@@ -1,5 +1,11 @@
 # Test strategy and release evidence
 
+## Saved credentials on cached-table opening
+
+Fixed a cached-catalog path that previously sent an empty password when no in-memory password had been loaded. Table browsing now uses lazy credential resolution before connecting and retains the retrieved password for the session. Three regressions cover session-first resolution, cached table opening without settings and one credential read across retries, and denied/missing credentials producing no database connection. Tests use an isolated credential-store substitute and loopback endpoints, not user credentials.
+
+This revision passed 74 headless Rust tests, 102 simulated UI tests and four Python bundle tests, formatting, both strict Clippy paths, debug bundle build, plist lint and signature checks. Native Keychain authorization dialogs and live database fixtures were not rerun. macOS may require authorization, particularly for rebuilt ad-hoc signed binaries; the fix removes the settings detour, not OS security prompts. Hosted CI requires this revision's own run.
+
 Status: headless and simulated UI tests exist, plus verified disposable MySQL/MariaDB live fixtures. Current recorded suites and generated native Keychain validation passed as detailed below. Agent transport, full release and actual accessibility suites remain future work.
 
 ## Wide-grid performance revision
