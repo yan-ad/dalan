@@ -137,3 +137,92 @@ fn assert_fixture(database: &dalan_drivers::DatabaseCatalog) {
             .all(|pair| pair[0].name <= pair[1].name)
     );
 }
+
+/// Native read-only console smoke coverage; no SQL fixture mutations.
+pub async fn queries(
+    profile: &SourceProfile,
+    password: &str,
+    base: &BrowseRequest,
+) -> anyhow::Result<()> {
+    use dalan_drivers::{CellValue, QueryRequest, execute_read_only};
+    let mut scoped = profile.clone();
+    scoped.database = Some(base.database.clone());
+    let table = format!("`{}`", base.table.replace('`', "``"));
+    let request = QueryRequest {
+        sql: format!(
+            "SELECT id, name, price, big_number, payload, raw_data FROM {table} ORDER BY id"
+        ),
+        limit: 2,
+    };
+    let result = execute_read_only(&scoped, password, &request).await?;
+    assert_eq!(result.page.rows.len(), 2);
+    assert_eq!(result.page.columns.len(), 6);
+    assert!(result.page.has_more);
+    assert_eq!(result.page.next_offset, None);
+    assert!(!result.warnings.is_empty());
+    assert_eq!(result.page.rows[0][0], CellValue::Number("1".into()));
+    assert_eq!(result.page.rows[0][1], CellValue::Text("Alice".into()));
+    assert_eq!(
+        result.page.rows[0][2],
+        CellValue::Number("12.345678901234567890".into())
+    );
+    assert_eq!(
+        result.page.rows[0][3],
+        CellValue::Number("18446744073709551615".into())
+    );
+    assert!(matches!(&result.page.rows[0][4], CellValue::Text(s) if s.contains("true")));
+    assert_eq!(
+        result.page.rows[0][5],
+        CellValue::Binary("0x414200ff".into())
+    );
+    for (sql, count) in [
+        (
+            format!("WITH sample AS (SELECT id FROM {table}) SELECT COUNT(*) AS total FROM sample"),
+            "3",
+        ),
+        ("SELECT 1 AS n UNION ALL SELECT 2".into(), "1"),
+        ("SELECT 'a;b' AS literal;".into(), "a;b"),
+    ] {
+        let result =
+            execute_read_only(&scoped, password, &QueryRequest { sql, limit: 100 }).await?;
+        assert!(!result.page.has_more);
+        assert_eq!(result.page.next_offset, None);
+        assert_eq!(result.page.rows[0][0].display(), count);
+    }
+    let capped = execute_read_only(
+        &scoped,
+        password,
+        &QueryRequest {
+            sql: "SELECT REPEAT('x', 5000)".into(),
+            limit: 100,
+        },
+    )
+    .await;
+    // REPEAT is intentionally outside the initial function allowlist.
+    assert!(capped.is_err());
+    let truncated = execute_read_only(
+        &scoped,
+        password,
+        &QueryRequest {
+            sql: format!("SELECT '{}' AS long_cell", "x".repeat(5000)),
+            limit: 100,
+        },
+    )
+    .await?;
+    assert!(truncated.page.truncated);
+    assert_eq!(truncated.page.rows[0][0].display().len(), 4096);
+    // Invalid input fails before opening a connection, regardless of credentials.
+    scoped.host = "invalid.invalid".into();
+    let error = execute_read_only(
+        &scoped,
+        password,
+        &QueryRequest {
+            sql: "DELETE FROM contact".into(),
+            limit: 100,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("Only a SELECT query"));
+    Ok(())
+}

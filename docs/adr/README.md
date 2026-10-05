@@ -7,3 +7,4 @@ Records separate user constraints from provisional engineering choices. Change a
 | [0001: Workspace and platform staging](0001-workspace-and-platforms.md) | Scaffold adopted; platform rollout required by user |
 | [0002: ACP-only AI](0002-acp-only-ai.md) | ACP-only required; initial integration safety choices proposed |
 | [0003: Engine adapters](0003-engine-adapters.md) | First-release scope required; dependency choices proposed |
+| [0004: Workspace tabs and read-only consoles](0004-workspace-tabs-and-read-only-consoles.md) | Accepted; implemented experimental MySQL/MariaDB slice, validation gates remain |

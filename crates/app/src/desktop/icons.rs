@@ -28,6 +28,10 @@ pub enum Icon {
     Loading,
     ReadOnly,
     Previous,
+    Query,
+    Play,
+    Stop,
+    Close,
 }
 
 impl Icon {
@@ -57,6 +61,10 @@ impl Icon {
             Self::Loading => "icons/loader-circle.svg",
             Self::ReadOnly => "icons/lock-keyhole.svg",
             Self::Previous => "icons/chevron-left.svg",
+            Self::Query => "icons/square-code.svg",
+            Self::Play => "icons/play.svg",
+            Self::Stop => "icons/circle-stop.svg",
+            Self::Close => "icons/x.svg",
         }
     }
 }
@@ -64,6 +72,19 @@ impl Icon {
 // Embedded assets work independently of the process's working directory and
 // require neither a runtime download nor an external icon/font dependency.
 const ASSETS: &[(&str, &[u8])] = &[
+    (
+        "icons/square-code.svg",
+        include_bytes!("../../assets/icons/square-code.svg"),
+    ),
+    (
+        "icons/play.svg",
+        include_bytes!("../../assets/icons/play.svg"),
+    ),
+    (
+        "icons/circle-stop.svg",
+        include_bytes!("../../assets/icons/circle-stop.svg"),
+    ),
+    ("icons/x.svg", include_bytes!("../../assets/icons/x.svg")),
     (
         "icons/chevron-right.svg",
         include_bytes!("../../assets/icons/chevron-right.svg"),
@@ -199,10 +220,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_twentyfour_embedded_icons_are_listed_and_loaded() {
+    fn all_twentyeight_embedded_icons_are_listed_and_loaded() {
         let assets = IconAssets;
         let paths = assets.list("icons/").unwrap();
-        assert_eq!(paths.len(), 24);
+        assert_eq!(paths.len(), 28);
         for path in paths {
             let bytes = assets.load(path.as_ref()).unwrap().unwrap();
             assert!(matches!(bytes, Cow::Borrowed(_)));
@@ -300,6 +321,38 @@ mod tests {
                 Icon::Remove,
                 "icons/trash-2.svg",
                 include_bytes!("../../assets/icons/trash-2.svg").as_slice(),
+            ),
+        ] {
+            assert_eq!(kind.path(), path);
+            assert_eq!(
+                IconAssets.load(kind.path()).unwrap().unwrap().as_ref(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn console_icons_load_the_expected_assets() {
+        for (kind, path, expected) in [
+            (
+                Icon::Query,
+                "icons/square-code.svg",
+                include_bytes!("../../assets/icons/square-code.svg").as_slice(),
+            ),
+            (
+                Icon::Play,
+                "icons/play.svg",
+                include_bytes!("../../assets/icons/play.svg").as_slice(),
+            ),
+            (
+                Icon::Stop,
+                "icons/circle-stop.svg",
+                include_bytes!("../../assets/icons/circle-stop.svg").as_slice(),
+            ),
+            (
+                Icon::Close,
+                "icons/x.svg",
+                include_bytes!("../../assets/icons/x.svg").as_slice(),
             ),
         ] {
             assert_eq!(kind.path(), path);

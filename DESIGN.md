@@ -8,13 +8,13 @@ The user explicitly rejected DataGrip's visual style and selected **Zed-like com
 
 Reason: database workflows should be familiar without inheriting another product's visual clutter.
 
-The workspace is database-only: one collapsible/resizable Database Explorer, a browser/read-only table view, a separate source setup window, and an optional database-focused ACP panel. Query consoles, SQL scripts and database import/export remain future scope; generic Files, code viewer, Git, build tools, terminal and plugin/toolbox chrome are excluded. ACP honestly says **Not connected**, with no transport, agent launch, prompt or provider settings.
+The workspace is database-only: one collapsible/resizable Database Explorer, a browser/read-only table view, a separate source setup window, and an optional database-focused ACP panel. Read-only query consoles and loaded-page CSV are implemented; persistent SQL scripts and broader database import/export remain future scope; generic Files, code viewer, Git, build tools, terminal and plugin/toolbox chrome are excluded. ACP honestly says **Not connected**, with no transport, agent launch, prompt or provider settings.
 
 Reason: quiet chrome leaves room for real database context rather than inactive tools.
 
 ## Carbonfox provenance and tokens
 
-The exact selected variant is **Carbonfox - opaque**, from `themes/nvim-nightfox.json` in [cange/nightfox.zed at `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`](https://github.com/cange/nightfox.zed/blob/3511a6f1f665455c70a24d14fd5d2de0eaab58fa/themes/nvim-nightfox.json). The complete variant is retained in [carbonfox-opaque.json](crates/app/assets/themes/carbonfox-opaque.json), including syntax/players, with provenance metadata. Runtime UI uses compiled [theme constants](crates/app/src/desktop/theme.rs), not a JSON theme loader or a query editor.
+The exact selected variant is **Carbonfox - opaque**, from `themes/nvim-nightfox.json` in [cange/nightfox.zed at `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`](https://github.com/cange/nightfox.zed/blob/3511a6f1f665455c70a24d14fd5d2de0eaab58fa/themes/nvim-nightfox.json). The complete variant is retained in [carbonfox-opaque.json](crates/app/assets/themes/carbonfox-opaque.json), including syntax/players, with provenance metadata. Runtime UI uses compiled [theme constants](crates/app/src/desktop/theme.rs), not a JSON theme loader. The query editor uses the same opaque UI tokens without syntax highlighting.
 
 Both full MIT notices are retained: the Zed port, copyright 2024 Christian Angermann, and original Nightfox palette, copyright 2021 James Simpson. Original-project license revision `4dacd3f0185a2227bdf3b6c0975a8f0bf87cac9a` is a separate pin, not a claim about the original version used by the port. See [theme provenance and licenses](crates/app/assets/themes/README.md) and [third-party notices](THIRD_PARTY_NOTICES.md). Neither selects Dalan's project license.
 
@@ -23,7 +23,7 @@ Reason: exact provenance makes the permitted palette reproducible without borrow
 | Shared token | Opaque RGB | Role |
 | --- | --- | --- |
 | CHROME / PANEL / SURFACE | `#0c0c0c` | Flush window chrome and panes |
-| BACKGROUND / INPUT_BG | `#161616` | Input/editor-background reference; no query editor yet |
+| BACKGROUND / INPUT_BG | `#161616` | Input and query-editor background |
 | HEADER | `#1c1c1c` | Compact toolbar/header |
 | HOVER | `#2a2a2a` | Neutral pointer feedback |
 | SELECTION / TEXT_SELECTION | `#242424` | Neutral opaque selection |
@@ -68,7 +68,7 @@ Source setup remains one normal **Data Sources · Dalan** window, initial 1040 �
 
 Reason: tighter spacing must not shrink controls or change familiar source workflows.
 
-System UI fonts require no external font assets. No monospace font or SQL editor is implemented. Twenty-four pinned Lucide utility SVGs are dynamically colored through existing rendering: the previous nineteen plus hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. No generated brand assets or app icon are added. [Asset provenance](crates/app/assets/README.md) retains complete ISC/Feather MIT attribution; Carbonfox and SQLite notices and bundle-resource contracts are unchanged.
+System UI fonts require no external font assets. The in-memory SQL editor uses system Menlo at 13 px, 22 px lines and a 44 px gutter, with visible-line shaping. Twenty-eight pinned Lucide utility SVGs are dynamically colored through existing rendering: the previous nineteen plus hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. No generated brand assets or app icon are added. [Asset provenance](crates/app/assets/README.md) retains complete ISC/Feather MIT attribution; Carbonfox and SQLite notices and bundle-resource contracts are unchanged.
 
 Reason: existing native typography and permitted utility icons are sufficient for this slice.
 
@@ -101,3 +101,11 @@ With saved sources but no selected/loaded table, center a small table icon and *
 This UI-only slice preserves virtual tree/grid rendering, `Arc<TablePage>`, cached rows and connection/selection/credential behavior. Historical credential fix `9b3d3d8` passed all five jobs in [run 37212641100](https://github.com/yan-ad/dalan/actions/runs/37212641100). Expected current totals are 74 headless, 106 simulated UI and four Python tests, **pending owner-run validation and this revision's own main CI**. No native screenshot, manual/VoiceOver or performance pass is claimed; capture was previously blocked. Existing native source values must not become documentation fixtures or published screenshots.
 
 [Overview](README.md) · [UI foundation](docs/ui-foundation.md) · [Architecture](docs/architecture.md) · [Development](docs/development.md) · [Testing](docs/testing.md) · [Feature checklist](docs/feature-checklist.md)
+
+## Workspace tabs and console design
+
+The database workspace now retains one model/view per tab, up to 32 total. Source UUID/database/table identity deduplicates table tabs; consoles use unique session identities and monotonic Console N names. The 28 px flat Carbonfox strip uses table/query icons, readable name, close x, nonempty-draft dot and an in-flight indicator. These carry actual state, not decorative controls copied from DataGrip. Closing the active tab selects the left neighbor, or the first remaining tab; closing an inactive tab does not change selection.
+
+The explorer adds a seventh New Query Console icon and horizontal toolbar scrolling at its 200 px minimum width. The strip plus uses active-tab context; explorer creation uses explorer-selected source/database or the source profile default, otherwise No default database. A cached-name database chooser performs no discovery itself. No native New Query Console menu entry is claimed. Cmd-W is tab close with an active workspace tab; native OS window close remains unchanged. The empty-workspace fallback belongs to the shell close-window handler, not a swallowed no-op.
+
+The console editor is database-only text entry with native GPUI input/IME and clipboard, not a generic code/file viewer. It has 64 KiB text and 100 undo-state bounds, four-space Tab, Shift-Tab unindent and newline autoindent. Run/Cancel are play/stop icons with shortcuts; there is no syntax highlighting, completion, saved history, cursor-statement splitting, write control or persistent transaction UI. Nonempty drafts always require close confirmation, even after successful execution; Keep Open has default focus and Enter/Space activation. SQL and results stay in memory. See [guide](docs/query-consoles.md) and [ADR](docs/adr/0004-workspace-tabs-and-read-only-consoles.md).

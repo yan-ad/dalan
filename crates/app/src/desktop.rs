@@ -2,11 +2,13 @@ mod about;
 mod data_grid;
 mod icons;
 mod input;
+mod query_console;
 mod source_browser;
 mod source_dialog;
 mod source_form;
 mod source_model;
 mod source_workspace;
+mod sql_editor;
 mod theme;
 
 use std::collections::HashMap;
@@ -88,6 +90,8 @@ struct Shell {
     drag: Option<DragState>,
     explorer: gpui::Entity<source_browser::SourceExplorer>,
     workspace: gpui::Entity<source_workspace::SourceWorkspace>,
+    #[cfg(all(test, feature = "ui-tests"))]
+    sources: gpui::Entity<source_model::SourceModel>,
 }
 
 impl Shell {
@@ -122,7 +126,7 @@ impl Shell {
         #[cfg(not(all(test, feature = "ui-tests")))]
         let model = cx.new(source_model::SourceModel::new);
         let explorer = cx.new(|cx| source_browser::SourceExplorer::new(model.clone(), cx));
-        let workspace = cx.new(|cx| source_workspace::SourceWorkspace::new(model, cx));
+        let workspace = cx.new(|cx| source_workspace::SourceWorkspace::new(model.clone(), cx));
         Self {
             state: ShellState::default(),
             root_focus,
@@ -131,6 +135,8 @@ impl Shell {
             drag: None,
             explorer,
             workspace,
+            #[cfg(all(test, feature = "ui-tests"))]
+            sources: model,
         }
     }
 
@@ -431,6 +437,12 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ResetLayout, window, cx| {
                 this.apply(Control::ResetLayout, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &source_workspace::NewConsole, _, cx| {
+                    this.workspace
+                        .update(cx, |workspace, cx| workspace.new_console(cx));
+                }),
+            )
             .on_action(|_: &CloseWindow, window, _| window.remove_window())
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 if let Some(drag) = this.drag {
@@ -528,6 +540,9 @@ impl Render for Shell {
 
 fn bind_keys(cx: &mut App) {
     input::bind_keys(cx);
+    sql_editor::bind_keys(cx);
+    query_console::bind_keys(cx);
+    source_workspace::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("tab", NextFocus, Some("Shell")),
         KeyBinding::new("shift-tab", PreviousFocus, Some("Shell")),

@@ -1,4 +1,4 @@
-//! Opt-in, read-only smoke tests. Never create/drop fixtures or execute user SQL.
+//! Opt-in, read-only smoke tests. Never create/drop fixtures; console SQL is SELECT-only.
 mod common;
 
 use dalan_drivers::{
@@ -88,6 +88,7 @@ async fn smoke(prefix: &str, mut profile: SourceProfile, password: String) -> an
         ..BrowseRequest::default()
     };
     common::sorted_pages(&profile, &password, &request).await?;
+    common::queries(&profile, &password, &request).await?;
     let page = browse(&profile, &password, &request).await?;
     assert_eq!(page.rows.len(), 2);
     assert!(page.has_more);

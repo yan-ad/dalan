@@ -6,7 +6,7 @@ MySQL/MariaDB-first is now explicit user direction and supersedes the earlier Po
 
 ## One-by-one workflow completion
 
-Track confirmed experimental completions and remaining gates in the [feature checklist](feature-checklist.md). Current priority is zero-version workflow parity one slice at a time, not a claim of DataGrip/Compass parity or a reason to overscope. After sorting and loaded CSV, improve column resizing and cell inspection/copy. Then scope a read-oriented query console with a new ADR for dialect-aware parser boundaries, cancellation and session ownership before SQL editor completion/history. Guarded transactions and staged writes follow later. Commit/push is authorized by the user, but remains an execution gate until the primary workflow performs and verifies it.
+Track confirmed experimental completions and remaining gates in the [feature checklist](feature-checklist.md). Current priority is zero-version workflow parity one slice at a time, not a claim of DataGrip/Compass parity or a reason to overscope. After sorting and loaded CSV, improve column resizing and cell inspection/copy. The scoped read-only query console and [ADR 0004](adr/0004-workspace-tabs-and-read-only-consoles.md) are now implemented; SQL syntax highlighting/completion/history remain next editor slices, with explicit sensitive-text retention and execution semantics. Guarded transactions and staged writes follow later. Commit/push is authorized by the user, but remains an execution gate until the primary workflow performs and verifies it.
 
 ## Proposed sequence and exit criteria
 
@@ -30,7 +30,7 @@ Implemented experimentally: stable UUID profiles in version 1 JSON without passw
 
 Verified on MySQL 8.4.11 and MariaDB 11.4.13: six direct/HTTP CONNECT smoke tests, ten verified database TLS/proxy rejection tests, and six SSH reads/host-key/identity rejection tests. Native Keychain generated-item validation passed. Historical source-slice counts were 37 headless and 27 simulated UI tests, plus four bundle tests. Latest expected inventory is 48 headless and 42 simulated UI tests, pending final rerun confirmation. The 22 live cases were rerun with sorting on actual transport routes. Positive system-trusted HTTPS proxy success remains unverified; see [testing](testing.md).
 
-Remaining: wider auth/TLS/capability matrix, native keyboard/accessibility checks, SQL console/parser, transaction affinity, full-query/whole-table streaming export, staged edits, uncertain outcomes and broader cancellation evidence. Read-only transactions do not replace least-privilege roles. No arbitrary SQL or writes are implemented.
+Remaining: wider auth/TLS/capability matrix, native keyboard/accessibility checks, broader SQL dialect coverage, transaction affinity, full-query/whole-table streaming export, staged edits, uncertain outcomes and broader cancellation evidence. Read-only transactions do not replace least-privilege roles. A restricted SELECT console is implemented; arbitrary SQL and writes are not.
 
 Exit: independently verified full-release workflows on both selected server matrices, with unsupported capabilities explicit. An experimental read slice does not close this phase.
 
@@ -107,6 +107,14 @@ Other drivers, named HTTP query gateways, expanded Redis topologies, administrat
 
 ## Decisions needed before commitment
 
-License and visual identity; minimum macOS and Intel gate; server matrix; SQL parser/completion spike result; GPUI pre-1.0 upgrade policy and accessibility findings; Redis command and payload bounds; trusted-CA/SSH/HTTPS positive-path evidence; post-release track allocation. The app name `Dalan` is confirmed. Performance numbers in the product plan are proposed measurement targets, not existing results.
+License and visual identity; minimum macOS and Intel gate; server matrix; broader SQL parser coverage/completion scope; GPUI pre-1.0 upgrade policy and accessibility findings; Redis command and payload bounds; trusted-CA/SSH/HTTPS positive-path evidence; post-release track allocation. The app name `Dalan` is confirmed. Performance numbers in the product plan are proposed measurement targets, not existing results.
 
 [Overview](../README.md) · [Product plan](product-plan.md) · [UX](ux.md) · [Design](../DESIGN.md) · [Architecture](architecture.md) · [Drivers](drivers.md) · [ACP](acp.md) · [Security](security.md) · [Development](development.md) · [Testing](testing.md) · [ADRs](adr/README.md)
+
+## Completed multi-tab / read-only-console slice
+
+Qualified table deduplication, 32-tab capacity including uniquely numbered consoles, independent tab models/requests/filter/grid-scroll/results, neighboring close selection and keyboard navigation are implemented. The 28 px Carbonfox strip and seventh explorer query icon remain compact database chrome, not DataGrip styling or Files/Git UI. The native multiline editor supports selection/IME/clipboard/bounded undo; Run executes selected text or the whole draft, never automatically a cursor statement.
+
+The console backend is a guarded MySQL-dialect SELECT AST subset with fresh read-only sessions, curated functions, finite complexity/result bounds, 20-second server/client limits and local cancellation. No write, session/autocommit control, persistent transaction, query pagination or full-query export is shipped. Drafts/results remain in memory with nonempty-draft close confirmation. See [guide](query-consoles.md), [ADR](adr/0004-workspace-tabs-and-read-only-consoles.md) and [testing](testing.md#workspace-tabs-and-query-consoles).
+
+Next scope remains column resizing/cell inspection-copy, syntax highlighting, completion and explicitly designed history/retention; saved SQL scripts and current-statement/script execution need separate semantics. Dedicated transaction affinity, guarded writes and streaming export remain later phases. Historical `cf24e48` passed all five jobs in run 37215973701; the actual new main run and native review are still gates, not presumed green.

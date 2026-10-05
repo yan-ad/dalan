@@ -143,10 +143,19 @@ impl SourceExplorer {
 
     fn select_key(&mut self, key: TreeKey, cx: &mut Context<Self>) {
         let source = key.source().to_owned();
+        let database = match &key {
+            TreeKey::Source(_) => None,
+            TreeKey::Database { database, .. }
+            | TreeKey::Group { database, .. }
+            | TreeKey::Table { database, .. } => Some(database.clone()),
+        };
         self.active_key = Some(key);
         self.model.update(cx, |model, cx| {
-            if model.explorer_source.as_ref() != Some(&source) {
+            if model.explorer_source.as_ref() != Some(&source)
+                || model.explorer_database != database
+            {
                 model.explorer_source = Some(source);
+                model.explorer_database = database;
                 cx.notify();
             }
         });
@@ -452,6 +461,8 @@ impl Render for SourceExplorer {
         let disabled = target.is_none_or(|id| !model.profiles.iter().any(|p| &p.id == id))
             || model.busy
             || model.saving;
+        let console_disabled =
+            target.is_none_or(|id| !model.profiles.iter().any(|p| &p.id == id)) || model.saving;
         let refresh_is_disabled = refresh_disabled(model);
         let metadata_notice = model.metadata_notice.clone();
         let saving = model.saving;
@@ -467,6 +478,8 @@ impl Render for SourceExplorer {
             .debug_selector(|| "source-explorer-toolbar".into())
             .flex_shrink_0()
             .h(px(TOOLBAR_HEIGHT))
+            .min_w(px(0.0))
+            .overflow_x_scroll()
             .px(px(6.))
             .flex()
             .items_center()
@@ -524,6 +537,17 @@ impl Render for SourceExplorer {
                 false,
                 cx,
                 |this: &mut Self, cx| this.model.update(cx, |m, cx| m.collapse_tree(cx)),
+            ))
+            .child(toolbar_button(
+                "explorer-new-console",
+                Icon::Query,
+                "New read-only query console (Cmd-Shift-N)",
+                console_disabled,
+                cx,
+                |this: &mut Self, cx| {
+                    this.model
+                        .update(cx, |model, cx| model.request_query_console(cx))
+                },
             ));
         let entries = gpui::uniform_list(
             "source-explorer-scroll",
@@ -1497,11 +1521,11 @@ mod tests {
             assert_eq!(m.cached_at["refresh-guard"], u64::MAX);
             assert_eq!(m.tree.databases["refresh-guard"], ["cached_db"]);
         });
-        // Disabled controls are excluded from tab traversal and ignore activation.
+        // Traversal alone must not select a source or start metadata work.
+        // Activating every other toolbar/tree stop could intentionally connect
+        // a source, so it is not a valid disabled-Refresh regression.
         for _ in 0..8 {
             cx.update(|window, _| window.focus_next());
-            cx.simulate_keystrokes("enter");
-            cx.simulate_keystrokes("space");
             cx.run_until_parked();
         }
         model.update(cx, |m, cx| {

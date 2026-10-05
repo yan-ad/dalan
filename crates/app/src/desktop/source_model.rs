@@ -8,6 +8,7 @@ use anyhow::{Result, anyhow};
 use dalan_app::explorer_tree::{ExplorerTree, TreeKey};
 use dalan_app::schema_cache::{CachedSchema, SchemaCache, connection_identity};
 use dalan_app::source_store::{NativeSecretStore, SecretStore, SourceRepository};
+use dalan_app::workspace_tabs::WorkspaceOpen;
 use dalan_drivers::{
     BrowseRequest, CatalogSnapshot, DatabaseCatalog, SortDirection, SourceProfile, TableFilter,
     TableInfo, TablePage, TableSort, discover_catalog,
@@ -81,6 +82,18 @@ struct RefreshOutcome {
 }
 
 pub(super) struct SourceModel {
+    pub workspace_open: Option<WorkspaceOpen>,
+    pub workspace_open_generation: u64,
+    workspace_routing: bool,
+    pub query_console: bool,
+    pub workspace_invalidated: bool,
+    pub query_sql: String,
+    /// SQL identifying the successfully loaded result page, never an in-flight request.
+    pub query_submitted_sql: Option<String>,
+    pub query_running_sql: Option<String>,
+    pub query_elapsed_ms: Option<u64>,
+    pub query_warnings: Vec<String>,
+    pub query_dirty: bool,
     pub metadata_notice: Option<String>,
     pub cached_at: HashMap<String, u64>,
     pub cached_offline: HashSet<String>,
@@ -100,6 +113,7 @@ pub(super) struct SourceModel {
     pub databases: Vec<String>,
     pub selected_source: Option<String>,
     pub explorer_source: Option<String>,
+    pub explorer_database: Option<String>,
     pending_delete_source: Option<String>,
     pub selected_database: Option<String>,
     pub tables: Vec<TableInfo>,
@@ -111,6 +125,7 @@ pub(super) struct SourceModel {
     pub export_busy: bool,
     pub export_feedback: Option<String>,
     passwords: HashMap<String, String>,
+    shared_passwords: Option<Arc<std::sync::Mutex<HashMap<String, String>>>>,
     secret_store: Arc<dyn SecretStore>,
     filter: Option<TableFilter>,
     generation: u64,
@@ -120,6 +135,304 @@ pub(super) struct SourceModel {
     repository: Option<SourceRepository>,
     storage_ready: bool,
     previous_offsets: Vec<u64>,
+}
+
+impl SourceModel {
+    pub fn enable_workspace_routes(&mut self, _cx: &mut Context<Self>) {
+        self.workspace_routing = true;
+        if self.shared_passwords.is_none() {
+            self.shared_passwords = Some(Arc::new(std::sync::Mutex::new(self.passwords.clone())));
+        }
+    }
+
+    fn session_password(&self, id: &str) -> Option<String> {
+        // A workspace's shared map is authoritative, including removal. Never
+        // fall back to a child's stale local copy after a credential is forgotten.
+        if let Some(shared) = &self.shared_passwords {
+            return shared.lock().ok()?.get(id).cloned();
+        }
+        self.passwords.get(id).cloned()
+    }
+    fn remember_password(&mut self, id: String, password: String) {
+        if let Some(shared) = &self.shared_passwords
+            && let Ok(mut shared) = shared.lock()
+        {
+            shared.insert(id.clone(), password.clone());
+        }
+        self.passwords.insert(id, password);
+    }
+    fn forget_password(&mut self, id: &str) {
+        self.passwords.remove(id);
+        if let Some(shared) = &self.shared_passwords
+            && let Ok(mut shared) = shared.lock()
+        {
+            shared.remove(id);
+        }
+    }
+    pub fn request_query_console(&mut self, cx: &mut Context<Self>) {
+        let Some(source) = self
+            .explorer_source
+            .clone()
+            .or_else(|| self.selected_source.clone())
+        else {
+            self.metadata_notice = Some("Select a datasource to open a query console.".into());
+            cx.notify();
+            return;
+        };
+        let database = if self.explorer_source.as_deref() == Some(&source) {
+            self.explorer_database.clone().or_else(|| {
+                self.profiles
+                    .iter()
+                    .find(|profile| profile.id == source)
+                    .and_then(|profile| profile.database.clone())
+            })
+        } else if self.selected_source.as_deref() == Some(&source) {
+            self.selected_database.clone()
+        } else {
+            None
+        };
+        self.request_console_for(source, database, cx);
+    }
+    pub fn request_console_for(
+        &mut self,
+        source: String,
+        database: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving {
+            return;
+        }
+        let Some(profile) = self.profiles.iter().find(|p| p.id == source) else {
+            return;
+        };
+        if let Some(db) = &database
+            && !self
+                .tree
+                .databases
+                .get(&source)
+                .is_some_and(|dbs| dbs.contains(db))
+            && profile.database.as_ref() != Some(db)
+        {
+            return;
+        }
+        self.workspace_open = Some(WorkspaceOpen::Console { source, database });
+        self.workspace_open_generation += 1;
+        cx.notify();
+    }
+
+    /// Construct a disconnected, independent tab. The UI starts table loading
+    /// only after installing the returned model in a GPUI entity.
+    pub fn fork_for_workspace(&self, request: &WorkspaceOpen) -> Result<Self> {
+        let (source, database, table) = match request {
+            WorkspaceOpen::Table {
+                source,
+                database,
+                table,
+            } => (source, Some(database.clone()), Some(table.clone())),
+            WorkspaceOpen::Console { source, database } => (source, database.clone(), None),
+        };
+        let profile = self
+            .profiles
+            .iter()
+            .find(|p| &p.id == source)
+            .ok_or_else(|| anyhow!("Source is no longer available."))?;
+        if let Some(db) = &database
+            && !self
+                .tree
+                .databases
+                .get(source)
+                .is_some_and(|dbs| dbs.contains(db))
+            && profile.database.as_ref() != Some(db)
+        {
+            return Err(anyhow!("Database is no longer available."));
+        }
+        let tables = database
+            .as_ref()
+            .and_then(|db| self.tree.tables.get(&(source.clone(), db.clone())))
+            .cloned()
+            .unwrap_or_default();
+        if let Some(table) = &table
+            && !tables
+                .iter()
+                .any(|t| &t.name == table && t.kind == "BASE TABLE")
+        {
+            return Err(anyhow!("Table is no longer available."));
+        }
+        let mut child = Self::empty(None);
+        child.profiles = self.profiles.clone();
+        child.secret_store = self.secret_store.clone();
+        if let Some(password) = self.session_password(source) {
+            child.passwords.insert(source.clone(), password);
+        }
+        child.shared_passwords = self.shared_passwords.clone();
+        child.storage_ready = true;
+        child.selected_source = Some(source.clone());
+        child.selected_database = database;
+        child.selected_table = table;
+        child.tables = tables;
+        child.databases = self.tree.databases.get(source).cloned().unwrap_or_default();
+        child.query_console = matches!(request, WorkspaceOpen::Console { .. });
+        Ok(child)
+    }
+
+    /// Cosmetic edits update headers; changed connection settings or removal
+    /// cancel only this tab's worker. The UI may close these invalidated tabs.
+    pub fn sync_workspace_sources(&mut self, profiles: Vec<SourceProfile>, cx: &mut Context<Self>) {
+        let old = self.selected_profile();
+        let new = profiles
+            .iter()
+            .find(|p| Some(&p.id) == self.selected_source.as_ref());
+        let removed = new.is_none();
+        let invalid = match (&old, new) {
+            (Some(old), Some(new)) => {
+                connection_identity(old).ok() != connection_identity(new).ok()
+                    || old.save_password != new.save_password
+            }
+            (Some(_), None) => true,
+            _ => false,
+        };
+        // SourceProfile has no Eq contract; its serializable settings are safe
+        // to compare here (credentials are not stored in profiles).
+        let changed =
+            serde_json::to_value(&self.profiles).ok() != serde_json::to_value(&profiles).ok();
+        self.profiles = profiles;
+        if invalid {
+            self.workspace_invalidated = true;
+            self.invalidate();
+            self.page = None;
+            self.query_submitted_sql = None;
+            self.query_dirty = true;
+            self.query_elapsed_ms = None;
+            self.query_warnings.clear();
+            self.error = Some(
+                if removed {
+                    "Source was removed. Close this tab."
+                } else {
+                    "Source configuration changed. Reopen this tab."
+                }
+                .into(),
+            );
+        }
+        if changed || invalid {
+            cx.notify();
+        }
+    }
+    pub fn set_query_sql(&mut self, sql: String, cx: &mut Context<Self>) {
+        if sql.len() > 64 * 1024 {
+            self.error = Some("SQL draft exceeds the 64 KiB limit.".into());
+            cx.notify();
+            return;
+        }
+        if self.query_sql != sql {
+            self.query_sql = sql;
+            self.query_dirty = self.query_submitted_sql.as_ref() != Some(&self.query_sql);
+            cx.notify();
+        }
+    }
+    pub fn select_console_database(&mut self, database: Option<String>, cx: &mut Context<Self>) {
+        if self.selected_database == database {
+            return;
+        }
+        if database.as_ref().is_some_and(|db| {
+            !self.databases.contains(db)
+                && self
+                    .selected_profile()
+                    .is_none_or(|p| p.database.as_ref() != Some(db))
+        }) {
+            return;
+        }
+        self.invalidate();
+        self.selected_database = database;
+        self.page = None;
+        self.query_submitted_sql = None;
+        self.error = None;
+        self.query_elapsed_ms = None;
+        self.query_warnings.clear();
+        self.query_dirty = true;
+        cx.notify();
+    }
+    pub fn run_query(&mut self, sql: String, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
+        if self.workspace_invalidated {
+            self.error = Some("Source configuration changed or was removed. Copy your draft into a new console before running.".into());
+            cx.notify();
+            return;
+        }
+        // Reject unsafe/invalid SQL before accessing credentials or the network.
+        if let Err(error) = dalan_drivers::validate_read_only(&sql) {
+            self.error = Some(error.to_string());
+            cx.notify();
+            return;
+        }
+        let Some(mut profile) = self.selected_profile() else {
+            self.error = Some("Select a datasource to run a query.".into());
+            cx.notify();
+            return;
+        };
+        // Explicit None permits SELECT 1 / fully-qualified names without silently
+        // inheriting the source profile's default database.
+        profile.database = self.selected_database.clone();
+        let id = profile.id.clone();
+        let session = self.session_password(&id);
+        let secret_store = self.secret_store.clone();
+        self.invalidate();
+        self.busy = true;
+        self.error = None;
+        self.query_running_sql = Some(sql.clone());
+        self.query_dirty = self.query_submitted_sql.as_ref() != Some(&self.query_sql);
+        let request = dalan_drivers::QueryRequest {
+            sql: sql.clone(),
+            limit: 100,
+        };
+        self.run(
+            async move {
+                let password = Self::resolve_password(&profile, session, secret_store).await?;
+                let result = dalan_drivers::execute_read_only(&profile, &password, &request).await;
+                Ok((password, result))
+            },
+            cx,
+            move |this, result, cx| {
+                this.busy = false;
+                this.query_running_sql = None;
+                match result {
+                    Ok((password, result)) => {
+                        this.remember_password(id, password);
+                        match result {
+                            Ok(result) => {
+                                this.finish_query(sql, result);
+                            }
+                            Err(error) => this.error = Some(error.to_string()),
+                        }
+                    }
+                    Err(error) => this.error = Some(error.to_string()),
+                }
+                this.query_dirty = this.query_submitted_sql.as_ref() != Some(&this.query_sql);
+                cx.notify();
+            },
+        );
+        cx.notify();
+    }
+    fn finish_query(&mut self, sql: String, result: dalan_drivers::QueryResult) {
+        self.page = Some(Arc::new(result.page));
+        self.query_submitted_sql = Some(sql);
+        self.query_elapsed_ms = Some(result.elapsed_ms);
+        self.query_warnings = result.warnings;
+        self.query_dirty = self.query_submitted_sql.as_ref() != Some(&self.query_sql);
+    }
+
+    pub fn cancel_query(&mut self, cx: &mut Context<Self>) {
+        if !self.busy {
+            return;
+        }
+        self.invalidate();
+        self.query_dirty = self.query_submitted_sql.as_ref() != Some(&self.query_sql);
+        self.error = Some(
+            "Query cancelled. Client connection closed; server-side stop is not confirmed.".into(),
+        );
+        cx.notify();
+    }
 }
 
 impl Drop for SourceModel {
@@ -208,7 +521,7 @@ impl SourceModel {
         };
         let cache = self.schema_cache.clone();
         let cache_admission = self.cache_admission.clone();
-        let session = self.passwords.get(&id).cloned();
+        let session = self.session_password(&id);
         let secret_store = self.secret_store.clone();
         self.tree.expanded_sources.insert(id.clone());
         self.run_catalog(
@@ -270,7 +583,7 @@ impl SourceModel {
             },
             cx,
             move |this, outcome| {
-                this.passwords.insert(id.clone(), outcome.password);
+                this.remember_password(id.clone(), outcome.password);
                 this.install_snapshot(&id, &outcome.snapshot, outcome.fetched_at, false);
                 this.metadata_notice = outcome.warning;
             },
@@ -418,7 +731,7 @@ impl SourceModel {
             cx.notify();
             return;
         }
-        let session = self.passwords.get(&source).cloned();
+        let session = self.session_password(&source);
         let secret_store = self.secret_store.clone();
         self.run_catalog(
             key,
@@ -429,7 +742,7 @@ impl SourceModel {
             },
             cx,
             move |this, (tables, password)| {
-                this.passwords.insert(source, password);
+                this.remember_password(source, password);
                 this.tree
                     .tables
                     .insert(pair.clone(), tables.into_iter().take(1000).collect());
@@ -491,6 +804,17 @@ impl SourceModel {
         else {
             return;
         };
+        if self.workspace_routing {
+            self.explorer_source = Some(source.clone());
+            self.workspace_open = Some(WorkspaceOpen::Table {
+                source,
+                database,
+                table,
+            });
+            self.workspace_open_generation += 1;
+            cx.notify();
+            return;
+        }
         self.selected_source = Some(source.clone());
         self.explorer_source = Some(source.clone());
         self.databases = self
@@ -507,7 +831,8 @@ impl SourceModel {
 
 impl SourceModel {
     pub fn cycle_sort(&mut self, column: String, cx: &mut Context<Self>) {
-        if self.busy
+        if self.query_console
+            || self.busy
             || self.saving
             || self
                 .page
@@ -589,6 +914,17 @@ impl SourceModel {
 impl SourceModel {
     fn empty(repository: Option<SourceRepository>) -> Self {
         Self {
+            workspace_open: None,
+            workspace_open_generation: 0,
+            workspace_routing: false,
+            query_console: false,
+            workspace_invalidated: false,
+            query_sql: String::new(),
+            query_submitted_sql: None,
+            query_running_sql: None,
+            query_elapsed_ms: None,
+            query_warnings: vec![],
+            query_dirty: false,
             metadata_notice: None,
             cached_at: HashMap::new(),
             cached_offline: HashSet::new(),
@@ -608,6 +944,7 @@ impl SourceModel {
             databases: vec![],
             selected_source: None,
             explorer_source: None,
+            explorer_database: None,
             pending_delete_source: None,
             selected_database: None,
             tables: vec![],
@@ -618,6 +955,7 @@ impl SourceModel {
             export_busy: false,
             export_feedback: None,
             passwords: HashMap::new(),
+            shared_passwords: None,
             secret_store: Arc::new(NativeSecretStore),
             filter: None,
             generation: 0,
@@ -682,6 +1020,7 @@ impl SourceModel {
     }
 
     fn invalidate(&mut self) {
+        self.query_running_sql = None;
         self.generation += 1;
         if let Some(task) = self.operation.take() {
             task.abort();
@@ -717,7 +1056,7 @@ impl SourceModel {
     }
 
     pub fn password(&self, id: &str) -> String {
-        self.passwords.get(id).cloned().unwrap_or_default()
+        self.session_password(id).unwrap_or_default()
     }
 
     pub fn new_source(&mut self, cx: &mut Context<Self>) {
@@ -773,7 +1112,7 @@ impl SourceModel {
         self.form_open = true;
         self.form_profile = Some(profile.clone());
         self.form_feedback = None;
-        if profile.save_password && !self.passwords.contains_key(&profile.id) {
+        if profile.save_password && self.session_password(&profile.id).is_none() {
             let id = profile.id.clone();
             self.form_busy = true;
             let store = self.secret_store.clone();
@@ -785,7 +1124,7 @@ impl SourceModel {
                     match result {
                         Ok(Some(password)) => {
                             if let Some(profile) = &this.form_profile {
-                                this.passwords.insert(profile.id.clone(), password);
+                                this.remember_password(profile.id.clone(), password);
                             }
                             this.form_generation += 1;
                         }
@@ -911,7 +1250,7 @@ impl SourceModel {
                         this.cached_offline.remove(&saved_profile.id);
                     }
                     this.profiles = profiles;
-                    this.passwords.insert(saved_profile.id.clone(), saved_password);
+                    this.remember_password(saved_profile.id.clone(), saved_password);
                     this.metadata_notice = warning;
                     if this.selected_source.as_ref() == Some(&saved_profile.id) || this.selected_source.is_none() {
                         this.selected_source = Some(saved_profile.id.clone());
@@ -976,6 +1315,9 @@ impl SourceModel {
         self.load_page(0, cx);
     }
     fn load_page(&mut self, offset: u64, cx: &mut Context<Self>) {
+        if self.workspace_invalidated {
+            return;
+        }
         let Some(profile) = self.selected_profile() else {
             return;
         };
@@ -988,7 +1330,7 @@ impl SourceModel {
         self.busy = true;
         self.error = None;
         let id = profile.id.clone();
-        let session = self.passwords.get(&id).cloned();
+        let session = self.session_password(&id);
         let secret_store = self.secret_store.clone();
         let request = BrowseRequest {
             database,
@@ -1011,7 +1353,7 @@ impl SourceModel {
                 this.busy = false;
                 match result {
                     Ok((password, page)) => {
-                        this.passwords.insert(id, password);
+                        this.remember_password(id, password);
                         match page {
                             Ok(page) => this.page = Some(Arc::new(page)),
                             Err(error) => this.error = Some(error.to_string()),
@@ -1136,7 +1478,7 @@ impl SourceModel {
                 .map(|_| "Profile removed, but local metadata cleanup failed.".to_string());
             Ok((profiles, warning))
         }).await? }, cx, move |this, result, cx| { this.saving = false; this.busy = false;
-            match result { Ok((profiles, warning)) => { this.metadata_notice = warning; this.cached_at.remove(&removed_id); this.cached_offline.remove(&removed_id); this.remove_tree_source(&removed_id); this.profiles = profiles; this.passwords.remove(&removed_id); this.pending_delete_source = None;
+            match result { Ok((profiles, warning)) => { this.metadata_notice = warning; this.cached_at.remove(&removed_id); this.cached_offline.remove(&removed_id); this.remove_tree_source(&removed_id); this.profiles = profiles; this.forget_password(&removed_id); this.pending_delete_source = None;
                     if this.selected_source.as_ref() == Some(&removed_id) { this.selected_source = None; this.clear_data(); }
                     if this.explorer_source.as_ref() == Some(&removed_id) { this.explorer_source = None; }
                     this.error = None; }, Err(error) => this.error = Some(format!("Not removed: {error}")) }; cx.notify(); });
@@ -1173,6 +1515,263 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn previous_query_result() -> dalan_drivers::QueryResult {
+        dalan_drivers::QueryResult {
+            page: TablePage {
+                columns: vec![ColumnInfo {
+                    name: "1".into(),
+                    data_type: "INTEGER".into(),
+                    nullable: false,
+                    is_primary_key: false,
+                }],
+                rows: vec![vec![CellValue::Number("1".into())]],
+                has_more: false,
+                next_offset: None,
+                offset: 0,
+                truncated: false,
+            },
+            elapsed_ms: 777,
+            warnings: vec!["Previous result warning".into()],
+        }
+    }
+
+    #[gpui::test]
+    fn query_failure_preserves_successful_result_identity(cx: &mut TestAppContext) {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let profile = SourceProfile {
+            host: "127.0.0.1".into(),
+            port: server.local_addr().unwrap().port(),
+            tls: dalan_drivers::TlsMode::Disabled,
+            ..Default::default()
+        };
+        let model = cx.new(|_| {
+            let mut model = SourceModel::for_tests(vec![profile.clone()]);
+            model.query_console = true;
+            model.selected_source = Some(profile.id.clone());
+            model.query_sql = "SELECT 1".into();
+            model.finish_query("SELECT 1".into(), previous_query_result());
+            model
+        });
+        let previous = model.read_with(cx, |model, _| model.page.clone().unwrap());
+        model.update(cx, |model, cx| {
+            model.set_query_sql("SELECT missing".into(), cx);
+            model.run_query(model.query_sql.clone(), cx);
+            assert!(model.busy);
+            assert_eq!(model.query_running_sql.as_deref(), Some("SELECT missing"));
+            assert_eq!(model.query_submitted_sql.as_deref(), Some("SELECT 1"));
+            assert_eq!(model.query_elapsed_ms, Some(777));
+            assert_eq!(model.query_warnings, ["Previous result warning"]);
+        });
+        let mut accepted = false;
+        for _ in 0..200 {
+            cx.run_until_parked();
+            if let Ok((peer, _)) = server.accept() {
+                accepted = true;
+                drop(peer);
+            }
+            if !model.read_with(cx, |model, _| model.busy) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(accepted, "Query must reach the loopback fixture");
+        model.read_with(cx, |model, _| {
+            assert!(!model.busy);
+            assert!(Arc::ptr_eq(model.page.as_ref().unwrap(), &previous));
+            assert_eq!(model.query_submitted_sql.as_deref(), Some("SELECT 1"));
+            assert_eq!(model.query_elapsed_ms, Some(777));
+            assert_eq!(model.query_warnings, ["Previous result warning"]);
+            assert!(model.query_running_sql.is_none());
+            assert!(model.query_dirty);
+            assert!(model.error.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn invalid_query_and_cancellation_keep_previous_result_metadata(cx: &mut TestAppContext) {
+        let model = cx.new(|_| {
+            let mut model = SourceModel::for_tests(vec![SourceProfile::default()]);
+            model.query_sql = "SELECT 1".into();
+            model.finish_query("SELECT 1".into(), previous_query_result());
+            model
+        });
+        model.update(cx, |model, cx| {
+            let previous = model.page.clone().unwrap();
+            model.set_query_sql("DELETE FROM items".into(), cx);
+            model.run_query(model.query_sql.clone(), cx);
+            assert!(model.error.is_some());
+            assert!(!model.busy);
+            assert!(model.operation.is_none());
+            assert!(model.query_running_sql.is_none());
+            assert!(model.query_dirty);
+            assert!(Arc::ptr_eq(model.page.as_ref().unwrap(), &previous));
+            assert_eq!(model.query_submitted_sql.as_deref(), Some("SELECT 1"));
+            assert_eq!(model.query_elapsed_ms, Some(777));
+            assert_eq!(model.query_warnings, ["Previous result warning"]);
+
+            model.busy = true;
+            model.query_running_sql = Some("SELECT 2".into());
+            model.run(std::future::pending::<Result<()>>(), cx, |_, _, _| {
+                panic!("cancelled query completed")
+            });
+            model.cancel_query(cx);
+            assert!(model.query_running_sql.is_none());
+            assert!(Arc::ptr_eq(model.page.as_ref().unwrap(), &previous));
+            assert_eq!(model.query_submitted_sql.as_deref(), Some("SELECT 1"));
+            assert_eq!(model.query_elapsed_ms, Some(777));
+            assert_eq!(model.query_warnings, ["Previous result warning"]);
+        });
+    }
+
+    #[gpui::test]
+    fn query_completion_uses_captured_sql_and_invalidation_clears_identity(
+        cx: &mut TestAppContext,
+    ) {
+        let profile = SourceProfile::default();
+        let model = cx.new(|_| {
+            let mut model = SourceModel::for_tests(vec![profile.clone()]);
+            model.selected_source = Some(profile.id.clone());
+            model.query_sql = "SELECT 3".into();
+            model
+        });
+        model.update(cx, |model, cx| {
+            // Completion belongs to the captured request, not the edited draft.
+            model.finish_query("SELECT 2".into(), previous_query_result());
+            assert_eq!(model.query_submitted_sql.as_deref(), Some("SELECT 2"));
+            assert!(model.query_dirty);
+            model.set_query_sql("SELECT 2".into(), cx);
+            assert!(!model.query_dirty);
+            model.databases = vec!["inventory".into()];
+            model.select_console_database(Some("inventory".into()), cx);
+            assert_eq!(model.query_sql, "SELECT 2");
+            assert!(model.page.is_none());
+            assert!(model.query_submitted_sql.is_none());
+            assert!(model.query_elapsed_ms.is_none());
+            assert!(model.query_warnings.is_empty());
+            assert!(model.query_dirty);
+
+            model.finish_query("SELECT 2".into(), previous_query_result());
+            model.query_running_sql = Some("SELECT 3".into());
+            let mut changed = profile.clone();
+            changed.host = "changed.example".into();
+            model.sync_workspace_sources(vec![changed], cx);
+            assert!(model.page.is_none());
+            assert!(model.query_submitted_sql.is_none());
+            assert!(model.query_running_sql.is_none());
+            assert!(model.query_elapsed_ms.is_none());
+            assert!(model.query_warnings.is_empty());
+            assert!(model.query_dirty);
+        });
+    }
+
+    #[gpui::test]
+    fn workspace_forks_share_only_credentials_not_query_state(cx: &mut TestAppContext) {
+        let profile = SourceProfile::default();
+        let id = profile.id.clone();
+        let root = cx.new(|_| SourceModel::for_tests(vec![profile]));
+        let (mut first, second) = root.update(cx, |root, cx| {
+            root.remember_password(id.clone(), "session-secret".into());
+            root.enable_workspace_routes(cx);
+            let target = WorkspaceOpen::Console {
+                source: id.clone(),
+                database: None,
+            };
+            (
+                root.fork_for_workspace(&target).unwrap(),
+                root.fork_for_workspace(&target).unwrap(),
+            )
+        });
+        first.query_sql = "SELECT 1".into();
+        first.remember_password(id.clone(), "replacement-secret".into());
+        assert!(second.query_sql.is_empty());
+        assert_eq!(second.password(&id), "replacement-secret");
+        assert!(first.page.is_none() && second.page.is_none());
+        assert!(first.repository.is_none() && first.schema_cache.is_none());
+        assert!(first.operation.is_none());
+        root.update(cx, |root, _| {
+            assert!(root.query_sql.is_empty());
+            assert!(root.selected_source.is_none());
+            assert_eq!(root.password(&id), "replacement-secret");
+            root.forget_password(&id);
+        });
+        assert_eq!(first.password(&id), "");
+        assert_eq!(second.password(&id), "");
+    }
+
+    #[gpui::test]
+    fn workspace_cancel_only_aborts_its_own_worker(cx: &mut TestAppContext) {
+        let profile = SourceProfile::default();
+        let first = cx.new(|_| SourceModel::for_tests(vec![profile.clone()]));
+        let second = cx.new(|_| SourceModel::for_tests(vec![profile]));
+        first.update(cx, |model, cx| {
+            model.busy = true;
+            model.run(std::future::pending::<Result<()>>(), cx, |_, _, _| {
+                panic!("cancelled work completed")
+            });
+        });
+        second.update(cx, |model, cx| {
+            model.busy = true;
+            model.run(std::future::pending::<Result<()>>(), cx, |_, _, _| {
+                panic!("pending work completed")
+            });
+        });
+        first.update(cx, |model, cx| {
+            model.cancel_query(cx);
+            assert!(!model.busy);
+            assert!(model.operation.is_none());
+            assert!(model.query_dirty);
+        });
+        second.read_with(cx, |model, _| {
+            assert!(model.busy);
+            assert!(model.operation.is_some());
+            assert!(model.error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn workspace_routes_do_not_load_root_and_reject_unsafe_sql(cx: &mut TestAppContext) {
+        let profile = SourceProfile::default();
+        let id = profile.id.clone();
+        let root = cx.new(|_| SourceModel::for_tests(vec![profile]));
+        let child = root.update(cx, |root, cx| {
+            root.install_snapshot(&id, &snapshot("items"), 1, true);
+            root.enable_workspace_routes(cx);
+            root.open_tree_table(id.clone(), "inventory".into(), "items".into(), cx);
+            assert_eq!(root.workspace_open_generation, 1);
+            assert!(root.selected_table.is_none());
+            assert!(root.operation.is_none());
+            let fork = root
+                .fork_for_workspace(root.workspace_open.as_ref().unwrap())
+                .unwrap();
+            assert_eq!(fork.selected_table.as_deref(), Some("items"));
+            assert!(fork.operation.is_none());
+            fork
+        });
+        let child = cx.new(|_| child);
+        child.update(cx, |child, cx| {
+            child.set_query_sql("DELETE FROM items".into(), cx);
+            child.run_query(child.query_sql.clone(), cx);
+            assert!(!child.busy);
+            assert!(child.error.is_some());
+            assert!(child.operation.is_none());
+            let mut profiles = child.profiles.clone();
+            profiles[0].host = "new-host.example".into();
+            child.sync_workspace_sources(profiles, cx);
+            assert!(
+                child
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("configuration changed")
+            );
+        });
+        root.read_with(cx, |root, _| {
+            assert!(root.error.is_none());
+            assert!(root.query_sql.is_empty());
+        });
     }
 
     #[test]

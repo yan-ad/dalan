@@ -55,6 +55,7 @@ async fn positive(engine: DbEngine, connect: bool) -> anyhow::Result<()> {
         ..BrowseRequest::default()
     };
     common::sorted_pages(&profile, PASSWORD, &request).await?;
+    common::queries(&profile, PASSWORD, &request).await?;
     let page = browse(&profile, PASSWORD, &request).await?;
     assert_eq!(page.rows.len(), 2);
     assert!(page.has_more);

@@ -1,4 +1,6 @@
 pub mod mysql;
+pub mod query;
+pub use query::{QueryRequest, QueryResult, execute_read_only, validate_read_only};
 mod relay;
 pub mod sources;
 pub use mysql::{

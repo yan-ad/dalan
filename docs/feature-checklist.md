@@ -6,7 +6,7 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 
 - [x] Rust workspace and macOS GPUI dark shell, native titlebar/menu, Database Explorer visibility/resizing and keyboard controls.
 - [x] About Dalan and optional ACP panel with honest **Not connected** state. No agent process, transport, prompt or provider-key integration.
-- [x] Main open-source icon set: twenty-four embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`, including hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. Bottom-right 28 px bot-message-square retains AI · ACP tooltip and Cmd-Shift-A. No new app/brand icon.
+- [x] Main open-source icon set: twenty-eight embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`, including hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. Bottom-right 28 px bot-message-square retains AI · ACP tooltip and Cmd-Shift-A. No new app/brand icon.
 - [x] Complete Lucide ISC and retained Feather MIT notices, with adapted GPUI input Apache-2.0 attribution in [third-party notices](../THIRD_PARTY_NOTICES.md), plus bundle resource wiring. Project license remains undecided.
 - [x] Experimental MySQL/MariaDB source form, version 1 password-free profile storage and optional database discovery. Test, Save and Connect remain separate actions.
 - [x] Session-only passwords and opt-in native macOS Keychain storage; explicit failure/compensation boundaries.
@@ -16,7 +16,7 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 - [x] Loaded-page CSV with native save picker, fresh complete rows only, visible success/cancel/error and no overwrite. Default name `Dalan-loaded-page.csv`; no extension enforcement. UTF-8/CRLF/quoted fields, explicit NULL syntax, default spreadsheet-safe text protection and private same-filesystem hard-link publication. No full-query or whole-table export. See [exact export limits](mysql-sources.md#export-loaded-csv).
 - [x] Headless, simulated GPUI, bundle-helper and disposable live transport coverage. Historical icon/sorting/export results: 48 headless, 42 simulated UI, four bundle-helper, one generated Keychain and 22 live checks passed, including sorting on actual routes.
 
-- [x] Compact explorer: no title header; one 28 px toolbar with six 28 px Add/Manage/Refresh/Remove/Expand Loaded/Collapse All icons, tooltips and selection/busy/save guards; bottom-left toggle unchanged; no rail or inactive advanced tools.
+- [x] Compact explorer: no title header; one horizontally scrolling 28 px toolbar with seven 28 px Add/Manage/Refresh/Remove/Expand Loaded/Collapse All/New Query Console icons, tooltips and selection/busy/save guards; bottom-left toggle unchanged; no rail or inactive advanced tools.
 - [x] Virtual lazy tree for large catalogs: 22 px rows, cached expansion, viewport-only rendering, readable ellipsized names/full-name tooltips, Tables/Views groups and unavailable view leaves.
 - [x] Selection-safe explorer actions independent of the current table page; UUID-pinned removal confirmation, complete-source metadata Refresh with retained old snapshot on failure and per-branch catalog cancellation/errors.
 - [x] Single-focus tree keyboard navigation and guarded toolbar Enter/Space activation; scoped 71-test simulated suite includes 1,000-database visible-range, scroll-to-900 and End regressions. No native smoothness/FPS claim.
@@ -48,7 +48,7 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 - [x] User-selected **Carbonfox - opaque** default and compact Zed-like UI. DataGrip visual styling/button-heavy layout explicitly rejected; database UX/workflows only remain references.
 - [x] Full exact variant vendored from Nightfox Zed port commit `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`, with both full MIT licenses and separate original-project license provenance. Runtime uses compiled tokens, not JSON; no affiliation or other Zed source/editor asset import. See [theme record](../crates/app/assets/themes/README.md).
 - [x] Shared opaque main/source/About/input theme; alpha toolbar/selection/border composited over PANEL; no blur/transparency/toggle/fake light. Status spacer has a Carbonfox - opaque tooltip only; no persistent theme/focus-help text or extra Theme button.
-- [x] Compact 34 px titlebar, 28 px headers/toolbars/status/controls, 22 px tree/grid, 3 px controls/0 px panes, flush 0 px outer padding and 4 px divider hit area/1 px line. System UI 13 px/data 12 px, no external font or implemented SQL monospace editor.
+- [x] Compact 34 px titlebar, 28 px headers/toolbars/status/controls, 22 px tree/grid, 3 px controls/0 px panes, flush 0 px outer padding and 4 px divider hit area/1 px line. System UI 13 px/data 12 px, no external font assets; the SQL editor now uses system Menlo 13 px with 22 px lines.
 - [x] Neutral controls/hover/selection, blue focus/active and Save/Connect primary with dark text; readable disabled MUTED labels without opacity; shared opaque input selection, cursor/placeholder and visible input borders. User source markers remain unchanged, separately labeled and not AA-guaranteed.
 - [x] Compact form gaps/scroll/footer styling while retaining source window size, APIs, focus/saving guards, 28 px inputs, 30 px endpoint parents/candidates and 18 px Keychain indicator. Compact table header/filter/footer without fake content; no DB/cache/SSH/password migration.
 - [x] Pure token mapping/compositing and contrast coverage; computed normal-state minima 13.04:1 primary, 7.22:1 secondary, 6.10:1 focus and 3.44:1 input boundary. Semantic labels supported on panel/input, not arbitrary hover controls. No native pixel/accessibility claim.
@@ -75,7 +75,7 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 ## Next read-workflow slices, in order
 
 1. [ ] Column resizing and bounded cell inspection/copy, with keyboard/focus and value-fidelity tests. These are next, not already done.
-2. [ ] Read-oriented query console. Write a new ADR for dialect-aware parsing/execution boundaries, cancellation and explicit session ownership before implementation. No semicolon splitting or prefix-only safety classification.
+2. [x] Scoped read-only query console, with [ADR 0004](adr/0004-workspace-tabs-and-read-only-consoles.md), MySQL-dialect AST allowlist, fresh run-owned sessions and local cancellation. No semicolon splitting or prefix-only safety classification; broader dialect support remains future work.
 3. [ ] SQL editor completion and history, with scoped dialect support, sensitive-text retention/deletion and distinct selection/current-statement/script execution semantics.
 4. [ ] Dedicated transaction sessions and guarded staged writes, primary-key identity, conflict/affected-row checks, immutable approvals and unknown-outcome handling. Do not turn browse/export completion into write authorization.
 5. [ ] Separate bounded streaming full-query/whole-table export pipeline, disk backpressure and cancellation. Do not imply snapshot consistency.
@@ -97,3 +97,19 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 Database explorer, query consoles, data views, results/sessions and optional ACP only. No generic Files explorer, code viewer, Git UI, build tools, general terminal or plugin/toolbox chrome. First-release engine goals are not present-day compatibility claims. Complete and verify each bounded slice before expanding scope.
 
 [Overview](../README.md) · [Roadmap](roadmap.md) · [MySQL sources](mysql-sources.md) · [UI foundation](ui-foundation.md) · [Architecture](architecture.md) · [Security](security.md) · [Testing](testing.md)
+
+## Workspace tabs and read-only consoles
+
+- [x] Table identity `(SourceUUID, database, table)`, duplicate activation, 32-tab total cap, unique monotonic Console N labels and active-close neighboring selection.
+- [x] Retained per-tab models, requests, filter state, grid scroll and immutable result snapshots; cancellation/generation isolation on close and affected-source connection changes/removal. Cosmetic labels/colors preserve state.
+- [x] Flat 28 px Carbonfox table/query strip, close x, meaningful draft/running indicators, populated-strip plus and seventh explorer query icon with narrow-width horizontal scrolling. Cmd-Shift-N and Cmd-Alt-Left/Right controls, with context-specific source/database selection.
+- [x] Native GPUI multiline SQL selection/IME/clipboard, Menlo 13 px/22 px lines/44 px gutter, visible shaping, 64 KiB and 100 undo-state bounds; Tab four spaces, Shift-Tab unindent and newline autoindent.
+- [x] Run selected SQL or whole draft by play/Cmd-Enter and local cancel by stop/Cmd-Period; one parsed SELECT with optional trailing semicolon, nested CTE/UNION and curated functions. Unsupported statements/constructs fail visibly before connection.
+- [x] Fresh physical read-only transaction per Run, 20-second MySQL/MariaDB server/client limits, finite parser/result budgets and no submitted-SQL pagination rewriting. No server KILL confirmation, persistent transaction/autocommit or write UI.
+- [x] Query grid sorting disabled, table filters excluded, result cap warning and no next offset; existing guarded loaded-only CSV, not full-query export.
+- [x] Successful SQL provenance separate from in-flight SQL; failure retains prior SQL/elapsed/warnings and stale results with visible sanitized error. Draft edits do not autoexecute/cancel.
+- [x] Nonempty-draft tab-close Keep Open/Discard confirmation regardless of prior execution; Keep Open default focus with mouse/Enter/Space. No SQL/result/tab persistence, telemetry or new credential storage.
+- [x] Local/live verification: 93 headless, 132 simulated GPUI, four Python and 23 unique live cases passed with strict lint and signed bundle checks. Current hosted CI and native IME/visual/accessibility/performance review remain separate gates. Historical `cf24e48` passed all five jobs in [run 37215973701](https://github.com/yan-ad/dalan/actions/runs/37215973701); do not treat it as current evidence.
+- [ ] Syntax highlighting, completion, persistent history and deletion policy; saved scripts, cursor/current-statement execution, full-query export and dedicated transaction/write workflows remain separately scoped.
+
+- [x] Multi-table/query-console verification: 93 headless, 132 simulated UI, four bundle tests and 23 live database/transport cases passed; formatting/lint/signed bundle checks passed. Current hosted CI and native visual/accessibility review remain separate gates.

@@ -17,7 +17,7 @@ mysql_async was chosen instead of SQLx for its native async backend and preserva
 
 ## Implemented MySQL/MariaDB contract
 
-Test, connect/discovery, columns and generated read-only table browsing are implemented. There is no arbitrary SQL execution, write or transaction-control UI; loaded-page CSV export lives in the app, not the driver. Optional database None uses `SHOW DATABASES`; selecting a database discovers tables. Views are listed but browsing accepts BASE TABLE only. Read-only transactions depend on server capabilities and do not replace least-privilege roles.
+Test, connect/discovery, columns, generated read-only table browsing and restricted SELECT console execution are implemented. There is no unrestricted arbitrary SQL execution, write or transaction-control UI; loaded-page CSV export lives in the app, not the driver. Optional database None uses `SHOW DATABASES`; selecting a database discovers tables. Views are listed but browsing accepts BASE TABLE only. Read-only transactions depend on server capabilities and do not replace least-privilege roles.
 
 Pages are 100 rows in the UI, capped at 200 in the backend. Limits are 4 KiB per displayed cell, 2 MiB retained page data, 512 columns, 1,000 databases/tables and 8 MiB per protocol packet. The packet limit is real but not an absolute process-memory bound. Primary-key ordering is used when available; otherwise pagination can be unstable. Offset paging is never a cross-page snapshot. Next offset counts rows actually retained. Binary data is hex, MySQL JSON text, and decimal/large integer values strings.
 
@@ -73,3 +73,13 @@ Redis needs binary-safe keys/arguments, native RESP values, type/TTL inspection 
 6. Publish tested scope and exclusions, not mocked success or catalog-only compatibility.
 
 [MySQL sources](mysql-sources.md) · [Architecture](architecture.md) · [Product plan](product-plan.md) · [Testing](testing.md)
+
+## Read-only query-console adapter (implemented)
+
+The MySQL/MariaDB `query` path uses pinned sqlparser 0.62.0 with visitor and MySqlDialect. It accepts exactly one supported SELECT query, including nested SELECT, CTE and UNION plus curated unqualified built-ins. It rejects write/session/admin statements, SHOW/EXPLAIN, SELECT INTO/OUTFILE, variables, locks, executable comments/optimizer hints and unknown/stored/UDF/qualified functions before opening a connection. This is an allowlisted subset, not complete dialect support or authorization. See the [precise guide](query-consoles.md#accepted-sql-and-rejections).
+
+Validation bounds are 64 KiB SQL, 4,096 meaningful tokens, 32 parenthesis/CASE nesting, 256 operators/recursive constructs and a separate 256-node set-body guard. Each Run opens a fresh physical connection, sets MySQL MAX_EXECUTION_TIME = 20000 or MariaDB max_statement_time = 20, then starts a read-only transaction. A 20-second client timeout bounds local work. Cancellation disposes the socket/owned relay; there is no server KILL acknowledgment or persistent transaction/session UI.
+
+User SQL is submitted without LIMIT/OFFSET rewriting. Results use typed immutable `TablePage` snapshots, up to 512 columns and 100 UI rows (backend 1 through 200), existing cell/preview-byte bounds, `has_more` plus warnings and `next_offset = None`. Query headers cannot sort and table filters do not mutate query results. Loaded CSV remains loaded-only and guarded against busy/stale/truncated pages. Failure retains the prior successful SQL/elapsed/warnings with an explicit stale notice, not new SQL mislabeled over old rows.
+
+Least-privilege SELECT roles and trusted server views are essential: the client cannot inspect code inside view definitions or prove server-side functions harmless. Profiles, transports/TLS, on-demand Keychain and shared memory credentials are unchanged. Tabs/SQL/results are not persisted. Future PostgreSQL/Redis drivers require their own dialect/policy and session semantics, not this MySQL allowlist reused blindly.

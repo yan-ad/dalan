@@ -106,7 +106,7 @@ impl DataGrid {
             this.selection = selection;
             this.page = model.page.as_ref().map(Arc::clone);
             this.sort = model.sort.clone();
-            this.stale = model.busy || model.saving || model.error.is_some();
+            this.stale = model.busy || model.saving || model.error.is_some() || model.query_console;
             let (rows, columns) = this.dimensions();
             this.viewport.clamp(rows, columns);
             cx.notify();
@@ -115,7 +115,10 @@ impl DataGrid {
         Self {
             page: snapshot.page.as_ref().map(Arc::clone),
             sort: snapshot.sort.clone(),
-            stale: snapshot.busy || snapshot.saving || snapshot.error.is_some(),
+            stale: snapshot.busy
+                || snapshot.saving
+                || snapshot.error.is_some()
+                || snapshot.query_console,
             selection: Self::selection(snapshot),
             model,
             viewport: GridViewport::default(),
@@ -943,5 +946,18 @@ mod tests {
             display_preview(Some(&CellValue::Number("18446744073709551615".into()))).as_ref(),
             "18446744073709551615"
         );
+    }
+    #[gpui::test]
+    fn query_result_headers_do_not_offer_generated_table_sorting(cx: &mut TestAppContext) {
+        let (model, _, cx) = fixture(cx);
+        model.update(cx, |model, cx| {
+            model.query_console = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let header = cx.debug_bounds("sort-column-0").unwrap();
+        cx.simulate_click(header.center(), Modifiers::default());
+        cx.simulate_keystrokes("enter");
+        assert!(model.read_with(cx, |model, _| model.sort.is_none()));
     }
 }

@@ -15,7 +15,7 @@ const PAGE_CAP: usize = 2 * 1024 * 1024;
 const PACKET_CAP: usize = 8 * 1024 * 1024;
 const CATALOG_CAP: usize = 1000;
 const TOTAL_OBJECT_CAP: usize = 50_000;
-const COLUMN_CAP: usize = 512;
+pub(crate) const COLUMN_CAP: usize = 512;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionReport {
     pub server_version: String,
@@ -117,7 +117,7 @@ impl CellValue {
         }
     }
 }
-fn driver_error(e: mysql_async::Error) -> anyhow::Error {
+pub(crate) fn driver_error(e: mysql_async::Error) -> anyhow::Error {
     use mysql_async::{DriverError as D, Error as E, IoError};
     // Never retain the original error as a source: server messages, packets,
     // rows, URLs and OS error text can contain credentials or bound values.
@@ -178,17 +178,17 @@ fn driver_error(e: mysql_async::Error) -> anyhow::Error {
         ),
     }
 }
-async fn bounded<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+pub(crate) async fn bounded<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(Duration::from_secs(20), future)
         .await
         .map_err(|_| anyhow!("Database operation timed out after 20 seconds"))?
 }
-struct Session {
+pub(crate) struct Session {
     conn: Option<Conn>,
     relay: Option<Relay>,
 }
 impl Session {
-    async fn connect(profile: &SourceProfile, password: &str) -> Result<Self> {
+    pub(crate) async fn connect(profile: &SourceProfile, password: &str) -> Result<Self> {
         profile.validate()?;
         let relay = relay::start(profile).await?;
         let mut opts = OptsBuilder::default()
@@ -232,10 +232,10 @@ impl Session {
             relay,
         })
     }
-    fn conn(&mut self) -> &mut Conn {
+    pub(crate) fn conn(&mut self) -> &mut Conn {
         self.conn.as_mut().expect("session owns its connection")
     }
-    fn close_transport(&mut self) {
+    pub(crate) fn close_transport(&mut self) {
         self.relay.take();
     }
     async fn finish(mut self) -> Result<()> {
@@ -561,7 +561,7 @@ fn decode(value: Value, column: &ColumnInfo, binary: bool, truncated: &mut bool)
         )),
     }
 }
-fn decode_row(
+pub(crate) fn decode_row(
     values: Vec<Option<Value>>,
     columns: &[ColumnInfo],
     binary: &[bool],
@@ -585,14 +585,14 @@ fn decode_row(
         .collect()
 }
 #[derive(Default)]
-struct Preview {
-    rows: Vec<Vec<CellValue>>,
+pub(crate) struct Preview {
+    pub(crate) rows: Vec<Vec<CellValue>>,
     bytes: usize,
-    truncated: bool,
-    has_more: bool,
+    pub(crate) truncated: bool,
+    pub(crate) has_more: bool,
 }
 impl Preview {
-    fn push(&mut self, values: Vec<CellValue>) -> Result<bool> {
+    pub(crate) fn push(&mut self, values: Vec<CellValue>) -> Result<bool> {
         let size = values
             .iter()
             .map(|v| match v {

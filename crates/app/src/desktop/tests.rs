@@ -371,3 +371,43 @@ fn layout_trigger_is_icon_sized_and_popover_still_operates(cx: &mut TestAppConte
     cx.simulate_keystrokes("escape");
     assert!(!state(&view, cx).menu_open);
 }
+
+#[gpui::test]
+fn new_console_shortcut_opens_once_and_uses_selected_database(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let profile = dalan_drivers::SourceProfile::default();
+    let id = profile.id.clone();
+    let sources = shell.read_with(cx, |shell, _| shell.sources.clone());
+    sources.update(cx, |model, cx| {
+        model.profiles = vec![profile];
+        model.explorer_source = Some(id.clone());
+        model.explorer_database = Some("inventory".into());
+        model.tree.databases.insert(id, vec!["inventory".into()]);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("cmd-shift-n");
+    cx.run_until_parked();
+    let workspace = shell.read_with(cx, |shell, _| shell.workspace.clone());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.tab_count()),
+        1
+    );
+    assert!(cx.debug_bounds("query-run").is_some());
+    assert!(cx.debug_bounds("query-database").is_some());
+    sources.read_with(cx, |model, _| {
+        assert!(matches!(&model.workspace_open, Some(dalan_app::workspace_tabs::WorkspaceOpen::Console { database: Some(database), .. }) if database == "inventory"));
+        assert!(!model.busy && model.page.is_none());
+    });
+    cx.simulate_input("SELECT 1");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("cmd-w");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("confirm-close-console").is_some());
+    cx.simulate_keystrokes("space");
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.tab_count()),
+        1
+    );
+}
