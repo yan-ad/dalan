@@ -8,3 +8,4 @@ Records separate user constraints from provisional engineering choices. Change a
 | [0002: ACP-only AI](0002-acp-only-ai.md) | ACP-only required; initial integration safety choices proposed |
 | [0003: Engine adapters](0003-engine-adapters.md) | First-release scope required; dependency choices proposed |
 | [0004: Workspace tabs and read-only consoles](0004-workspace-tabs-and-read-only-consoles.md) | Accepted; implemented experimental MySQL/MariaDB slice, validation gates remain |
+| [0005: Selective DBX reuse and ecosystem boundaries](0005-selective-dbx-reuse-and-ecosystem-boundaries.md) | Initial catalog adopted; further ecosystem contracts proposed |

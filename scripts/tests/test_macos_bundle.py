@@ -52,6 +52,9 @@ class BundleTests(unittest.TestCase):
             self.assertIn("Copyright (c) 2024 Christian Angermann", notices)
             self.assertIn("Copyright (c) 2021 James Simpson", notices)
             self.assertIn("ISC License", (destination / "Contents/Resources/lucide-LICENSE.txt").read_text())
+            self.assertEqual((destination / "Contents/Resources/dbx-Apache-2.0.txt").read_bytes(),
+                             (bundle.ROOT / "licenses/dbx-Apache-2.0.txt").read_bytes())
+            self.assertIn("DBX", notices)
             binary = destination / "Contents/MacOS/Dalan"
             self.assertEqual(binary.read_bytes(), b"first build")
             self.assertEqual(binary.stat().st_mode & 0o777, 0o755)

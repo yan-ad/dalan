@@ -76,6 +76,7 @@ def assemble_bundle(executable, destination, version, identifier):
         (contents / "Resources").mkdir()
         shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", contents / "Resources/THIRD_PARTY_NOTICES.md")
         shutil.copy2(ROOT / "crates/app/assets/lucide-LICENSE.txt", contents / "Resources/lucide-LICENSE.txt")
+        shutil.copy2(ROOT / "licenses/dbx-Apache-2.0.txt", contents / "Resources/dbx-Apache-2.0.txt")
         binary = contents / "MacOS/Dalan"
         shutil.copy2(executable, binary)
         binary.chmod(0o755)

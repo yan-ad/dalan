@@ -98,4 +98,4 @@ Reason: release confidence must come from measured behavior and failure-path tes
 
 ## Related planning documents
 
-[Project overview](../README.md) · [Roadmap](roadmap.md) · [UX](ux.md) · [Design direction](../DESIGN.md) · [Architecture](architecture.md) · [Drivers](drivers.md) · [ACP](acp.md) · [Security](security.md) · [Development](development.md) · [Testing](testing.md) · [Decisions](adr/README.md)
+[Project overview](../README.md) · [Roadmap](../ROADMAP.md) · [UX](ux.md) · [Design direction](../DESIGN.md) · [Architecture](architecture.md) · [Drivers](drivers.md) · [ACP](acp.md) · [Security](security.md) · [Development](development.md) · [Testing](testing.md) · [Decisions](adr/README.md)

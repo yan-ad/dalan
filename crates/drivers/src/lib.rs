@@ -1,3 +1,8 @@
+pub mod catalog;
+pub use catalog::{
+    CatalogError, ConnectionCapabilities, DriverRuntime, driver_by_id, driver_for_engine,
+    validate_driver_catalog,
+};
 mod table_clauses;
 pub use table_clauses::validate_table_clauses;
 pub mod mysql;
@@ -25,31 +30,61 @@ pub enum DriverStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DriverDescriptor {
+    /// Stable registry identity, not a user-created source/profile ID.
+    pub id: &'static str,
     pub engine: Engine,
     pub proposed_backend: &'static str,
     pub status: DriverStatus,
+    /// Intended runtime; consult status before treating a backend as available.
+    pub runtime: DriverRuntime,
+    /// SQL dialect identity; does not claim query execution is implemented.
+    pub dialect: Option<&'static str>,
+    /// None means not implemented/unknown rather than unsupported.
+    pub capabilities: Option<ConnectionCapabilities>,
 }
 
 pub const PLANNED_DRIVERS: [DriverDescriptor; 4] = [
     DriverDescriptor {
+        id: "postgresql",
         engine: Engine::PostgreSql,
         proposed_backend: "sqlx::Postgres",
         status: DriverStatus::Planned,
+        runtime: DriverRuntime::Native,
+        dialect: Some("postgresql"),
+        capabilities: None,
     },
     DriverDescriptor {
+        id: "mysql",
         engine: Engine::MySql,
         proposed_backend: "mysql_async",
         status: DriverStatus::Experimental,
+        runtime: DriverRuntime::Native,
+        dialect: Some("mysql"),
+        capabilities: Some(ConnectionCapabilities {
+            optional_database: true,
+            unix_socket: true,
+        }),
     },
     DriverDescriptor {
+        id: "mariadb",
         engine: Engine::MariaDb,
         proposed_backend: "mysql_async",
         status: DriverStatus::Experimental,
+        runtime: DriverRuntime::Native,
+        dialect: Some("mysql"),
+        capabilities: Some(ConnectionCapabilities {
+            optional_database: true,
+            unix_socket: true,
+        }),
     },
     DriverDescriptor {
+        id: "redis",
         engine: Engine::Redis,
         proposed_backend: "redis",
         status: DriverStatus::Planned,
+        runtime: DriverRuntime::Native,
+        dialect: None,
+        capabilities: None,
     },
 ];
 

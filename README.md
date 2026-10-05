@@ -8,6 +8,10 @@ The product name is **Dalan** everywhere it is displayed. Lowercase `dalan-*` Ru
 
 **Status: experimental read-only MySQL/MariaDB sources, multi-table tabs and query consoles.** The macOS app can persist profiles, test/connect, discover databases and browse bounded table pages with column sorting and loaded-page CSV export. PostgreSQL and Redis remain planned; agents are not connected yet. The project license and distribution model are undecided.
 
+## Ecosystem direction
+
+See the root [ROADMAP.md](ROADMAP.md) for **now, next and future** plans across drivers, database-focused plugins, and ACP-only AI. DBX was cloned and inspected at a recorded revision; the first small adaptation is a tested driver capability catalog, not a replacement of Dalan's UI or database execution layer. [Reuse assessment](docs/dbx-reuse.md) records source links, licensing, differences and port gates. No DBX direct-provider/BYOK integration, Vue/Tauri shell, infrastructure toolbox or sandbox claim is adopted.
+
 ## Rich canvas table browser
 
 The production table body now paints viewport cells directly with cached shaped text, without per-cell Divs. Compact name-only type/key headers retain native interaction and explicit single-click sort targets; a pinned 44 px row-number gutter stays vertically aligned while columns scroll. Editable **WHERE** and **ORDER BY** drafts apply on Enter/Apply, not on typing. A bounded MySQL-dialect clause compiler validates current column metadata before credential/network work, binds exact literal values and generates fixed SELECT/LIMIT/OFFSET queries. Invalid clauses preserve visibly stale previous rows. DataGrip remains a database UX reference only; **Carbonfox - opaque** is retained.
@@ -154,7 +158,8 @@ Experimental MySQL/MariaDB I/O, source persistence and macOS credential storage 
 ## Planning map
 
 - [Product plan](docs/product-plan.md): workflows, release scope, exclusions, acceptance scenarios.
-- [Roadmap](docs/roadmap.md): incremental milestones and exit gates.
+- [Roadmap](ROADMAP.md): canonical now/next/future driver, plugin and ACP milestones.
+- [DBX reuse assessment](docs/dbx-reuse.md): pinned source investigation and selective port boundary.
 - [Feature checklist](docs/feature-checklist.md): completed experimental slices and the next one-by-one workflow sequence.
 - [UX](docs/ux.md) and [design direction](DESIGN.md): Zed/DataGrip references, pane behavior, keyboard and state requirements.
 - [Architecture](docs/architecture.md): module boundaries, runtime ownership, sessions, result handling, persistence.

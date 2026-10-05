@@ -1,7 +1,11 @@
 use dalan_acp::SUPPORTED_PROTOCOL_VERSION;
-use dalan_drivers::PLANNED_DRIVERS;
+use dalan_drivers::{PLANNED_DRIVERS, validate_driver_catalog};
 
 fn main() {
+    if let Err(error) = validate_driver_catalog(&PLANNED_DRIVERS) {
+        eprintln!("Invalid driver catalog: {error}");
+        std::process::exit(1);
+    }
     println!(
         "Dalan: experimental MySQL/MariaDB sources, multi-table tabs and read-only query consoles."
     );

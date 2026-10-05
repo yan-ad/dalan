@@ -1,5 +1,11 @@
 # Test strategy and release evidence
 
+## DBX reference and ecosystem roadmap
+
+The root [ROADMAP.md](../ROADMAP.md) is the canonical forward plan. DBX was cloned for read-only investigation at `38ce7b5dd25db0ec058090ffbb4ab0b707a9bfad`; upstream builds/tests were not run. The initial Dalan catalog adapts descriptor/capability lookup and validation patterns only, with source attribution and the complete upstream Apache-2.0 license retained in source and bundle Resources. No driver executor, plugin host or AI transport was copied.
+
+This revision passed **120 headless unit tests** (4 ACP, 54 app, 5 core, 57 driver), **one native-wire integration test**, **159 simulated UI tests**, and **four Python bundle-helper tests**, formatting, both strict Clippy paths, the catalog-validating diagnostic, debug bundle build, plist lint and ad-hoc signature verification. Bundle tests verify the DBX license bytes and attribution. Five new catalog tests prevent invalid/duplicate identities and planned-driver capability claims. Existing live DB/Keychain evidence remains historical; no native UI/compatibility/performance pass follows from source research. Hosted CI requires the new commit's own run.
+
 ## Relocated source controls
 
 Current local verification passed **115 headless unit tests + one native-wire integration test, 159 simulated UI tests and four Python bundle-helper tests**, plus formatting, both strict Clippy paths, debug build, plist lint, ad-hoc signature and bundled-license checks. Copy/Manage/Remove exact-source targeting, credential isolation, capacity/save/draft guards, merged expansion and keyboard titlebar creation have regression coverage. Database/Keychain live suites were unchanged and not rerun for this UI/model change; current hosted CI and native visual/accessibility remain separate gates.

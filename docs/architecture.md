@@ -174,3 +174,8 @@ The source form owns General/Options/SSH/SSL/Schemas state behind a 34 px titleb
 No Auth skips Keychain reads and supplies driver credential None; Save clears obsolete remembered-password policy using existing compensation. URL-only overrides endpoint fields after strict credential-free parsing; Unix Socket validates Direct/Disabled requirements. The driver applies configured connect/query/page limits, with the independent global 120-second catalog deadline unchanged. Schemas filters only the explorer projection and retains full allowed SQLite snapshots and console database choices.
 
 Persisted cache identity contains resolved endpoint/authentication, transport, TLS/CA/client identity and connect/query deadlines. It excludes passwords, Name/Color/schema visibility and Page size. Whole Options workspace synchronization still invalidates affected children on Page size changes. No metadata-cache schema migration is introduced. See [source management](source-management.md) for detailed contracts and [testing](testing.md#source-manager-redesign) for pending owner-run evidence.
+
+
+## Ecosystem roadmap and reference boundary
+
+[Root ROADMAP.md](../ROADMAP.md) is the canonical now/next/future plan for drivers, plugins and ACP-only AI. [DBX source assessment](dbx-reuse.md) records the pinned clone, source-backed findings and initial attributed catalog adaptation. This does not import DBX's core, UI, direct AI providers, worker/plugin runtime or broad admin tooling. Existing driver execution, credentials, schema cache and canvas grid remain unchanged. Future ports follow [ADR 0005](adr/0005-selective-dbx-reuse-and-ecosystem-boundaries.md).
