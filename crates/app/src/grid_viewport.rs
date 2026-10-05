@@ -42,12 +42,29 @@ impl GridViewport {
         self.x = 0.;
         self.y = 0.;
     }
+    /// Exact paint range, without the retained-cache overscan. Partially
+    /// visible cells are included; offscreen cells never submit GPU work.
+    pub fn painted_columns(&self, count: usize) -> Range<usize> {
+        paint_range(self.x, self.width, COLUMN_WIDTH, count)
+    }
+    pub fn painted_rows(&self, count: usize) -> Range<usize> {
+        paint_range(self.y, self.height, ROW_HEIGHT, count)
+    }
     pub fn columns(&self, count: usize) -> Range<usize> {
         visible_range(self.x, self.width, COLUMN_WIDTH, count)
     }
     pub fn rows(&self, count: usize) -> Range<usize> {
         visible_range(self.y, self.height, ROW_HEIGHT, count)
     }
+}
+
+fn paint_range(offset: f32, extent: f32, cell: f32, count: usize) -> Range<usize> {
+    if extent <= 0. || count == 0 {
+        return 0..0;
+    }
+    let first = (offset.max(0.) / cell).floor() as usize;
+    let end = ((offset.max(0.) + extent) / cell).ceil() as usize;
+    first.min(count)..end.min(count)
 }
 
 fn visible_range(offset: f32, extent: f32, cell: f32, count: usize) -> Range<usize> {
@@ -77,6 +94,19 @@ pub fn scrollbar(offset: f32, viewport: f32, content: f32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paint_ranges_exclude_cache_overscan() {
+        let mut view = GridViewport::default();
+        view.resize(720., 220., 200, 512);
+        assert_eq!(view.painted_columns(512), 0..4);
+        assert_eq!(view.painted_rows(200), 0..10);
+        view.scroll(180. * 200. + 1., 22. * 50. + 1., 200, 512);
+        assert_eq!(view.painted_columns(512), 200..205);
+        assert_eq!(view.painted_rows(200), 50..61);
+        assert_eq!(GridViewport::default().painted_rows(200), 0..0);
+        assert_eq!(view.painted_columns(0), 0..0);
+    }
+
     #[test]
     fn wide_page_only_visits_visible_cells() {
         let mut view = GridViewport::default();

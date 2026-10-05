@@ -36,6 +36,12 @@ Source geometry remains 1040 × 760, minimum 780 × 560, with 8 px gaps, 16 px s
 
 ## Wide-grid regression and profiling
 
+Current production canvas replaces body per-cell Divs with row/grid `PaintQuad`s and cached `ShapedLine::paint` calls; retain native header controls, exact painted-vs-cached-vs-shaped counters and grapheme-safe fit/cap logic. Keep caches row/column-range bounded with overscan two, release on model page None, and never deep-clone or format the full page during redraw. The 44 px gutter stays x = 0 and shares y only. WHERE/ORDER BY drafts must not autofetch; UI metadata validation must precede credential/network calls. Keep explicit header glyph propagation tests and busy Clear guards; fix fixtures by canceling owned work, not weakening guards.
+
+Run the existing clause, grid, retention and full regression suites; [testing](testing.md#rich-canvas-table-browser) contains commands and verified counts (114 unit, one wire, 154 UI, four bundle and 29 live tests). The narrow fixture reports 40 painted/cached shaped cells, six header controls and zero subsequent tiny-wheel shapes. Integrated 1280 × 720 evidence uses a 906 × 570 body and 300/51,200 materialized cells, not the older 310-cell count. These are simulated counters, not native FPS. Retention estimates are computed once per Arc identity without budget-owned references or notification row walks; 16 MiB/eight pages is best effort and excludes other allocations. See [table-browser guide](table-browser.md).
+
+Thirty-six Lucide utility assets retain the existing revision and ISC/Feather notices; use the [asset provenance](../crates/app/assets/README.md), including the upstream text-initial alias. No project license or brand icon is selected. Historical `4e389d0` passed all five jobs in run 37266563119; this tree's hosted CI remains pending. Native permission-blocked capture and real visual/high-DPI/GPU/accessibility/user retry remain separate gates, not automated-count claims.
+
 The retained `desktop/data_grid.rs` uses shared immutable `Arc<TablePage>` snapshots and viewport-only cell/header text. Keep redraws free of deep page clones and eager full-page formatting; keep explorer projections independent of grid/sidebar wheel events. `grid_viewport.rs` stays GPUI-independent. `serde` enables `rc` for shared snapshot serialization tests, not persisted rows; no new crate, SQL/cache schema migration or license change is involved.
 
 ```sh

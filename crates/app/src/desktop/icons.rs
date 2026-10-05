@@ -32,6 +32,14 @@ pub enum Icon {
     Play,
     Stop,
     Close,
+    ColumnKey,
+    ColumnNumber,
+    ColumnText,
+    ColumnDate,
+    ColumnBinary,
+    ColumnJson,
+    Filter,
+    Sort,
 }
 
 impl Icon {
@@ -65,6 +73,14 @@ impl Icon {
             Self::Play => "icons/play.svg",
             Self::Stop => "icons/circle-stop.svg",
             Self::Close => "icons/x.svg",
+            Self::ColumnKey => "icons/key-round.svg",
+            Self::ColumnNumber => "icons/hash.svg",
+            Self::ColumnText => "icons/text-initial.svg",
+            Self::ColumnDate => "icons/calendar-clock.svg",
+            Self::ColumnBinary => "icons/binary.svg",
+            Self::ColumnJson => "icons/braces.svg",
+            Self::Filter => "icons/list-filter.svg",
+            Self::Sort => "icons/arrow-down-up.svg",
         }
     }
 }
@@ -72,6 +88,38 @@ impl Icon {
 // Embedded assets work independently of the process's working directory and
 // require neither a runtime download nor an external icon/font dependency.
 const ASSETS: &[(&str, &[u8])] = &[
+    (
+        "icons/key-round.svg",
+        include_bytes!("../../assets/icons/key-round.svg"),
+    ),
+    (
+        "icons/hash.svg",
+        include_bytes!("../../assets/icons/hash.svg"),
+    ),
+    (
+        "icons/text-initial.svg",
+        include_bytes!("../../assets/icons/text-initial.svg"),
+    ),
+    (
+        "icons/calendar-clock.svg",
+        include_bytes!("../../assets/icons/calendar-clock.svg"),
+    ),
+    (
+        "icons/binary.svg",
+        include_bytes!("../../assets/icons/binary.svg"),
+    ),
+    (
+        "icons/braces.svg",
+        include_bytes!("../../assets/icons/braces.svg"),
+    ),
+    (
+        "icons/list-filter.svg",
+        include_bytes!("../../assets/icons/list-filter.svg"),
+    ),
+    (
+        "icons/arrow-down-up.svg",
+        include_bytes!("../../assets/icons/arrow-down-up.svg"),
+    ),
     (
         "icons/square-code.svg",
         include_bytes!("../../assets/icons/square-code.svg"),
@@ -220,10 +268,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_twentyeight_embedded_icons_are_listed_and_loaded() {
+    fn all_thirtysix_embedded_icons_are_listed_and_loaded() {
         let assets = IconAssets;
         let paths = assets.list("icons/").unwrap();
-        assert_eq!(paths.len(), 28);
+        assert_eq!(paths.len(), 36);
         for path in paths {
             let bytes = assets.load(path.as_ref()).unwrap().unwrap();
             assert!(matches!(bytes, Cow::Borrowed(_)));
@@ -245,11 +293,66 @@ mod tests {
                 assert!(!svg.contains(forbidden), "{path}: {forbidden}");
             }
         }
-        assert_eq!(assets.list("icons/arrow-").unwrap().len(), 2);
+        assert_eq!(assets.list("icons/arrow-").unwrap().len(), 3);
         assert_eq!(assets.list(Icon::Ai.path()).unwrap().len(), 1);
         assert!(assets.list("missing/").unwrap().is_empty());
         assert!(assets.load("icons/missing.svg").unwrap().is_none());
         assert!(assets.load("../icons/database.svg").unwrap().is_none());
+    }
+
+    #[test]
+    fn column_and_table_action_icons_load_the_expected_assets() {
+        for (kind, path, expected) in [
+            (
+                Icon::ColumnKey,
+                "icons/key-round.svg",
+                include_bytes!("../../assets/icons/key-round.svg").as_slice(),
+            ),
+            (
+                Icon::ColumnNumber,
+                "icons/hash.svg",
+                include_bytes!("../../assets/icons/hash.svg").as_slice(),
+            ),
+            (
+                Icon::ColumnText,
+                "icons/text-initial.svg",
+                include_bytes!("../../assets/icons/text-initial.svg").as_slice(),
+            ),
+            (
+                Icon::ColumnDate,
+                "icons/calendar-clock.svg",
+                include_bytes!("../../assets/icons/calendar-clock.svg").as_slice(),
+            ),
+            (
+                Icon::ColumnBinary,
+                "icons/binary.svg",
+                include_bytes!("../../assets/icons/binary.svg").as_slice(),
+            ),
+            (
+                Icon::ColumnJson,
+                "icons/braces.svg",
+                include_bytes!("../../assets/icons/braces.svg").as_slice(),
+            ),
+            (
+                Icon::Filter,
+                "icons/list-filter.svg",
+                include_bytes!("../../assets/icons/list-filter.svg").as_slice(),
+            ),
+            (
+                Icon::Sort,
+                "icons/arrow-down-up.svg",
+                include_bytes!("../../assets/icons/arrow-down-up.svg").as_slice(),
+            ),
+        ] {
+            assert_eq!(kind.path(), path);
+            assert_eq!(
+                IconAssets.load(kind.path()).unwrap().unwrap().as_ref(),
+                expected
+            );
+        }
+        // Boolean columns reuse Check; unsupported column types reuse Table.
+        assert_eq!(Icon::Check.path(), "icons/check.svg");
+        assert_eq!(Icon::Table.path(), "icons/table.svg");
     }
 
     #[test]

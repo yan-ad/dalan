@@ -55,6 +55,45 @@ pub async fn sorted_pages(
                 .contains("Sort column is not in table metadata")
         );
     }
+    // Editable fragments use bound literals and deterministic multi-column
+    // ordering on every successful MySQL/MariaDB/transport fixture path.
+    for (clause, order, expected) in [
+        (
+            "id BETWEEN 1 AND 3",
+            "name DESC, id ASC",
+            vec!["2", "1", "3"],
+        ),
+        ("name = 'Alice' OR email IS NULL", "id DESC", vec!["2", "1"]),
+        ("id IN (1,3) AND name LIKE '%literal%'", "name", vec!["3"]),
+        ("name = ''' OR 1=1 --'", "id", vec![]),
+    ] {
+        let request = BrowseRequest {
+            where_clause: clause.into(),
+            order_by: order.into(),
+            filter: Some(dalan_drivers::TableFilter {
+                column: "unknown".into(),
+                operator: dalan_drivers::FilterOperator::Equals,
+                value: "ignored".into(),
+            }),
+            sort: Some(TableSort {
+                column: "unknown".into(),
+                direction: SortDirection::Ascending,
+            }),
+            offset: 0,
+            limit: 100,
+            ..base.clone()
+        };
+        let page = browse(profile, password, &request).await?;
+        let id_index = page.columns.iter().position(|c| c.name == "id").unwrap();
+        assert_eq!(
+            page.rows
+                .iter()
+                .map(|r| r[id_index].display())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(!page.has_more);
+    }
     Ok(())
 }
 

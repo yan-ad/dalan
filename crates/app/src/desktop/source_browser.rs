@@ -1,10 +1,12 @@
 //! Read-only source explorer and bounded table browser.
 use dalan_app::explorer_tree::{TreeKey, TreeRow};
-use dalan_drivers::{
-    DbEngine,
-    mysql::{FilterOperator, TableFilter},
+use dalan_drivers::DbEngine;
+use gpui::{
+    Context, Div, Entity, KeyBinding, Stateful, Subscription, Window, actions, div, prelude::*, px,
+    rgb,
 };
-use gpui::{Context, Div, Entity, Stateful, Subscription, Window, div, prelude::*, px, rgb};
+
+actions!(table_browser, [ApplyTableConditions]);
 
 use super::{
     data_grid::DataGrid,
@@ -673,37 +675,40 @@ impl Render for SourceExplorer {
 pub(super) struct SourceBrowser {
     model: Entity<SourceModel>,
     grid: Entity<DataGrid>,
-    value: Entity<TextInput>,
-    column: usize,
-    operator: usize,
+    where_input: Entity<TextInput>,
+    order_input: Entity<TextInput>,
+    applied_where: String,
+    applied_order: String,
     selection: (Option<String>, Option<String>, Option<String>),
     _subscriptions: Vec<Subscription>,
 }
 
-const OPERATORS: [(FilterOperator, &str); 7] = [
-    (FilterOperator::Contains, "Contains"),
-    (FilterOperator::Equals, "Equals"),
-    (FilterOperator::NotEquals, "Not equals"),
-    (FilterOperator::GreaterThan, "Greater than"),
-    (FilterOperator::LessThan, "Less than"),
-    (FilterOperator::IsNull, "Is NULL"),
-    (FilterOperator::IsNotNull, "Is not NULL"),
-];
-
 impl SourceBrowser {
     pub(super) fn new(model: Entity<SourceModel>, cx: &mut Context<Self>) -> Self {
+        cx.bind_keys([KeyBinding::new(
+            "enter",
+            ApplyTableConditions,
+            Some("TableBrowser > DalanInput"),
+        )]);
         let grid = cx.new(|cx| DataGrid::new(model.clone(), cx));
-        let value = cx.new(|cx| {
-            let mut input = TextInput::new("", "Filter value", false, cx);
-            input.set_tab_order(20);
-            input
-        });
         let m = model.read(cx);
+        let applied_where = m.where_clause.clone();
+        let applied_order = m.order_by.clone();
         let selection = (
             m.selected_source.clone(),
             m.selected_database.clone(),
             m.selected_table.clone(),
         );
+        let where_input = cx.new(|cx| {
+            let mut input = TextInput::new(applied_where.clone(), "WHERE", false, cx);
+            input.set_tab_order(20);
+            input
+        });
+        let order_input = cx.new(|cx| {
+            let mut input = TextInput::new(applied_order.clone(), "ORDER BY", false, cx);
+            input.set_tab_order(21);
+            input
+        });
         let subscriptions = vec![
             cx.observe(&model, |this, model, cx| {
                 let m = model.read(cx);
@@ -712,47 +717,63 @@ impl SourceBrowser {
                     m.selected_database.clone(),
                     m.selected_table.clone(),
                 );
-                if this.selection != selection {
-                    this.selection = selection;
-                    this.column = 0;
-                    this.operator = 0;
-                    this.value.update(cx, |input, cx| input.set_value("", cx));
+                let where_clause = m.where_clause.clone();
+                let order_by = m.order_by.clone();
+                let changed_selection = this.selection != selection;
+                this.selection = selection;
+                // Loading, paging, and other notifications must not clobber drafts.
+                // A committed clause change (including a header sort) does sync it.
+                if changed_selection || this.applied_where != where_clause {
+                    this.applied_where = where_clause;
+                    this.where_input.update(cx, |input, cx| {
+                        input.set_value(this.applied_where.clone(), cx)
+                    });
+                }
+                if changed_selection || this.applied_order != order_by {
+                    this.applied_order = order_by;
+                    this.order_input.update(cx, |input, cx| {
+                        input.set_value(this.applied_order.clone(), cx)
+                    });
                 }
                 cx.notify();
             }),
-            cx.observe(&value, |_, _, cx| cx.notify()),
+            cx.observe(&where_input, |_, _, cx| cx.notify()),
+            cx.observe(&order_input, |_, _, cx| cx.notify()),
         ];
         Self {
             model,
             grid,
-            value,
-            column: 0,
-            operator: 0,
+            where_input,
+            order_input,
+            applied_where,
+            applied_order,
             selection,
             _subscriptions: subscriptions,
         }
     }
 
     fn apply(&mut self, cx: &mut Context<Self>) {
+        let model = self.model.read(cx);
+        if model.busy || model.selected_table.is_none() {
+            return;
+        }
+        let where_clause = self.where_input.read(cx).value();
+        let order_by = self.order_input.read(cx).value();
+        self.model.update(cx, |model, cx| {
+            model.apply_table_clauses(where_clause, order_by, cx)
+        });
+    }
+
+    fn clear(&mut self, cx: &mut Context<Self>) {
         if self.model.read(cx).busy {
             return;
         }
-        let column = self
-            .model
-            .read(cx)
-            .page
-            .as_ref()
-            .and_then(|p| p.columns.get(self.column))
-            .map(|c| c.name.clone());
-        if let Some(column) = column {
-            let filter = TableFilter {
-                column,
-                operator: OPERATORS[self.operator].0,
-                value: self.value.read(cx).value(),
-            };
-            self.model
-                .update(cx, |model, cx| model.apply_filter(Some(filter), cx));
-        }
+        self.where_input
+            .update(cx, |input, cx| input.set_value("", cx));
+        self.order_input
+            .update(cx, |input, cx| input.set_value("", cx));
+        self.model
+            .update(cx, |model, cx| model.clear_table_clauses(cx));
     }
 }
 
@@ -828,12 +849,18 @@ impl Render for SourceBrowser {
             (Some(source), _, _) => source.clone(),
             _ => String::new(),
         };
+        let selected_table = m.selected_table.is_some();
+        let result_evicted = m.result_evicted;
         let empty = if m.selected_table.is_none() {
             "Select a table"
+        } else if result_evicted {
+            "Result evicted from memory. Use Refresh to reload."
         } else {
             "No table page loaded. Use Refresh to retry."
         };
         let mut body = div()
+            .key_context("TableBrowser")
+            .on_action(cx.listener(|this, _: &ApplyTableConditions, _, cx| this.apply(cx)))
             .id("source-browser")
             .debug_selector(|| "source-browser".into())
             .size_full()
@@ -892,6 +919,86 @@ impl Render for SourceBrowser {
                     ),
             );
         }
+        if selected_table {
+            body = body.child(
+                div()
+                    .id("table-conditions-toolbar")
+                    .debug_selector(|| "table-conditions-toolbar".into())
+                    .flex_shrink_0()
+                    .min_w(px(0.))
+                    .px(px(6.))
+                    .py(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .id("where-clause")
+                            .debug_selector(|| "where-clause".into())
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(icon(Icon::Filter, MUTED))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .child(self.where_input.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("order-by-clause")
+                            .debug_selector(|| "order-by-clause".into())
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(icon(Icon::Sort, MUTED))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .child(self.order_input.clone()),
+                            ),
+                    )
+                    .child(toolbar_button(
+                        "apply-table-conditions",
+                        Icon::Check,
+                        "Apply WHERE and ORDER BY (Enter)",
+                        busy,
+                        cx,
+                        |this, cx| this.apply(cx),
+                    ))
+                    .child(toolbar_button(
+                        "clear-table-conditions",
+                        Icon::Hide,
+                        "Clear WHERE and ORDER BY",
+                        busy,
+                        cx,
+                        |this, cx| this.clear(cx),
+                    ))
+                    .child(toolbar_button(
+                        "refresh-table",
+                        Icon::Refresh,
+                        "Refresh table using applied conditions",
+                        busy,
+                        cx,
+                        |this, cx| this.model.update(cx, |model, cx| model.refresh_table(cx)),
+                    ))
+                    .child(toolbar_button(
+                        "cancel-table",
+                        Icon::Stop,
+                        "Cancel table request",
+                        !busy,
+                        cx,
+                        |this, cx| this.model.update(cx, |model, cx| model.cancel_table(cx)),
+                    )),
+            );
+        }
         if busy {
             body = body.child(
                 div()
@@ -935,101 +1042,6 @@ impl Render for SourceBrowser {
                 body = body.child(div().px(px(12.0)).py(px(6.0)).text_color(rgb(MUTED))
                     .child("Previous page shown until the current request succeeds. Pagination is disabled."));
             }
-            if self.column >= page.columns.len() {
-                self.column = 0;
-            }
-            let column_label = page
-                .columns
-                .get(self.column)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| "No columns".into());
-            let no_columns = page.columns.is_empty();
-            let unary = matches!(
-                OPERATORS[self.operator].0,
-                FilterOperator::IsNull | FilterOperator::IsNotNull
-            );
-            body = body.child(
-                div()
-                    .px(px(10.))
-                    .py(px(6.))
-                    .flex_shrink_0()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(
-                        button(
-                            "filter-column",
-                            column_label,
-                            false,
-                            busy || no_columns,
-                            cx,
-                            |this, cx| {
-                                let count = this
-                                    .model
-                                    .read(cx)
-                                    .page
-                                    .as_ref()
-                                    .map_or(0, |p| p.columns.len());
-                                if count > 0 {
-                                    this.column = (this.column + 1) % count;
-                                    cx.notify();
-                                }
-                            },
-                        )
-                        .tooltip(|_, cx| {
-                            cx.new(|_| super::ControlTooltip("Choose filter column"))
-                                .into()
-                        }),
-                    )
-                    .child(
-                        button(
-                            "filter-operator",
-                            OPERATORS[self.operator].1,
-                            false,
-                            busy,
-                            cx,
-                            |this, cx| {
-                                this.operator = (this.operator + 1) % OPERATORS.len();
-                                cx.notify();
-                            },
-                        )
-                        .tooltip(|_, cx| {
-                            cx.new(|_| super::ControlTooltip("Choose filter operator"))
-                                .into()
-                        }),
-                    )
-                    .when(!unary, |el| {
-                        el.child(
-                            div()
-                                .id("filter-value")
-                                .debug_selector(|| "filter-value".into())
-                                .w(px(200.))
-                                .child(self.value.clone()),
-                        )
-                    })
-                    .child(toolbar_button(
-                        "apply-filter",
-                        Icon::Check,
-                        "Apply filter",
-                        busy || no_columns,
-                        cx,
-                        |this, cx| this.apply(cx),
-                    ))
-                    .child(toolbar_button(
-                        "clear-filter",
-                        Icon::Hide,
-                        "Clear filter",
-                        busy,
-                        cx,
-                        |this, cx| {
-                            this.column = 0;
-                            this.operator = 0;
-                            this.value.update(cx, |input, cx| input.set_value("", cx));
-                            this.model.update(cx, |m, cx| m.apply_filter(None, cx));
-                        },
-                    )),
-            );
             body = body.child(self.grid.clone());
             let (summary, summary_tooltip) = page_summary(&page);
             body = body.child(
@@ -1758,12 +1770,18 @@ mod tests {
     }
 
     #[gpui::test]
-    fn filter_controls_bind_literal_value_cycle_and_clear(cx: &mut TestAppContext) {
+    fn clause_inputs_keep_drafts_until_apply_and_clear(cx: &mut TestAppContext) {
         cx.update(crate::desktop::bind_keys);
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let profile = SourceProfile {
+            host: "127.0.0.1".into(),
+            port: server.local_addr().unwrap().port(),
+            ..Default::default()
+        };
         let model = cx.new(|_| {
-            let mut model = SourceModel::for_tests(vec![SourceProfile::default()]);
-            // No selected source means Apply cannot launch a database task.
-            model.selected_database = Some("inventory".into());
+            let mut model = SourceModel::for_tests(vec![profile.clone()]);
+            model.selected_source = Some(profile.id.clone());
+            model.selected_database = Some("db".into());
             model.selected_table = Some("items".into());
             model.page = Some(std::sync::Arc::new(page()));
             model
@@ -1772,45 +1790,37 @@ mod tests {
         cx.simulate_resize(gpui::size(px(1000.), px(800.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
-        click(cx, "filter-column");
-        assert_eq!(browser.read_with(cx, |browser, _| browser.column), 1);
-        click(cx, "filter-operator");
-        assert_eq!(browser.read_with(cx, |browser, _| browser.operator), 1);
-        click(cx, "filter-value");
-        let literal = "' OR 1=1; --";
-        cx.simulate_input(literal);
-        click(cx, "apply-filter");
-        model.read_with(cx, |model, _| {
-            let filter = model.test_filter().unwrap();
-            assert_eq!(filter.column, "name");
-            assert_eq!(filter.operator, FilterOperator::Equals);
-            assert_eq!(filter.value, literal);
-            assert!(!model.busy);
-            assert_eq!(model.page.as_ref().unwrap().rows.len(), 2);
+        click(cx, "where-clause");
+        cx.simulate_input("id > 1");
+        click(cx, "order-by-clause");
+        cx.simulate_input("name DESC, id ASC");
+        model.update(cx, |model, cx| {
+            assert_eq!(model.where_clause, "");
+            assert_eq!(model.order_by, "");
+            cx.notify();
         });
-        for _ in 0..4 {
-            click(cx, "filter-operator");
-        }
-        assert_eq!(browser.read_with(cx, |browser, _| browser.operator), 5);
-        click(cx, "apply-filter");
-        assert_eq!(
-            model.read_with(cx, |model, _| model.test_filter().unwrap().operator),
-            FilterOperator::IsNull
-        );
-        click(cx, "clear-filter");
-        assert!(model.read_with(cx, |model, _| model.test_filter().is_none()));
+        cx.run_until_parked();
         browser.read_with(cx, |browser, app| {
-            assert_eq!(browser.column, 0);
-            assert_eq!(browser.operator, 0);
-            assert_eq!(browser.value.read(app).value(), "");
+            assert_eq!(browser.where_input.read(app).value(), "id > 1");
+            assert_eq!(browser.order_input.read(app).value(), "name DESC, id ASC");
         });
-        for _ in 0..7 {
-            click(cx, "filter-operator");
-        }
-        assert_eq!(browser.read_with(cx, |browser, _| browser.operator), 0);
-        click(cx, "filter-column");
-        click(cx, "filter-column");
-        assert_eq!(browser.read_with(cx, |browser, _| browser.column), 0);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        model.read_with(cx, |model, _| {
+            assert_eq!(model.where_clause, "id > 1");
+            assert_eq!(model.order_by, "name DESC, id ASC");
+        });
+        model.update(cx, |model, cx| model.cancel_table(cx));
+        cx.run_until_parked();
+        click(cx, "clear-table-conditions");
+        browser.read_with(cx, |browser, app| {
+            assert_eq!(browser.where_input.read(app).value(), "");
+            assert_eq!(browser.order_input.read(app).value(), "");
+        });
+        model.read_with(cx, |model, _| {
+            assert_eq!(model.where_clause, "");
+            assert_eq!(model.order_by, "");
+        });
     }
 
     #[gpui::test]
@@ -2195,8 +2205,8 @@ mod tests {
             "export-loaded-page",
             "previous-page",
             "next-page",
-            "apply-filter",
-            "clear-filter",
+            "apply-table-conditions",
+            "clear-table-conditions",
         ] {
             let bounds = cx.debug_bounds(id).unwrap();
             assert_eq!(
@@ -2207,14 +2217,35 @@ mod tests {
     }
 
     #[gpui::test]
-    fn selection_observer_resets_filter_draft(cx: &mut TestAppContext) {
+    fn committed_order_changes_sync_without_clobbering_where_draft(cx: &mut TestAppContext) {
         let model = cx.new(|_| SourceModel::for_tests(vec![]));
         let (browser, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
         browser.update(cx, |browser, cx| {
-            browser.column = 1;
-            browser.operator = 4;
             browser
-                .value
+                .where_input
+                .update(cx, |input, cx| input.set_value("id > 2", cx));
+            browser
+                .order_input
+                .update(cx, |input, cx| input.set_value("draft", cx));
+        });
+        model.update(cx, |model, cx| {
+            model.order_by = "`name` DESC".into();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        browser.read_with(cx, |browser, app| {
+            assert_eq!(browser.where_input.read(app).value(), "id > 2");
+            assert_eq!(browser.order_input.read(app).value(), "`name` DESC");
+        });
+    }
+
+    #[gpui::test]
+    fn selection_observer_resets_clause_drafts(cx: &mut TestAppContext) {
+        let model = cx.new(|_| SourceModel::for_tests(vec![]));
+        let (browser, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
+        browser.update(cx, |browser, cx| {
+            browser
+                .where_input
                 .update(cx, |input, cx| input.set_value("old", cx));
         });
         model.update(cx, |model, cx| {
@@ -2223,9 +2254,8 @@ mod tests {
         });
         cx.run_until_parked();
         browser.read_with(cx, |browser, app| {
-            assert_eq!(browser.column, 0);
-            assert_eq!(browser.operator, 0);
-            assert_eq!(browser.value.read(app).value(), "");
+            assert_eq!(browser.where_input.read(app).value(), "");
+            assert_eq!(browser.order_input.read(app).value(), "");
         });
     }
     #[test]

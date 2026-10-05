@@ -328,6 +328,7 @@ impl Render for QueryConsole {
             .when_some(editor_error, |el, error| el.child(notice(error, ERROR)))
             .when_some(error, |el, error| el.child(notice(error, ERROR)))
             .children(warnings.into_iter().map(|warning| notice(warning, WARNING)))
+            .when(self.model.read(cx).result_evicted, |el| el.child(notice("Previous result released to limit memory. Run the query again to load results; the SQL draft is retained.".into(), MUTED)))
             .when(dirty_results, |el| {
                 el.child(notice(
                     "Results belong to the submitted query; the draft has changed.".into(),

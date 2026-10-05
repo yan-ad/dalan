@@ -4,7 +4,7 @@ The main UI icon set is [Lucide](https://github.com/lucide-icons/lucide), explic
 
 ## Provenance
 
-All twenty-eight SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
+All thirty-six SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
 
 `500620a2e8123f8d1db191538886dc0c223f69a9`
 
@@ -40,10 +40,20 @@ The revision was resolved once using `https://api.github.com/repos/lucide-icons/
 | Play | play.svg |
 | Stop | circle-stop.svg |
 | Close | x.svg |
+| ColumnKey | key-round.svg |
+| ColumnNumber | hash.svg |
+| ColumnText | text-initial.svg |
+| ColumnDate | calendar-clock.svg |
+| ColumnBinary | binary.svg |
+| ColumnJson | braces.svg |
+| Filter | list-filter.svg |
+| Sort | arrow-down-up.svg |
 
 The main user-facing chrome is icon-led, using functional glyphs rather than a brand icon. **Cached** uses **HardDrive** to mark locally cached metadata, **Warning** uses **TriangleAlert** for warnings, **Loading** uses a static **LoaderCircle** glyph, **ReadOnly** uses **LockKeyhole**, and **Previous** uses **ChevronLeft**. Next reuses **ChevronRight**; Download, Hide (Minus), and Check reuse their existing assets. These assets alone add no buttons, state updates, or animation. At the pinned revision, `icons/triangle-alert.svg` exists under that exact name; `alert-triangle` is only a deprecated alias in `icons/triangle-alert.json`. The five additions were fetched through GitHub's authenticated contents API (`https://api.github.com/repos/lucide-icons/lucide/contents/icons/<name>.svg?ref=500620a2e8123f8d1db191538886dc0c223f69a9`), over verified TLS, then base64-decoded unchanged and checked against the returned Git blob SHA.
 
 The query console uses **Query** (**SquareCode**) to denote application SQL, not a shell terminal; it deliberately does not use SquareTerminal. A new-query toolbar action can combine the existing **Add** (**Plus**) glyph with Query. **Play** denotes running a query, **Stop** uses the available upstream **CircleStop** cancellation glyph (not a danger-colored glyph), and **Close** uses **X** for closing a tab. These four additions were fetched through GitHub's authenticated contents API (`https://api.github.com/repos/lucide-icons/lucide/contents/icons/<name>.svg?ref=500620a2e8123f8d1db191538886dc0c223f69a9`) over verified TLS, base64-decoded unchanged, and verified against the returned Git blob SHA. The existing Plus SVG and complete license were also verified unchanged at that revision. This asset change adds no tab UI or query execution behavior.
+
+The column headers use **ColumnKey** (**KeyRound**) for primary keys, **ColumnNumber** (**Hash**) for numeric values, **ColumnText** (**TextInitial**) for text, **ColumnDate** (**CalendarClock**) for dates/times, **ColumnBinary** (**Binary**) for binary data, and **ColumnJson** (**Braces**) for JSON. Boolean columns reuse **Check**, and unsupported types reuse **Table**. **Filter** uses **ListFilter** for WHERE filtering, and neutral **Sort** uses **ArrowDownUp**; directional sorting keeps ArrowUp/ArrowDown. At this revision, `letter-text` is a deprecated alias in upstream `icons/text-initial.json`, and no `icons/letter-text.svg` exists: ColumnText therefore uses the exact official filename `text-initial.svg` without renaming. All eight additions were downloaded as unchanged bytes from the immutable raw GitHub URLs above over verified TLS and checked against the Git blob SHA returned by GitHub's authenticated contents API for the same revision. The complete upstream license was also downloaded and verified byte-for-byte unchanged, including the Feather MIT notice covering Hash. These abstract functional glyphs are not logos. They retain `currentColor`, use the existing GPUI alpha-mask tint path, and introduce no UI behavior or schema/source-field color changes.
 
 The compact explorer reuses **Database** for schema/database children, **Folder** for the Tables group, and **Table** for table children. **ExpandTree** denotes expanding loaded nodes and **CollapseTree** denotes collapsing all nodes. The upstream `icons/table.svg` exists at this revision and is vendored under the same filename; no table alias or substitution is needed.
 

@@ -60,6 +60,10 @@ pub struct BrowseRequest {
     pub filter: Option<TableFilter>,
     #[serde(default)]
     pub sort: Option<TableSort>,
+    #[serde(default)]
+    pub where_clause: String,
+    #[serde(default)]
+    pub order_by: String,
     pub offset: u64,
     pub limit: u32,
 }
@@ -70,6 +74,8 @@ impl Default for BrowseRequest {
             table: String::new(),
             filter: None,
             sort: None,
+            where_clause: String::new(),
+            order_by: String::new(),
             offset: 0,
             limit: 100,
         }
@@ -499,8 +505,12 @@ fn select(request: &BrowseRequest, columns: &[ColumnInfo]) -> Result<(String, Ve
         quote(&request.database),
         quote(&request.table)
     );
-    let mut params = Vec::new();
-    if let Some(f) = &request.filter {
+    let compiled =
+        crate::table_clauses::compile(&request.where_clause, &request.order_by, Some(columns))?;
+    let mut params = compiled.params;
+    if let Some(clause) = compiled.where_sql {
+        sql.push_str(&format!(" WHERE {clause}"));
+    } else if let Some(f) = &request.filter {
         ensure!(
             columns.iter().any(|c| c.name == f.column),
             "Filter column is not in table metadata"
@@ -520,23 +530,34 @@ fn select(request: &BrowseRequest, columns: &[ColumnInfo]) -> Result<(String, Ve
             params.push(Value::from(value));
         }
     }
-    let mut order = Vec::new();
-    if let Some(sort) = &request.sort {
+    let mut requested_order = compiled.order_sql;
+    if request.order_by.trim().is_empty()
+        && let Some(sort) = &request.sort
+    {
         ensure!(
             columns.iter().any(|c| c.name == sort.column),
             "Sort column is not in table metadata"
         );
-        let direction = match sort.direction {
-            SortDirection::Ascending => "ASC",
-            SortDirection::Descending => "DESC",
-        };
-        order.push(format!("{} {direction}", quote(&sort.column)));
+        requested_order.push((sort.column.clone(), sort.direction));
     }
+    let mut order = requested_order
+        .iter()
+        .map(|(name, direction)| {
+            format!(
+                "{} {}",
+                quote(name),
+                match direction {
+                    SortDirection::Ascending => "ASC",
+                    SortDirection::Descending => "DESC",
+                }
+            )
+        })
+        .collect::<Vec<_>>();
     order.extend(
         columns
             .iter()
             .filter(|c| {
-                c.is_primary_key && request.sort.as_ref().is_none_or(|s| s.column != c.name)
+                c.is_primary_key && !requested_order.iter().any(|(name, _)| name == &c.name)
             })
             .map(|c| quote(&c.name)),
     );
@@ -691,6 +712,9 @@ pub async fn browse(
             (1..=200).contains(&request.limit),
             "Page limit must be 1 through 200"
         );
+        // Syntax and dangerous constructs are rejected before connecting.
+        // Actual column membership is checked after metadata discovery.
+        crate::table_clauses::compile(&request.where_clause, &request.order_by, None)?;
         let mut s = Session::connect(profile, password).await?;
         s.conn()
             .query_drop("START TRANSACTION READ ONLY")
@@ -908,6 +932,7 @@ mod tests {
             offset: 0,
             limit: 100,
             sort: None,
+            ..BrowseRequest::default()
         };
         let (sql, params) = select(&request, &[col()]).unwrap();
         assert!(sql.contains("`db``x`.`t`"));
@@ -917,6 +942,72 @@ mod tests {
         let mut bad = request;
         bad.filter.as_mut().unwrap().column = "unknown".into();
         assert!(select(&bad, &[col()]).is_err());
+    }
+    #[test]
+    fn editable_clauses_take_precedence_and_append_primary_key_ties() {
+        let columns = [
+            ColumnInfo {
+                name: "id".into(),
+                is_primary_key: true,
+                ..col()
+            },
+            ColumnInfo {
+                name: "tenant".into(),
+                is_primary_key: true,
+                ..col()
+            },
+            ColumnInfo {
+                name: "name".into(),
+                is_primary_key: false,
+                ..col()
+            },
+        ];
+        let mut request = BrowseRequest {
+            database: "db".into(),
+            table: "t".into(),
+            where_clause: "name = 'secret' AND id >= -1".into(),
+            order_by: "name DESC, tenant DESC".into(),
+            filter: Some(TableFilter {
+                column: "unknown".into(),
+                operator: FilterOperator::Equals,
+                value: "ignored".into(),
+            }),
+            sort: Some(TableSort {
+                column: "unknown".into(),
+                direction: SortDirection::Ascending,
+            }),
+            ..BrowseRequest::default()
+        };
+        let (sql, params) = select(&request, &columns).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT `id`,`tenant`,`name` FROM `db`.`t` WHERE ((`name` = ?) AND (`id` >= ?)) ORDER BY `name` DESC,`tenant` DESC,`id` LIMIT ? OFFSET ?"
+        );
+        assert_eq!(
+            params,
+            vec![
+                Value::from("secret"),
+                Value::Int(-1),
+                Value::UInt(101),
+                Value::UInt(0)
+            ]
+        );
+        request.where_clause = "   ".into();
+        assert!(select(&request, &columns).is_err()); // falls back to old filter
+        request.filter = None;
+        let (sql, _) = select(&request, &columns).unwrap();
+        assert!(!sql.contains("WHERE"));
+        request.order_by = "".into();
+        assert!(select(&request, &columns).is_err()); // falls back to old sort
+        request.sort = None;
+        assert!(
+            select(&request, &columns)
+                .unwrap()
+                .0
+                .contains("ORDER BY `id`,`tenant`")
+        );
+        request.where_clause = "SLEEP(1)".into();
+        assert!(select(&request, &columns).is_err()); // invalid text never falls back
     }
     #[test]
     fn null_filters_and_limits() {
@@ -931,6 +1022,7 @@ mod tests {
             offset: u64::MAX,
             limit: 200,
             sort: None,
+            ..BrowseRequest::default()
         };
         let (sql, p) = select(&r, &[col()]).unwrap();
         assert!(sql.contains("IS NULL"));
@@ -963,6 +1055,7 @@ mod tests {
                 }),
                 offset: 7,
                 limit: 1,
+                ..BrowseRequest::default()
             };
             let (sql, params) = select(&request, &columns).unwrap();
             assert_eq!(
@@ -1066,6 +1159,8 @@ mod tests {
         .unwrap();
         assert_eq!(request.sort, None);
         assert_eq!(BrowseRequest::default().sort, None);
+        assert_eq!(request.where_clause, "");
+        assert_eq!(request.order_by, "");
         for direction in [SortDirection::Ascending, SortDirection::Descending] {
             let sort = TableSort {
                 column: "name".into(),

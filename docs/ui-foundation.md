@@ -2,6 +2,16 @@
 
 Implemented scope: macOS desktop shell with the user-selected Zed-like compact **Carbonfox - opaque** default. The user explicitly rejects DataGrip visual styling; DataGrip remains a database UX/workflow reference only, not button-heavy layout/chrome to copy. Main content hosts the experimental MySQL/MariaDB browser/read-only table workspace; source setup uses a separate dedicated dialog window. This is not a completed SQL client or accessibility/theme system.
 
+## Rich table controls (current)
+
+The [table-browser guide](table-browser.md) supersedes the old column/operator/value toolbar and per-cell virtual elements described in earlier slice history below. WHERE/list-filter and ORDER BY/arrow-down-up are native editable single-line drafts, retained per tab, with no fetch on typing. Enter applies only under `TableBrowser > DalanInput`; Apply checks current metadata before credentials/network. Static validation failures retain visibly stale rows. Clear is disabled while busy: cancel the owned request first. Refresh/Cancel, loaded export, pagination and range footer remain guarded working controls.
+
+Name-only ellipsized headers use type/key icons and full type/nullable/key/sort tooltips, not colored long type suffixes. Explicit sort glyph targets stop propagation and cycle once; header click/Enter/Space remains supported. Query-console headers disable sorting. Qualified titles and tab labels preserve essential source/table names with ellipsis/full tooltips, without duplicate title sorting. The 44 px row-number gutter stays at x = 0 and shares body y; page offset 100 labels the first row 101.
+
+The production body paints quads and cached shaped lines in canvas, with zero per-cell Divs, keeping native interactive headers. Two-cell overscan bounds range caches; last-painted/last-shaped counters are distinct from materialized cells. Previews cap at 128 graphemes plus ellipsis and fit cells without splitting graphemes; typed/export values are unchanged. Viewport keys/trackpads/scrollbar tracks remain local. No selection/copy/resizing or accessibility completion is implied.
+
+The current icon inventory is 36 (28 plus eight), at the existing Lucide pin with full ISC/Feather notices and documented upstream `text-initial` alias. Native capture is still permission-blocked; component pins/counts do not establish screenshot matching or native FPS. Expected 154 simulated UI tests require final primary confirmation; see [evidence](testing.md#rich-canvas-table-browser).
+
 ## Composition and purpose
 
 ```text

@@ -4,9 +4,23 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 
 ## Confirmed scoped completions
 
+### Rich canvas table browser (current)
+
+- [x] Production canvas body with row/grid quads and cached shaped text, zero per-cell Divs; native interactive headers, viewport/overscan-bounded caches and distinct painted/materialized/shaped counters.
+- [x] Grapheme-safe 128-grapheme previews and cell-fit ellipsis; typed values/loaded CSV unchanged, no full page clone/format walk on redraw.
+- [x] Pinned 44 px row-number gutter, x = 0/shared body y, `offset + row + 1`; compact name-only type/key headers, full metadata tooltips and explicit single-cycle sort glyph click targets with propagation stopped. Header Enter/Space retained; query sorting disabled.
+- [x] Editable WHERE/ORDER BY single-line drafts, per-tab retention/no typing fetch, input-focused Enter/Apply, metadata validation before credentials/network, static errors retaining stale prior pages. Busy Clear stays guarded; working owned Cancel/Refresh/export/paging/footer preserved.
+- [x] sqlparser 0.62.0 bounded fragment compiler, bound exact native literals/fixed SELECT/LIMIT/OFFSET, rejected unsupported syntax, eight unique actual ORDER BY columns and unused ascending PK ties. Legacy typed requests backend-only, no production legacy widgets or arbitrary SQL execution.
+- [x] Global best-effort estimated 16 MiB/eight-page inactive-result LRU, active/busy/export/save protection, once-per-Arc-identity estimate and no extra budget Arc references/notification row walks. Tabs/drafts/applied conditions/scroll survive eviction; caches release on page None. Evicted table activation refreshes asynchronously, console never auto-runs and labels old result unavailable/rerun. Stable duplicate tab IDs/32-tab cap retained; SQLite remains metadata-only.
+- [x] 36 pinned Lucide utility assets (28 plus eight), same revision and full ISC/Feather notices with documented upstream text-initial alias; Carbonfox look/source/tree roles unchanged. No mutation tools, placeholder DDL/history/transaction menus or brand assets.
+- [x] Current rich-grid verification: 114 unit tests plus one native-wire test, 154 UI, four Python and 29 unique live cases passed, with strict lint and signed bundle checks. See [evidence](testing.md#rich-canvas-table-browser).
+- [ ] Current-tree hosted CI and native user retry/visual/IME/accessibility/high-DPI/GPU measurements. Historical `4e389d0` passed all five jobs in run 37266563119, not this tree. Permission-blocked captures/test pins are not native visual or FPS proof.
+
+See [table-browser guide](table-browser.md). Earlier slice inventories/counts below are historical where superseded.
+
 - [x] Rust workspace and macOS GPUI dark shell, native titlebar/menu, Database Explorer visibility/resizing and keyboard controls.
 - [x] About Dalan and optional ACP panel with honest **Not connected** state. No agent process, transport, prompt or provider-key integration.
-- [x] Main open-source icon set: twenty-eight embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`, including hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. Bottom-right 28 px bot-message-square retains AI · ACP tooltip and Cmd-Shift-A. No new app/brand icon.
+- [x] Main open-source icon set: thirty-six embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`, including hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. Bottom-right 28 px bot-message-square retains AI · ACP tooltip and Cmd-Shift-A. No new app/brand icon.
 - [x] Complete Lucide ISC and retained Feather MIT notices, with adapted GPUI input Apache-2.0 attribution in [third-party notices](../THIRD_PARTY_NOTICES.md), plus bundle resource wiring. Project license remains undecided.
 - [x] Experimental MySQL/MariaDB source form, version 1 password-free profile storage and optional database discovery. Test, Save and Connect remain separate actions.
 - [x] Session-only passwords and opt-in native macOS Keychain storage; explicit failure/compensation boundaries.

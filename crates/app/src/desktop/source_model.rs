@@ -135,6 +135,9 @@ pub(super) struct SourceModel {
     pub selected_table: Option<String>,
     /// Immutable loaded-page snapshot shared by the browser and export workers.
     pub page: Option<Arc<TablePage>>,
+    pub result_evicted: bool,
+    pub where_clause: String,
+    pub order_by: String,
     pub delete_confirm: bool,
     pub sort: Option<TableSort>,
     pub export_busy: bool,
@@ -377,6 +380,11 @@ impl SourceModel {
         }
         self.invalidate();
         self.selected_database = database;
+        self.where_clause.clear();
+        self.order_by.clear();
+        self.filter = None;
+        self.sort = None;
+        self.result_evicted = false;
         self.page = None;
         self.query_submitted_sql = None;
         self.error = None;
@@ -460,6 +468,7 @@ impl SourceModel {
     }
     fn finish_query(&mut self, sql: String, result: dalan_drivers::QueryResult) {
         self.page = Some(Arc::new(result.page));
+        self.result_evicted = false;
         self.query_submitted_sql = Some(sql);
         self.query_elapsed_ms = Some(result.elapsed_ms);
         self.query_warnings = result.warnings;
@@ -878,6 +887,7 @@ impl SourceModel {
 impl SourceModel {
     pub fn cycle_sort(&mut self, column: String, cx: &mut Context<Self>) {
         if self.query_console
+            || self.workspace_invalidated
             || self.busy
             || self.saving
             || self
@@ -902,6 +912,16 @@ impl SourceModel {
                 direction: SortDirection::Ascending,
             }),
         };
+        self.order_by = self.sort.as_ref().map_or_else(String::new, |sort| {
+            format!(
+                "`{}` {}",
+                sort.column.replace('`', "``"),
+                match sort.direction {
+                    SortDirection::Ascending => "ASC",
+                    SortDirection::Descending => "DESC",
+                }
+            )
+        });
         self.previous_offsets.clear();
         self.load_page(0, cx);
         cx.notify();
@@ -997,6 +1017,9 @@ impl SourceModel {
             tables: vec![],
             selected_table: None,
             page: None,
+            result_evicted: false,
+            where_clause: String::new(),
+            order_by: String::new(),
             delete_confirm: false,
             sort: None,
             export_busy: false,
@@ -1359,6 +1382,9 @@ impl SourceModel {
         self.tables.clear();
         self.selected_table = None;
         self.page = None;
+        self.result_evicted = false;
+        self.where_clause.clear();
+        self.order_by.clear();
         self.filter = None;
         self.sort = None;
         self.previous_offsets.clear();
@@ -1396,6 +1422,9 @@ impl SourceModel {
             return;
         }
         self.selected_table = Some(table);
+        self.where_clause.clear();
+        self.order_by.clear();
+        self.result_evicted = false;
         self.sort = None;
         self.filter = None;
         self.page = None;
@@ -1403,7 +1432,7 @@ impl SourceModel {
         self.load_page(0, cx);
     }
     fn load_page(&mut self, offset: u64, cx: &mut Context<Self>) {
-        if self.workspace_invalidated {
+        if self.workspace_invalidated || self.query_console {
             return;
         }
         let Some(profile) = self.selected_profile() else {
@@ -1425,6 +1454,8 @@ impl SourceModel {
             table,
             filter: self.filter.clone(),
             sort: self.sort.clone(),
+            where_clause: self.where_clause.clone(),
+            order_by: self.order_by.clone(),
             offset,
             limit: profile.options.page_size,
         };
@@ -1444,7 +1475,10 @@ impl SourceModel {
                     Ok((password, page)) => {
                         this.remember_password(id, password);
                         match page {
-                            Ok(page) => this.page = Some(Arc::new(page)),
+                            Ok(page) => {
+                                this.page = Some(Arc::new(page));
+                                this.result_evicted = false;
+                            }
                             Err(error) => this.error = Some(error.to_string()),
                         }
                     }
@@ -1455,11 +1489,120 @@ impl SourceModel {
         );
         cx.notify();
     }
+    fn table_action_blocked(&self) -> bool {
+        self.busy || self.saving || self.workspace_invalidated || self.query_console
+    }
+
+    /// Validate before touching credentials or starting any network operation.
+    pub fn apply_table_clauses(
+        &mut self,
+        where_clause: String,
+        order_by: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.table_action_blocked() {
+            return;
+        }
+        let Some(page) = &self.page else {
+            self.error = Some("Load table metadata before applying clauses".into());
+            cx.notify();
+            return;
+        };
+        if let Err(error) =
+            dalan_drivers::validate_table_clauses(&where_clause, &order_by, &page.columns)
+        {
+            self.error = Some(error.to_string());
+            cx.notify();
+            return;
+        }
+        self.where_clause = where_clause;
+        self.order_by = order_by;
+        self.filter = None;
+        self.sort = None;
+        self.error = None;
+        self.previous_offsets.clear();
+        self.load_page(0, cx);
+        cx.notify();
+    }
+
+    pub fn clear_table_clauses(&mut self, cx: &mut Context<Self>) {
+        if self.table_action_blocked() {
+            return;
+        }
+        self.where_clause.clear();
+        self.order_by.clear();
+        self.filter = None;
+        self.sort = None;
+        self.previous_offsets.clear();
+        self.load_page(0, cx);
+        cx.notify();
+    }
+
+    pub fn refresh_table(&mut self, cx: &mut Context<Self>) {
+        if self.table_action_blocked() {
+            return;
+        }
+        self.previous_offsets.clear();
+        self.load_page(0, cx);
+    }
+
+    /// Cancels the client task; this does not confirm a server-side query kill.
+    pub fn cancel_table(&mut self, cx: &mut Context<Self>) {
+        if self.query_console || self.saving || !self.busy {
+            return;
+        }
+        self.invalidate();
+        self.error = Some("Table load cancelled; previous results retained.".into());
+        cx.notify();
+    }
+
+    /// Release only the result snapshot, retaining the draft and browsing context.
+    pub fn evict_result_page(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.busy || self.export_busy || self.saving || self.page.is_none() {
+            return false;
+        }
+        self.page = None;
+        self.result_evicted = true;
+        cx.notify();
+        true
+    }
+
+    /// Approximate owned page allocations, not a hard process-memory bound.
+    /// Shared Arc snapshots are counted once here; grid caches and drafts are excluded.
+    pub fn retained_page_bytes(&self) -> usize {
+        use dalan_drivers::{CellValue, ColumnInfo};
+        use std::mem::size_of;
+        let Some(page) = &self.page else {
+            return 0;
+        };
+        let mut bytes = size_of::<TablePage>()
+            + page.columns.capacity() * size_of::<ColumnInfo>()
+            + page.rows.capacity() * size_of::<Vec<CellValue>>();
+        for column in &page.columns {
+            bytes += column.name.capacity() + column.data_type.capacity();
+        }
+        for row in &page.rows {
+            bytes += row.capacity() * size_of::<CellValue>();
+            for cell in row {
+                bytes += match cell {
+                    CellValue::Null => 0,
+                    CellValue::Text(value)
+                    | CellValue::Binary(value)
+                    | CellValue::Number(value)
+                    | CellValue::Temporal(value) => value.capacity(),
+                };
+            }
+        }
+        bytes
+    }
+
+    #[cfg(all(test, feature = "ui-tests"))]
     pub fn apply_filter(&mut self, filter: Option<TableFilter>, cx: &mut Context<Self>) {
-        if self.saving {
+        if self.table_action_blocked() {
             return;
         }
         self.filter = filter;
+        self.where_clause.clear();
         self.previous_offsets.clear();
         self.load_page(0, cx);
     }
@@ -2159,6 +2302,195 @@ mod tests {
         }));
         // No selected source: sorting must not contact a database.
         model
+    }
+
+    #[gpui::test]
+    fn table_clauses_validate_before_operations_and_preserve_previous_results(
+        cx: &mut TestAppContext,
+    ) {
+        let model = cx.new(|_| loaded_model());
+        model.update(cx, |model, cx| {
+            let old = model.page.clone().unwrap();
+            let generation = model.generation;
+            model.where_clause = "id = 41".into();
+            model.previous_offsets = vec![0, 20];
+            for (predicate, order) in [
+                ("missing = 1".to_owned(), String::new()),
+                ("id = 1; DROP TABLE items".to_owned(), String::new()),
+                ("x".repeat(16 * 1024 + 1), String::new()),
+                (String::new(), "x".repeat(16 * 1024 + 1)),
+            ] {
+                model.apply_table_clauses(predicate, order, cx);
+                assert!(model.error.is_some());
+                assert_eq!(model.where_clause, "id = 41");
+                assert_eq!(model.previous_offsets, vec![0, 20]);
+                assert_eq!(model.generation, generation);
+                assert!(model.operation.is_none());
+                assert!(Arc::ptr_eq(model.page.as_ref().unwrap(), &old));
+            }
+            model.error = None;
+            for state in 0..4 {
+                model.busy = state == 0;
+                model.saving = state == 1;
+                model.workspace_invalidated = state == 2;
+                model.query_console = state == 3;
+                model.apply_table_clauses("id = 42".into(), "name DESC".into(), cx);
+                model.clear_table_clauses(cx);
+                assert_eq!(model.where_clause, "id = 41");
+                assert!(model.error.is_none());
+            }
+            model.query_console = false;
+            model.page = None;
+            model.apply_table_clauses(String::new(), String::new(), cx);
+            assert_eq!(
+                model.error.as_deref(),
+                Some("Load table metadata before applying clauses")
+            );
+            assert_eq!(model.generation, generation);
+        });
+    }
+
+    #[gpui::test]
+    fn table_clauses_and_header_sort_replace_only_matching_legacy_state(cx: &mut TestAppContext) {
+        let model = cx.new(|_| loaded_model());
+        model.update(cx, |model, cx| {
+            model.filter = Some(TableFilter {
+                column: "id".into(),
+                operator: FilterOperator::Equals,
+                value: "41".into(),
+            });
+            model.sort = Some(TableSort {
+                column: "id".into(),
+                direction: SortDirection::Ascending,
+            });
+            model.previous_offsets = vec![0, 20];
+            model.apply_table_clauses(
+                "id >= 41 AND name IS NOT NULL".into(),
+                "name DESC, id ASC".into(),
+                cx,
+            );
+            assert!(model.error.is_none());
+            assert!(model.filter.is_none());
+            assert!(model.sort.is_none());
+            assert!(model.previous_offsets.is_empty());
+            for expected in ["`id` ASC", "`id` DESC", ""] {
+                model.cycle_sort("id".into(), cx);
+                assert_eq!(model.order_by, expected);
+                assert_eq!(model.where_clause, "id >= 41 AND name IS NOT NULL");
+            }
+            model.cycle_sort("name".into(), cx);
+            model.apply_filter(None, cx);
+            assert!(model.where_clause.is_empty());
+            assert_eq!(model.order_by, "`name` ASC");
+            model.clear_table_clauses(cx);
+            assert!(model.order_by.is_empty());
+            assert!(model.sort.is_none());
+            assert!(model.page.is_some());
+            assert!(model.operation.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn table_cancel_retains_snapshot_and_aborts_late_completion(cx: &mut TestAppContext) {
+        let model = cx.new(|_| loaded_model());
+        let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+        model.update(cx, |model, cx| {
+            let old = model.page.clone().unwrap();
+            model.where_clause = "id >= 41".into();
+            model.busy = true;
+            model.run(async move { Ok(receiver.await?) }, cx, |_, _, _| {
+                panic!("cancelled table load completed")
+            });
+            let generation = model.generation;
+            model.cancel_table(cx);
+            assert_eq!(model.generation, generation + 1);
+            assert!(!model.busy);
+            assert!(model.operation.is_none());
+            assert!(Arc::ptr_eq(&old, model.page.as_ref().unwrap()));
+            assert_eq!(model.where_clause, "id >= 41");
+            assert_eq!(
+                model.error.as_deref(),
+                Some("Table load cancelled; previous results retained.")
+            );
+        });
+        let _ = sender.send(());
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn header_sort_quotes_actual_metadata_column(cx: &mut TestAppContext) {
+        let model = cx.new(|_| loaded_model());
+        model.update(cx, |model, cx| {
+            let page = Arc::make_mut(model.page.as_mut().unwrap());
+            page.columns[0].name = "odd`column".into();
+            model.cycle_sort("odd`column".into(), cx);
+            assert_eq!(model.order_by, "`odd``column` ASC");
+            assert_eq!(model.sort.as_ref().unwrap().column, "odd`column");
+            dalan_drivers::validate_table_clauses(
+                &model.where_clause,
+                &model.order_by,
+                &model.page.as_ref().unwrap().columns,
+            )
+            .unwrap();
+        });
+    }
+
+    #[gpui::test]
+    fn result_eviction_keeps_context_and_honors_in_flight_guards(cx: &mut TestAppContext) {
+        let model = cx.new(|_| loaded_model());
+        model.update(cx, |model, cx| {
+            model.query_console = true;
+            model.query_sql = "SELECT 2".into();
+            model.query_submitted_sql = Some("SELECT 1".into());
+            model.query_elapsed_ms = Some(17);
+            model.query_warnings = vec!["retained warning".into()];
+            model.query_dirty = true;
+            model.where_clause = "id = 41".into();
+            model.order_by = "name DESC".into();
+            model.filter = Some(TableFilter {
+                column: "id".into(),
+                operator: FilterOperator::Equals,
+                value: "41".into(),
+            });
+            model.sort = Some(TableSort {
+                column: "name".into(),
+                direction: SortDirection::Descending,
+            });
+            model.previous_offsets = vec![0, 20];
+            let generation = model.generation;
+            let bytes = model.retained_page_bytes();
+            assert!(bytes > std::mem::size_of::<TablePage>());
+            for state in 0..3 {
+                model.busy = state == 0;
+                model.export_busy = state == 1;
+                model.saving = state == 2;
+                assert!(!model.evict_result_page(cx));
+                assert!(!model.result_evicted);
+                assert_eq!(model.retained_page_bytes(), bytes);
+            }
+            model.saving = false;
+            assert!(model.evict_result_page(cx));
+            assert!(!model.evict_result_page(cx));
+            assert!(model.result_evicted);
+            assert_eq!(model.retained_page_bytes(), 0);
+            assert_eq!(model.query_sql, "SELECT 2");
+            assert_eq!(model.query_submitted_sql.as_deref(), Some("SELECT 1"));
+            assert_eq!(model.query_elapsed_ms, Some(17));
+            assert_eq!(model.query_warnings, vec!["retained warning"]);
+            assert!(model.query_dirty);
+            assert_eq!(model.where_clause, "id = 41");
+            assert_eq!(model.order_by, "name DESC");
+            assert!(model.filter.is_some());
+            assert!(model.sort.is_some());
+            assert_eq!(model.previous_offsets, vec![0, 20]);
+            assert_eq!(model.generation, generation);
+            model.query_console = false;
+            model.refresh_table(cx);
+            assert!(
+                model.result_evicted,
+                "only successful replacement resets eviction"
+            );
+        });
     }
 
     #[test]

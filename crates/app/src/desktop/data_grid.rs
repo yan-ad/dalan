@@ -11,8 +11,9 @@ use dalan_drivers::{
     mysql::{CellValue, SortDirection, TableSort},
 };
 use gpui::{
-    Bounds, Context, Entity, FocusHandle, MouseButton, Pixels, Render, SharedString, Subscription,
-    Window, canvas, div, prelude::*, px, rgb,
+    Bounds, ContentMask, Context, Entity, FocusHandle, Font, MouseButton, Pixels, Render,
+    ShapedLine, SharedString, Subscription, TextRun, Window, canvas, div, fill, point, prelude::*,
+    px, rgb, size,
 };
 
 use super::{
@@ -24,6 +25,9 @@ use super::{
 type Selection = (Option<String>, Option<String>, Option<String>);
 
 const DISPLAY_GRAPHEME_LIMIT: usize = 128;
+const ROW_GUTTER_WIDTH: f32 = 44.;
+const CELL_PADDING: f32 = 8.;
+const CELL_FONT_SIZE: f32 = 12.;
 
 fn display_preview(value: Option<&CellValue>) -> SharedString {
     let text = match value {
@@ -42,6 +46,70 @@ fn display_preview(value: Option<&CellValue>) -> SharedString {
         preview.push('…');
     }
     preview.into()
+}
+
+/// Small, stable type glyphs keep column names readable without embedding
+/// potentially long SQL type declarations in each header.
+fn column_type_icon(data_type: &str) -> Icon {
+    let kind = data_type.to_ascii_lowercase();
+    if kind.contains("json") {
+        Icon::ColumnJson
+    } else if kind.contains("bool") || kind == "bit" {
+        Icon::Check
+    } else if ["int", "decimal", "numeric", "float", "double", "real"]
+        .iter()
+        .any(|value| kind.contains(value))
+    {
+        Icon::ColumnNumber
+    } else if ["date", "time", "year"]
+        .iter()
+        .any(|value| kind.contains(value))
+    {
+        Icon::ColumnDate
+    } else if ["binary", "blob", "geometry"]
+        .iter()
+        .any(|value| kind.contains(value))
+    {
+        Icon::ColumnBinary
+    } else {
+        Icon::ColumnText
+    }
+}
+
+fn shape_cell(
+    text: SharedString,
+    font: &Font,
+    color: u32,
+    window: &mut Window,
+    truncate: bool,
+) -> ShapedLine {
+    let shape = |text: SharedString| {
+        let run = TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color: rgb(color).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        window
+            .text_system()
+            .shape_line(text, px(CELL_FONT_SIZE), &[run], None)
+    };
+    let line = shape(text.clone());
+    let width = px(COLUMN_WIDTH - 2. * CELL_PADDING);
+    if !truncate || line.width <= width {
+        return line;
+    }
+    let ellipsis = shape("…".into());
+    let available = width - ellipsis.width;
+    let end = text
+        .grapheme_indices(true)
+        .map(|(index, _)| index)
+        .take_while(|&index| line.x_for_index(index) <= available)
+        .last()
+        .unwrap_or(0);
+    shape(format!("{}…", &text[..end]).into())
 }
 
 #[derive(Clone, Copy)]
@@ -68,10 +136,17 @@ pub(super) struct DataGrid {
     drag: Option<ThumbDrag>,
     visible_text: HashMap<(usize, usize), SharedString>,
     visible_headers: HashMap<usize, SharedString>,
+    visible_lines: HashMap<(usize, usize), ShapedLine>,
+    row_numbers: HashMap<usize, ShapedLine>,
+    line_font: Option<Font>,
     #[cfg(test)]
     last_materialized_cells: usize,
     #[cfg(test)]
     last_formatted_cells: usize,
+    #[cfg(test)]
+    last_painted_cells: usize,
+    #[cfg(test)]
+    last_shaped_cells: usize,
     _subscription: Subscription,
 }
 
@@ -102,6 +177,8 @@ impl DataGrid {
                 this.drag = None;
                 this.visible_text.clear();
                 this.visible_headers.clear();
+                this.visible_lines.clear();
+                this.row_numbers.clear();
             }
             this.selection = selection;
             this.page = model.page.as_ref().map(Arc::clone);
@@ -127,10 +204,17 @@ impl DataGrid {
             drag: None,
             visible_text: HashMap::new(),
             visible_headers: HashMap::new(),
+            visible_lines: HashMap::new(),
+            row_numbers: HashMap::new(),
+            line_font: None,
             #[cfg(test)]
             last_materialized_cells: 0,
             #[cfg(test)]
             last_formatted_cells: 0,
+            #[cfg(test)]
+            last_painted_cells: 0,
+            #[cfg(test)]
+            last_shaped_cells: 0,
             _subscription: subscription,
         }
     }
@@ -268,7 +352,7 @@ impl DataGrid {
         let (rows, columns) = self.dimensions();
         let (position, extent, content) = match axis {
             Axis::Horizontal => (
-                f32::from(event.position.x - self.bounds.origin.x),
+                f32::from(event.position.x - self.bounds.origin.x) - ROW_GUTTER_WIDTH,
                 self.viewport.width,
                 columns as f32 * COLUMN_WIDTH,
             ),
@@ -293,7 +377,7 @@ impl DataGrid {
 }
 
 impl Render for DataGrid {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (row_count, column_count) = self.dimensions();
         let columns = self.viewport.columns(column_count);
         let rows = self.viewport.rows(row_count);
@@ -301,11 +385,23 @@ impl Render for DataGrid {
         {
             self.last_materialized_cells = rows.len() * columns.len();
             self.last_formatted_cells = 0;
+            self.last_painted_cells = 0;
+            self.last_shaped_cells = 0;
         }
         self.visible_text
             .retain(|(row, column), _| rows.contains(row) && columns.contains(column));
         self.visible_headers
             .retain(|column, _| columns.contains(column));
+        self.visible_lines
+            .retain(|(row, column), _| rows.contains(row) && columns.contains(column));
+        self.row_numbers.retain(|row, _| rows.contains(row));
+        let mut font = window.text_style().font();
+        font.family = "Menlo".into();
+        if self.line_font.as_ref() != Some(&font) {
+            self.visible_lines.clear();
+            self.row_numbers.clear();
+            self.line_font = Some(font.clone());
+        }
         let view = cx.entity().downgrade();
         let previous_bounds = self.bounds;
         let measurement = canvas(
@@ -317,7 +413,9 @@ impl Render for DataGrid {
                 }
                 cx.defer(move |cx| {
                     let _ = view.update(cx, |this, cx| {
-                        let width = (f32::from(bounds.size.width) - SCROLLBAR_SIZE).max(0.);
+                        let width =
+                            (f32::from(bounds.size.width) - SCROLLBAR_SIZE - ROW_GUTTER_WIDTH)
+                                .max(0.);
                         let height =
                             (f32::from(bounds.size.height) - HEADER_HEIGHT - SCROLLBAR_SIZE)
                                 .max(0.);
@@ -339,7 +437,7 @@ impl Render for DataGrid {
             .debug_selector(|| "grid-header".into())
             .absolute()
             .top_0()
-            .left_0()
+            .left(px(ROW_GUTTER_WIDTH))
             .w(px(self.viewport.width))
             .h(px(HEADER_HEIGHT))
             .overflow_hidden()
@@ -348,10 +446,20 @@ impl Render for DataGrid {
             .debug_selector(|| "grid-body".into())
             .absolute()
             .top(px(HEADER_HEIGHT))
-            .left_0()
+            .left(px(ROW_GUTTER_WIDTH))
             .w(px(self.viewport.width))
             .h(px(self.viewport.height))
             .overflow_hidden();
+        let mut gutter = div()
+            .id("grid-row-gutter")
+            .debug_selector(|| "grid-row-gutter".into())
+            .absolute()
+            .left_0()
+            .top(px(HEADER_HEIGHT))
+            .w(px(ROW_GUTTER_WIDTH))
+            .h(px(self.viewport.height))
+            .overflow_hidden()
+            .bg(rgb(HEADER));
         if let Some(page) = &self.page {
             for column_index in columns.clone() {
                 let left = column_index as f32 * COLUMN_WIDTH - self.viewport.x;
@@ -364,18 +472,31 @@ impl Render for DataGrid {
                     .map(|sort| sort.direction);
                 let name = column.name.clone();
                 let keyboard_name = name.clone();
+                let sort_button_name = name.clone();
+                let metadata_tip = format!(
+                    "{} · {}{}{} · {}",
+                    column.name,
+                    column.data_type,
+                    if column.is_primary_key {
+                        " · primary key"
+                    } else {
+                        ""
+                    },
+                    if column.nullable {
+                        " · nullable"
+                    } else {
+                        " · not null"
+                    },
+                    if self.page.as_ref().is_some_and(|_| self.stale) {
+                        "Read-only result; sorting unavailable"
+                    } else {
+                        "Sort ascending / descending / default"
+                    }
+                );
                 let label = self
                     .visible_headers
                     .entry(column_index)
-                    .or_insert_with(|| {
-                        format!(
-                            "{}{} · {}",
-                            if column.is_primary_key { "PK " } else { "" },
-                            column.name,
-                            column.data_type
-                        )
-                        .into()
-                    })
+                    .or_insert_with(|| column.name.clone().into())
                     .clone();
                 let debug_id = format!("sort-column-{column_index}");
                 header = header.child(
@@ -426,68 +547,242 @@ impl Render for DataGrid {
                                     }
                                 }))
                         })
-                        .child(div().flex_1().min_w_0().text_ellipsis().child(label))
-                        .when_some(direction, |header, direction| {
-                            header.child(icon(
-                                match direction {
-                                    SortDirection::Ascending => Icon::SortAscending,
-                                    SortDirection::Descending => Icon::SortDescending,
-                                },
-                                FOCUS,
-                            ))
-                        }),
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .id(gpui::SharedString::from(format!(
+                                    "column-indicator-{column_index}"
+                                )))
+                                .child(icon(
+                                    if column.is_primary_key {
+                                        Icon::ColumnKey
+                                    } else {
+                                        column_type_icon(&column.data_type)
+                                    },
+                                    if column.is_primary_key { FOCUS } else { MUTED },
+                                )),
+                        )
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| ColumnTooltip(metadata_tip.clone())).into()
+                        })
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_color(rgb(TEXT))
+                                .text_ellipsis()
+                                .child(label),
+                        )
+                        .child(
+                            div()
+                                .id(gpui::SharedString::from(format!(
+                                    "column-sort-button-{column_index}"
+                                )))
+                                .debug_selector(move || {
+                                    format!("column-sort-button-{column_index}")
+                                })
+                                .size(px(20.0))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when(!self.stale, |button| {
+                                    button.cursor_pointer().hover(|style| style.bg(rgb(HOVER)))
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if !this.stale {
+                                        this.model.update(cx, |model, cx| {
+                                            model.cycle_sort(sort_button_name.clone(), cx)
+                                        });
+                                    }
+                                }))
+                                .child(icon(
+                                    match direction {
+                                        Some(SortDirection::Descending) => Icon::SortDescending,
+                                        Some(SortDirection::Ascending) => Icon::SortAscending,
+                                        None => Icon::Sort,
+                                    },
+                                    if direction.is_some() { FOCUS } else { MUTED },
+                                )),
+                        ),
                 );
             }
-            for row_index in rows {
+            let mut painted_cells = Vec::new();
+            let mut painted_numbers = Vec::new();
+            for row_index in rows.clone() {
                 let row = &page.rows[row_index];
-                let mut row_div = div()
-                    .absolute()
-                    .left_0()
-                    .top(px(row_index as f32 * ROW_HEIGHT - self.viewport.y))
-                    .w(px(self.viewport.width))
-                    .h(px(GRID_ROW_HEIGHT))
-                    .bg(rgb(if row_index % 2 == 0 {
-                        PANEL
-                    } else {
-                        BACKGROUND
-                    }));
+                let top = row_index as f32 * ROW_HEIGHT - self.viewport.y;
+                let visible_row = top < self.viewport.height && top + ROW_HEIGHT > 0.;
+                if visible_row {
+                    let number = self.row_numbers.entry(row_index).or_insert_with(|| {
+                        shape_cell(
+                            format!(
+                                "{}",
+                                page.offset
+                                    .saturating_add(row_index as u64)
+                                    .saturating_add(1)
+                            )
+                            .into(),
+                            &font,
+                            MUTED,
+                            window,
+                            false,
+                        )
+                    });
+                    painted_numbers.push((top, number.clone()));
+                }
                 for column_index in columns.clone() {
                     let value = row.get(column_index);
-                    let text = self
-                        .visible_text
-                        .entry((row_index, column_index))
-                        .or_insert_with(|| {
+                    let key = (row_index, column_index);
+                    let text = self.visible_text.entry(key).or_insert_with(|| {
+                        #[cfg(test)]
+                        {
+                            self.last_formatted_cells += 1;
+                        }
+                        display_preview(value)
+                    });
+                    let left = column_index as f32 * COLUMN_WIDTH - self.viewport.x;
+                    if visible_row && left < self.viewport.width && left + COLUMN_WIDTH > 0. {
+                        let line = self.visible_lines.entry(key).or_insert_with(|| {
                             #[cfg(test)]
                             {
-                                self.last_formatted_cells += 1;
+                                self.last_shaped_cells += 1;
                             }
-                            display_preview(value)
-                        })
-                        .clone();
-                    let cell_id = format!("cell-{row_index}-{column_index}");
-                    row_div = row_div.child(
-                        div()
-                            .debug_selector(move || cell_id.clone())
-                            .absolute()
-                            .left(px(column_index as f32 * COLUMN_WIDTH - self.viewport.x))
-                            .top_0()
-                            .w(px(COLUMN_WIDTH))
-                            .h(px(ROW_HEIGHT))
-                            .px(px(8.))
-                            .flex()
-                            .items_center()
-                            .border_r_1()
-                            .border_color(rgb(BORDER))
-                            .text_color(rgb(if matches!(value, Some(CellValue::Null)) {
-                                MUTED
-                            } else {
-                                TEXT
-                            }))
-                            .child(div().flex_1().min_w_0().text_ellipsis().child(text)),
-                    );
+                            shape_cell(
+                                text.clone(),
+                                &font,
+                                if matches!(value, Some(CellValue::Null)) {
+                                    MUTED
+                                } else {
+                                    TEXT
+                                },
+                                window,
+                                true,
+                            )
+                        });
+                        painted_cells.push((left, top, line.clone()));
+                    }
+                    // Debug-only geometry preserves UI-test selectors without
+                    // creating a retained element per cell in production.
+                    #[cfg(all(test, feature = "ui-tests"))]
+                    {
+                        let cell_id = format!("cell-{row_index}-{column_index}");
+                        body = body.child(
+                            div()
+                                .debug_selector(move || cell_id.clone())
+                                .absolute()
+                                .left(px(left))
+                                .top(px(top))
+                                .w(px(COLUMN_WIDTH))
+                                .h(px(ROW_HEIGHT)),
+                        );
+                    }
                 }
-                body = body.child(row_div);
             }
+            #[cfg(test)]
+            {
+                self.last_painted_cells = painted_cells.len();
+            }
+            let viewport = self.viewport;
+            let paint_rows = self.viewport.painted_rows(row_count);
+            let paint_columns = self.viewport.painted_columns(column_count);
+            body = body.child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                            // One background and horizontal separator per visible row.
+                            for row in paint_rows {
+                                let top = row as f32 * ROW_HEIGHT - viewport.y;
+                                if top >= viewport.height || top + ROW_HEIGHT <= 0. {
+                                    continue;
+                                }
+                                let origin = bounds.origin + point(px(0.), px(top));
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        origin,
+                                        size(bounds.size.width, px(GRID_ROW_HEIGHT)),
+                                    ),
+                                    rgb(if row % 2 == 0 { PANEL } else { BACKGROUND }),
+                                ));
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        origin + point(px(0.), px(ROW_HEIGHT - 1.)),
+                                        size(bounds.size.width, px(1.)),
+                                    ),
+                                    rgb(BORDER),
+                                ));
+                            }
+                            // One full-height separator per column, not per cell.
+                            for column in paint_columns {
+                                let right = (column + 1) as f32 * COLUMN_WIDTH - viewport.x;
+                                if right > 0. && right <= viewport.width {
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            bounds.origin + point(px(right - 1.), px(0.)),
+                                            size(px(1.), bounds.size.height),
+                                        ),
+                                        rgb(BORDER),
+                                    ));
+                                }
+                            }
+                            for (left, top, line) in painted_cells {
+                                let cell_bounds = Bounds::new(
+                                    bounds.origin + point(px(left + CELL_PADDING), px(top)),
+                                    size(px(COLUMN_WIDTH - CELL_PADDING * 2.), px(ROW_HEIGHT)),
+                                );
+                                window.with_content_mask(
+                                    Some(ContentMask {
+                                        bounds: cell_bounds,
+                                    }),
+                                    |window| {
+                                        let _ = line.paint(
+                                            cell_bounds.origin,
+                                            px(ROW_HEIGHT),
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                );
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
+            );
+            // The gutter is fixed horizontally and follows the same row offset.
+            gutter = gutter.child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                            window.paint_quad(fill(bounds, rgb(HEADER)));
+                            for (top, line) in painted_numbers {
+                                let _ = line.paint(
+                                    point(
+                                        bounds.right() - px(8.) - line.width,
+                                        bounds.top() + px(top),
+                                    ),
+                                    px(ROW_HEIGHT),
+                                    window,
+                                    cx,
+                                );
+                            }
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    point(bounds.right() - px(1.), bounds.top()),
+                                    size(px(1.), bounds.size.height),
+                                ),
+                                rgb(BORDER),
+                            ));
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
+            );
             if page.rows.is_empty() {
                 body = body.child(
                     div()
@@ -535,13 +830,28 @@ impl Render for DataGrid {
             .child(measurement)
             .child(header)
             .child(body)
+            .child(gutter)
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(px(ROW_GUTTER_WIDTH))
+                    .h(px(HEADER_HEIGHT))
+                    .bg(rgb(HEADER))
+                    .text_color(rgb(MUTED))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child("#"),
+            )
             .when(self.viewport.max_x(column_count) > 0., |root| {
                 root.child(
                     div()
                         .id("grid-horizontal-track")
                         .debug_selector(|| "grid-horizontal-track".into())
                         .absolute()
-                        .left_0()
+                        .left(px(ROW_GUTTER_WIDTH))
                         .bottom_0()
                         .w(px(self.viewport.width))
                         .h(px(SCROLLBAR_SIZE))
@@ -611,6 +921,19 @@ impl Render for DataGrid {
                         ),
                 )
             })
+    }
+}
+
+struct ColumnTooltip(String);
+impl Render for ColumnTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.0))
+            .py(px(5.0))
+            .bg(rgb(CHROME))
+            .text_color(rgb(TEXT))
+            .text_size(px(12.0))
+            .child(self.0.clone())
     }
 }
 
@@ -959,5 +1282,73 @@ mod tests {
         cx.simulate_click(header.center(), Modifiers::default());
         cx.simulate_keystrokes("enter");
         assert!(model.read_with(cx, |model, _| model.sort.is_none()));
+    }
+    #[gpui::test]
+    fn canvas_paints_only_visible_cells_and_reuses_shaped_text(cx: &mut TestAppContext) {
+        let (model, grid, cx) = fixture(cx);
+        let original = model.read_with(cx, |model, _| Arc::clone(model.page.as_ref().unwrap()));
+        wheel(cx, -90.0, -11.0, false);
+        wheel(cx, -1.0, -1.0, false);
+        grid.read_with(cx, |grid, _| {
+            assert_eq!(grid.last_shaped_cells, 0);
+            assert_eq!(
+                grid.last_painted_cells,
+                grid.viewport.painted_rows(200).len() * grid.viewport.painted_columns(512).len()
+            );
+            assert!(grid.last_painted_cells <= 60);
+            assert!(grid.visible_lines.len() <= grid.last_materialized_cells);
+        });
+        let gutter = cx.debug_bounds("grid-row-gutter").unwrap();
+        assert_eq!(gutter.size.width, px(ROW_GUTTER_WIDTH));
+        assert_eq!(gutter.origin.x, px(0.0));
+        wheel(cx, -200.0 * COLUMN_WIDTH, -50.0 * ROW_HEIGHT, false);
+        assert_eq!(
+            cx.debug_bounds("grid-row-gutter").unwrap().origin.x,
+            px(0.0)
+        );
+        assert!(model.read_with(cx, |model, _| Arc::ptr_eq(
+            model.page.as_ref().unwrap(),
+            &original
+        )));
+        let mut next = original.as_ref().clone();
+        next.offset = 100;
+        model.update(cx, |model, cx| {
+            model.page = Some(Arc::new(next));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.row_numbers[&0].text.to_string()),
+            "101"
+        );
+        grid.read_with(cx, |grid, _| println!("canvas grid: painted {} cells, cached {} shaped cells, header controls {}, production cell elements 0", grid.last_painted_cells, grid.visible_lines.len(), grid.visible_headers.len()));
+    }
+
+    #[test]
+    fn column_icons_have_stable_type_categories() {
+        assert!(matches!(column_type_icon("BIGINT"), Icon::ColumnNumber));
+        assert!(matches!(column_type_icon("JSON"), Icon::ColumnJson));
+        assert!(matches!(column_type_icon("timestamp"), Icon::ColumnDate));
+        assert!(matches!(column_type_icon("VARBINARY"), Icon::ColumnBinary));
+        assert!(matches!(column_type_icon("VARCHAR"), Icon::ColumnText));
+        assert!(matches!(column_type_icon("BOOL"), Icon::Check));
+    }
+    #[gpui::test]
+    fn explicit_sort_button_cycles_once_and_preserves_where(cx: &mut TestAppContext) {
+        let (model, _, cx) = fixture(cx);
+        model.update(cx, |model, cx| {
+            model.where_clause = "column_0 = 'value'".into();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click(cx, "column-sort-button-0");
+        model.read_with(cx, |model, _| {
+            assert_eq!(
+                model.sort.as_ref().unwrap().direction,
+                SortDirection::Ascending
+            );
+            assert_eq!(model.where_clause, "column_0 = 'value'");
+            assert_eq!(model.order_by, "`column_0` ASC");
+        });
     }
 }

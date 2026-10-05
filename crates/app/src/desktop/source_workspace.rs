@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 
+use dalan_app::result_budget::{
+    MAX_RETAINED_RESULT_BYTES, MAX_RETAINED_RESULT_PAGES, ResultEntry, eviction_plan,
+};
 use dalan_app::workspace_tabs::{WorkspaceOpen, WorkspaceTabs};
 use gpui::{
     App, Context, Entity, FocusHandle, KeyBinding, SharedString, Subscription, Window, actions,
@@ -26,6 +29,14 @@ pub(super) fn bind_keys(cx: &mut App) {
     ]);
 }
 
+#[derive(Default)]
+struct ResultStats {
+    // Only an identity token: retaining an Arc here would prevent eviction.
+    page_identity: Option<usize>,
+    bytes: usize,
+    last_used: u64,
+}
+
 #[derive(Clone)]
 enum TabView {
     Table(Entity<SourceBrowser>),
@@ -42,6 +53,11 @@ pub(super) struct SourceWorkspace {
     empty: Entity<SourceBrowser>,
     tabs: WorkspaceTabs,
     views: HashMap<String, OpenTab>,
+    result_usage: HashMap<String, ResultStats>,
+    usage_clock: u64,
+    enforcing_budget: bool,
+    #[cfg(all(test, feature = "ui-tests"))]
+    budget_estimates: usize,
     open_generation: u64,
     close_confirmation: Option<String>,
     focus: FocusHandle,
@@ -89,6 +105,11 @@ impl SourceWorkspace {
             empty,
             tabs: WorkspaceTabs::new(),
             views: HashMap::new(),
+            result_usage: HashMap::new(),
+            usage_clock: 0,
+            enforcing_budget: false,
+            #[cfg(all(test, feature = "ui-tests"))]
+            budget_estimates: 0,
             open_generation: 0,
             close_confirmation: None,
             focus: cx.focus_handle().tab_stop(false),
@@ -122,6 +143,7 @@ impl SourceWorkspace {
             .get(&opened.id)
             .is_some_and(|tab| tab.model.read(cx).workspace_invalidated);
         if !opened.created && !needs_rebuild {
+            self.touch_active(cx);
             self.pending_focus = true;
             cx.notify();
             return;
@@ -148,7 +170,11 @@ impl SourceWorkspace {
                 cx.new(|cx| QueryConsole::new(tab_model.clone(), self.model.clone(), cx)),
             ),
         };
-        let subscription = cx.observe(&tab_model, |_, _, cx| cx.notify());
+        let subscription = cx.observe(&tab_model, |this, _, cx| {
+            this.refresh_result_usage(cx);
+            cx.notify();
+        });
+        self.result_usage.remove(&opened.id);
         self.views.insert(
             opened.id,
             OpenTab {
@@ -160,6 +186,7 @@ impl SourceWorkspace {
         if let WorkspaceOpen::Table { table, .. } = request {
             tab_model.update(cx, |tab, cx| tab.select_table(table, cx));
         }
+        self.touch_active(cx);
         self.close_confirmation = None;
         self.pending_focus = true;
         cx.notify();
@@ -182,6 +209,7 @@ impl SourceWorkspace {
 
     fn activate(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.tabs.activate(id) {
+            self.touch_active(cx);
             self.close_confirmation = None;
             self.pending_focus = true;
             cx.notify();
@@ -202,6 +230,8 @@ impl SourceWorkspace {
         // cancels only that tab, never another tab or root metadata refresh.
         self.tabs.close(id);
         self.views.remove(id);
+        self.result_usage.remove(id);
+        self.touch_active(cx);
         self.close_confirmation = None;
         self.pending_focus = true;
         cx.notify();
@@ -221,6 +251,84 @@ impl SourceWorkspace {
         };
         let id = descriptors[next].id.clone();
         self.activate(&id, cx);
+    }
+
+    fn touch_active(&mut self, cx: &mut Context<Self>) {
+        self.usage_clock = self.usage_clock.saturating_add(1);
+        if let Some(id) = self.tabs.active() {
+            self.result_usage
+                .entry(id.to_owned())
+                .or_default()
+                .last_used = self.usage_clock;
+            if let Some(tab) = self.views.get(id) {
+                let model = tab.model.read(cx);
+                let reload = matches!(tab.view, TabView::Table(_))
+                    && model.result_evicted
+                    && !model.workspace_invalidated
+                    && !model.busy
+                    && !model.export_busy
+                    && !model.saving;
+                if reload {
+                    tab.model.update(cx, |model, cx| model.refresh_table(cx));
+                }
+            }
+        }
+        self.refresh_result_usage(cx);
+    }
+
+    fn refresh_result_usage(&mut self, cx: &mut Context<Self>) {
+        if self.enforcing_budget {
+            return;
+        }
+        self.enforcing_budget = true;
+        let mut entries = Vec::with_capacity(self.views.len());
+        for (id, tab) in &self.views {
+            let model = tab.model.read(cx);
+            let identity = model
+                .page
+                .as_ref()
+                .map(|page| std::sync::Arc::as_ptr(page) as usize);
+            let stats = self.result_usage.entry(id.clone()).or_default();
+            if stats.page_identity != identity {
+                stats.page_identity = identity;
+                stats.bytes = model.retained_page_bytes();
+                #[cfg(all(test, feature = "ui-tests"))]
+                if identity.is_some() {
+                    self.budget_estimates += 1;
+                }
+                if identity.is_some() && self.tabs.active() == Some(id.as_str()) {
+                    self.usage_clock = self.usage_clock.saturating_add(1);
+                    stats.last_used = self.usage_clock;
+                }
+            }
+            entries.push(ResultEntry {
+                id: id.clone(),
+                bytes: stats.bytes,
+                loaded: identity.is_some(),
+                protected: self.tabs.active() == Some(id.as_str())
+                    || model.busy
+                    || model.export_busy
+                    || model.saving,
+                last_used: stats.last_used,
+            });
+        }
+        // No child read borrow survives into updates, which notify observers.
+        for id in eviction_plan(
+            &entries,
+            MAX_RETAINED_RESULT_BYTES,
+            MAX_RETAINED_RESULT_PAGES,
+        ) {
+            if let Some(tab) = self.views.get(&id)
+                && tab
+                    .model
+                    .update(cx, |model, cx| model.evict_result_page(cx))
+                && let Some(stats) = self.result_usage.get_mut(&id)
+            {
+                stats.page_identity = None;
+                stats.bytes = 0;
+            }
+        }
+        self.enforcing_budget = false;
     }
 }
 impl Render for SourceWorkspace {
@@ -688,6 +796,133 @@ mod tests {
         cx.simulate_click(bounds.center(), Modifiers::default());
         cx.run_until_parked();
         cx.refresh().unwrap();
+    }
+
+    #[gpui::test]
+    fn retained_console_pages_are_bounded_without_closing_tabs_or_running_drafts(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _root, _listener, cx) = fixture(cx);
+        let mut tabs = Vec::new();
+        for index in 0..9 {
+            let (id, model) = console(&workspace, cx);
+            model.update(cx, |model, cx| {
+                model.query_sql = format!("SELECT {index}");
+                model.page = Some(snapshot(&index.to_string()));
+                cx.notify();
+            });
+            cx.run_until_parked();
+            tabs.push((id, model));
+        }
+        workspace.read_with(cx, |workspace, cx| {
+            assert_eq!(workspace.tabs.tabs().len(), 9);
+            assert_eq!(workspace.views.len(), 9);
+            assert_eq!(
+                workspace
+                    .views
+                    .values()
+                    .filter(|tab| tab.model.read(cx).page.is_some())
+                    .count(),
+                8
+            );
+            assert_eq!(workspace.budget_estimates, 9);
+        });
+        tabs[0].1.read_with(cx, |model, _| {
+            assert!(model.page.is_none());
+            assert!(model.result_evicted);
+            assert_eq!(model.query_sql, "SELECT 0");
+        });
+        assert!(tabs[8].1.read_with(cx, |model, _| model.page.is_some()));
+        // Editor/cursor notifications must not walk the cells again.
+        tabs[8].1.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, cx| workspace.activate(&tabs[0].0, cx));
+        cx.run_until_parked();
+        tabs[0].1.read_with(cx, |model, _| {
+            assert!(model.result_evicted);
+            assert!(model.page.is_none());
+            assert!(!model.busy, "console activation never executes SQL");
+            assert_eq!(model.query_sql, "SELECT 0");
+        });
+        assert_eq!(
+            workspace.read_with(cx, |workspace, _| workspace.budget_estimates),
+            9
+        );
+    }
+
+    #[gpui::test]
+    fn retained_result_budget_protects_busy_exporting_and_saving_tabs(cx: &mut TestAppContext) {
+        let (workspace, _root, _listener, cx) = fixture(cx);
+        let mut tabs = Vec::new();
+        for index in 0..9 {
+            let (id, model) = console(&workspace, cx);
+            model.update(cx, |model, cx| {
+                model.page = Some(snapshot(&index.to_string()));
+                model.busy = index == 0;
+                model.export_busy = index == 1;
+                model.saving = index == 2;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            tabs.push((id, model));
+        }
+        for index in [0, 1, 2, 8] {
+            assert!(tabs[index].1.read_with(cx, |model, _| model.page.is_some()));
+        }
+        assert!(
+            tabs[3]
+                .1
+                .read_with(cx, |model, _| model.result_evicted && model.page.is_none())
+        );
+        // If every remaining page is protected, exceeding the cap is permitted.
+        for (_, model) in &tabs {
+            model.update(cx, |model, cx| {
+                model.export_busy = true;
+                if model.page.is_none() {
+                    model.page = Some(snapshot("protected"));
+                }
+                cx.notify();
+            });
+        }
+        cx.run_until_parked();
+        assert!(
+            tabs.iter()
+                .all(|(_, model)| model.read_with(cx, |model, _| model.page.is_some()))
+        );
+    }
+
+    #[gpui::test]
+    fn evicted_table_reactivation_reloads_applied_clauses_without_changing_neighbors(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, root, _listener, cx) = fixture(cx);
+        let (id, model) = open_table(&workspace, &root, "items", cx);
+        let (_, neighbor) = open_table(&workspace, &root, "orders", cx);
+        model.update(cx, |model, cx| {
+            model.where_clause = "column_0 > 2".into();
+            model.order_by = "column_0 DESC".into();
+            assert!(model.evict_result_page(cx));
+        });
+        cx.run_until_parked();
+        workspace.update(cx, |workspace, cx| {
+            workspace.activate(&id, cx);
+            let state = model.read(cx);
+            assert!(state.busy, "activation queues a table refresh");
+            assert_eq!(state.where_clause, "column_0 > 2");
+            assert_eq!(state.order_by, "column_0 DESC");
+            assert!(state.page.is_none());
+        });
+        model.update(cx, |model, cx| model.cancel_query(cx));
+        cx.run_until_parked();
+        neighbor.read_with(cx, |model, _| {
+            assert!(model.page.is_some());
+            assert!(!model.busy);
+            assert!(model.where_clause.is_empty());
+        });
+        root.read_with(cx, |model, _| {
+            assert!(model.page.is_none());
+            assert!(!model.busy);
+        });
     }
 
     #[gpui::test]

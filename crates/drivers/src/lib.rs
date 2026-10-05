@@ -1,3 +1,5 @@
+mod table_clauses;
+pub use table_clauses::validate_table_clauses;
 pub mod mysql;
 pub mod query;
 pub use query::{QueryRequest, QueryResult, execute_read_only, validate_read_only};

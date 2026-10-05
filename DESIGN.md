@@ -2,6 +2,16 @@
 
 Status: adopted compact Carbonfox UI foundation, with an experimental read-only database workspace. This is not a finished SQL client, accessibility certification, or completed brand identity. **Dalan** means “ways” in Javanese and remains text-only branding.
 
+## Rich table interaction contract
+
+DataGrip informs table workflows, **not styling**: Carbonfox - opaque, quiet chrome and meaningful source/table names remain. The current browser has name-only ellipsized column headers with type/primary-key icons and full metadata tooltips, separate ascending/descending/default sort click targets, and a pinned 44 px row-number gutter (`offset + row + 1`). Header Enter/Space sorts; the glyph stops propagation to avoid double cycling. Qualified table titles and workspace tab names ellipsize with full context; sorting is not duplicated in the title.
+
+WHERE/list-filter and ORDER BY/arrow-down-up are editable single-line drafts. Enter/Apply validates and submits both, typing never fetches, and malformed conditions retain visibly stale rows. The old column/operator/value toolbar below is historical. Apply/check, Clear/minus, Refresh/owned Cancel, loaded Export, Previous/Next and range footer remain functional; no inactive DDL/history/transaction menus or mutation tools are added. Query headers remain nonsortable.
+
+The production body is direct canvas paint with cached shaped text and row/grid quads, **zero per-cell Divs**, and native interactive header controls. Preview/fit ellipses are grapheme-safe; the 128-grapheme display cap does not alter typed/export values. The gutter shares body y only, remaining at x = 0. Result LRU evicts inactive pages, not retained tabs/drafts/scroll; table reactivation can refresh applied conditions while consoles require explicit rerun. The 16 MiB/eight-page allocation budget is best effort, excluding metadata/drafts/GPU/export temporary memory.
+
+The current utility subset is **36 Lucide SVGs**, eight added to 28 at the same revision with existing ISC/Feather notices; `text-initial` is the upstream text glyph alias, not new branding. Native screenshots remain permission-blocked; test component pins and simulated operation counts are not native visual/performance proof. See [table browser](docs/table-browser.md) and [current evidence](docs/testing.md#rich-canvas-table-browser). Earlier slice counts/design below are historical where superseded; primary-run totals and this tree's hosted CI remain pending.
+
 ## Adopted direction
 
 The user explicitly rejected DataGrip's visual style and selected **Zed-like compact UI with Carbonfox - opaque** as the main default. DataGrip is a database UX/workflow reference only, not permission to copy its button-heavy layout or chrome. No Zed editor/source/assets are imported other than the independently MIT-licensed Nightfox theme reference. No affiliation with Zed, DataGrip, or the theme authors is implied.

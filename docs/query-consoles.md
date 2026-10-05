@@ -92,6 +92,10 @@ Cancel disposes the owned socket and any local relay/tunnel work. Closing a tab 
 
 ## Result provenance and export
 
+Current result bodies use the same production **canvas grid** as tables: quads and cached shaped lines, no per-cell Divs, grapheme-safe capped/fitted previews and a 44 px pinned row-number gutter. Native headers remain interactive elements but query-result sorting is disabled, including explicit table-sort glyph actions. Table WHERE/ORDER BY inputs are not present in consoles and their narrow grammar does not change this guide's SELECT policy.
+
+Global workspace retention is estimated 16 MiB/eight loaded pages with inactive LRU eviction, **not tab/draft eviction**; all 32 tab identities and their SQL/scroll state remain. Active/busy/export/save-protected pages can exceed the best-effort budget; metadata/drafts/GPU/temporary export memory is excluded. On an evicted console, submitted-query metadata remains identifiable but the old result is labeled unavailable with a rerun message. Activation **does not automatically run SQL**. Evicted tables may refresh their applied clauses asynchronously. Views release shaping/text caches when model page is None. See [retention](table-browser.md#workspace-result-retention) and [current evidence](testing.md#rich-canvas-table-browser).
+
 The result grid shares an immutable `Arc<TablePage>` snapshot, preserving two-axis virtualization. Query headers cannot sort and generic table filters are not applied. Scroll/results remain independent per tab. Draft changes never relabel existing rows as if they came from the edited SQL.
 
 The model tracks **query_running_sql** for the in-flight request and **query_submitted_sql** only for the last successfully installed result. Failed/canceled runs retain previous rows with a stale notice, the original successful SQL, elapsed time and warnings, plus a readable sanitized error. Old rows are not labeled with a failed new query. No cross-tab/page late result can become the current page.

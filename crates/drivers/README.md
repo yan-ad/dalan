@@ -65,3 +65,26 @@ Disposable verification: `cargo test -p dalan-drivers --lib`,
 `scripts/test-databases`, `scripts/test-secure-transports`, and
 `scripts/test-ssh-transport`. Unix live tests use actual Unix listeners forwarding
 to disposable servers; they do not require host/container socket mounts.
+
+### Editable table clauses
+
+`BrowseRequest.where_clause` and `BrowseRequest.order_by` are optional serialized
+strings, defaulting to empty. A non-whitespace fragment replaces the corresponding
+legacy `filter` or `sort`; it is never combined with it. Invalid fragments fail
+rather than falling back. `validate_table_clauses(where_clause, order_by, columns)`
+is a connection-free validator for callers that already have table metadata.
+
+WHERE supports unqualified metadata column names (including backtick-quoted
+names), literal comparisons (`=`, `<>`, `!=`, `<`, `<=`, `>`, `>=`), AND/OR/NOT,
+LIKE/NOT LIKE, BETWEEN/NOT BETWEEN, literal IN/NOT IN lists, and IS [NOT] NULL.
+Strings, signed numbers, booleans, and NULL are bound parameters. LIKE wildcards
+are intentional, unlike the literal-search legacy Contains filter. Functions,
+subqueries, arithmetic, qualified identifiers, placeholders, comments, and extra
+SQL clauses are rejected. ORDER BY accepts up to eight distinct metadata columns
+with optional ASC/DESC; missing primary keys are appended as ascending tie-breakers.
+
+Each fragment is bounded to 16 KiB, 1024 meaningful tokens, nesting depth 24,
+and 128 operators/keywords before parsing; IN lists are limited to 256 literals.
+The compiler rebuilds fixed SQL rather than forwarding input, and diagnostic
+messages never include raw fragments or literal values. This remains defense in
+depth: use trusted schemas and a least-privilege SELECT-only account.

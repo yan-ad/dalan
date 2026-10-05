@@ -1,5 +1,44 @@
 # Test strategy and release evidence
 
+## Rich canvas table browser
+
+Current verification passed **114 headless unit tests** (4 ACP, 53 app, 5 core, 52 driver), **one separate native-wire integration test**, **154 simulated UI tests**, **four Python bundle tests**, and **29 unique live cases** (11 direct/URL/socket/CONNECT/authentication, 12 TLS, six SSH). Formatting, both strict Clippy paths, signed debug build, plist lint and bundled-license checks passed. Repeated fixture assertions and standalone reruns are not double-counted. Current hosted CI and native visual/performance/accessibility remain separate gates.
+
+Historical **`4e389d0` passed all five hosted jobs** in [run 37266563119](https://github.com/yan-ad/dalan/actions/runs/37266563119). This closes that commit's gate only. Current-tree future CI, final formatting/lint/bundle checks and native review are separate gates; no post-push result is inferred.
+
+### Canvas structural evidence
+
+- Production body: no per-cell Divs; row backgrounds/grid lines are `Window::paint_quad`/`PaintQuad` (one per visible line), cached `ShapedLine`s paint text directly. Native headers retain interaction.
+- Narrow **730 × 258 / 512 × 200** fixture: **40 exact painted cells**, **40 cached shaped lines**, **six header controls**; a subsequent tiny wheel has **zero newly shaped cells**. Verify exact viewport paint separately from overscan/materialization.
+- Integrated **1,000 databases / 100 × 512** at **1280 × 720**: **906 × 570 body**, **300/51,200 materialized cells**, **32 sidebar rows**, **zero projection rebuilds** and unchanged shared page identity. The historical 310-cell virtual-element count below is not the current result; no integrated paint count is claimed without its counter.
+- Range-bounded display/shaped/header/row-number caches, overscan two, 128-grapheme cap and cell-fit ellipsis preserve grapheme boundaries/typed values. Regressions cover Unicode/type icons, same-Arc reuse, snapshot eviction and no full-data clone/walk on small redraws.
+- Pinned 44 px gutter at x = 0, shared body y, page offset 100 → first label 101; headers have compact name-only labels/full metadata tooltips, explicit glyph click propagation, header Enter/Space and nonsortable console results.
+- WHERE/ORDER BY typing is draft-only and per-tab; input-focused Enter uses `TableBrowser > DalanInput`. Invalid clauses fail before UI credential/network work, retain stale old pages, and preserve bound exact literal values. Compiler coverage checks syntax/token/nesting/operator/IN/order limits, metadata membership/quoting and rejection of functions/subqueries/qualified names/comments/statements/extra clauses. Live existing fixtures add clause assertions without inflating case counts.
+- Retention tests cover estimated 16 MiB/eight loaded pages, inactive LRU, active/busy/export/save protection, retained tabs/drafts/applied clauses/scroll, page-None cache release, table async refresh and console explicit rerun/provenance. Budget estimates run once per Arc pointer identity without budget-owned references or notification row walks; protection can exceed limits. These are not process-memory metrics.
+- Busy Clear remains disabled; the fixture cancels its owned loopback request first rather than weakening production guards. No private DataGrip credentials/hosts/accounts or row data are fixtures.
+
+### Commands and unverified gates
+
+```sh
+cargo test --workspace --locked
+cargo test -p dalan-drivers --lib --locked
+cargo test -p dalan-app --lib --locked grid_viewport::tests
+cargo test -p dalan-app --bin dalan --features runtime-shaders,ui-tests --locked data_grid::tests
+cargo test -p dalan-app --bin dalan --features runtime-shaders,ui-tests --locked canvas_paints_only_visible_cells_and_reuses_shaped_text -- --nocapture
+cargo test -p dalan-app --bin dalan --features runtime-shaders,ui-tests --locked integrated_scrolling_keeps_shared_snapshot_and_projection_stable -- --nocapture
+cargo test -p dalan-app --bin dalan --features runtime-shaders,ui-tests --locked
+python3 -m unittest discover -s scripts/tests -v
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy -p dalan-app --bin dalan --features runtime-shaders,ui-tests --all-targets --locked -- -D warnings
+# Opt-in owned disposable fixtures only:
+./scripts/test-databases
+./scripts/test-secure-transports
+./scripts/test-ssh-transport
+```
+
+The primary workflow ran the complete checks recorded above. Canvas counts are simulated operation counts, **not native FPS/latency**. Cargo elapsed time is not a frame benchmark. Native screenshots remain capture-permission blocked; component pins/test bounds do not prove native appearance. User retry of the latest macOS build, native visual/IME/VoiceOver/scaled-text, high-DPI/GPU profiling, release/offline-Metal and future hosted CI remain open. Do not change permissions or reproduce private source values for screenshots. The 36-icon subset keeps the existing revision and full ISC/Feather notices; [table browser](table-browser.md) documents exact current contracts. Older sections below retain historical evidence, not current pass claims.
+
 ## Titlebar database shortcut
 
 The explorer toggle replaces the duplicate in-window Dalan label beside native macOS controls, without a bottom-left duplicate. A regression checks x = 84 px, 28 px width, titlebar placement, repeated toggling and absence of the old brand/rail/header controls. Existing Tab, Cmd-B, Layout popover and compact-pane tests pass. Local verification: 106 UI tests, strict UI Clippy, formatting, four Python bundle tests and signed debug bundle checks passed. Headless/database/Keychain suites were unchanged and not rerun for this placement-only iteration. Native visual verification and hosted CI require separate evidence.
