@@ -85,7 +85,19 @@ lldb target/debug/bundles/Dalan.app/Contents/MacOS/Dalan
 # run
 ```
 
-Finder/Dock display name is Dalan. Debug and release use provisional local identifiers `local.dalan.debug` and `local.dalan.release`, generated version metadata from Cargo, high-resolution support, and ad-hoc signatures verified by `codesign`. No custom icon, document/file associations, installer, hardened runtime, Developer ID signature, or notarization is claimed. The icon remains macOS's generic application icon until the user selects artwork. These packages are for local development, not release distribution.
+Finder/Dock display name is Dalan. Debug and release use provisional local identifiers `local.dalan.debug` and `local.dalan.release`, generated version metadata from Cargo, high-resolution support, and ad-hoc signatures verified by `codesign`. The bundle includes the user-supplied app artwork through a conventional `.icns`, with PNG fallback and optional Icon Composer compilation. No document/file associations, installer, hardened runtime, Developer ID signature, or notarization is claimed. These packages are for local development, not release distribution.
+
+### Supplied app icon
+
+The original `dalan-db.icon` is retained unchanged at `crates/app/assets/brand/Dalan.icon`. The README and portable fallback use its PNG layer resized to 1024 px; `Dalan.icns` contains conventional macOS sizes. The default build copies both fallbacks into Resources and sets `CFBundleIconFile`.
+
+```sh
+./scripts/prepare-icons                    # Regenerate PNG/icns using sips + iconutil
+./scripts/macos --open                     # Verified conventional icon fallback
+./scripts/macos --icon-composer --open     # Requires full Xcode 26+ actool
+```
+
+`.icon` source cannot be activated by copying it into a bundle. The optional compiler path produces `Assets.car` and sets `CFBundleIconName` only after receiving valid compiler output, while retaining the `.icns` fallback. Missing/unsupported tooling fails explicitly without replacing the existing app. Real Icon Composer compilation is not verified on the current Command-Line-Tools-only host; unit tests cover orchestration with a simulated compiler, not Apple renderer output. Linux/Windows packaging is still future work and can use the supplied PNG. macOS may cache the previous Dock icon; fully quit older instances before launching the rebuilt bundle. See [artwork provenance](../crates/app/assets/brand/README.md). Artwork redistribution terms remain unspecified.
 
 The bundle helper uses Python's standard library and existing macOS tools; it adds no Cargo dependency. It only builds/replaces its generated bundle, does not install into `/Applications`, and never modifies settings/source. A failed Cargo build does not overwrite the existing bundle. Bundle metadata/assembly logic has its own standard-library unit tests.
 

@@ -1,6 +1,6 @@
 # Dalan design direction
 
-Status: adopted compact Carbonfox UI foundation, with an experimental read-only database workspace. This is not a finished SQL client, accessibility certification, or completed brand identity. **Dalan** means “ways” in Javanese and remains text-only branding.
+Status: adopted compact Carbonfox UI foundation, with an experimental read-only database workspace. This is not a finished SQL client, accessibility certification, or completed brand identity. **Dalan** means “ways” in Javanese. The supplied Icon Composer artwork now defines the application logo/icon; utility icons remain separate.
 
 ## Rich table interaction contract
 
@@ -11,6 +11,10 @@ WHERE/list-filter and ORDER BY/arrow-down-up are editable single-line drafts. En
 The production body is direct canvas paint with cached shaped text and row/grid quads, **zero per-cell Divs**, and native interactive header controls. Preview/fit ellipses are grapheme-safe; the 128-grapheme display cap does not alter typed/export values. The gutter shares body y only, remaining at x = 0. Result LRU evicts inactive pages, not retained tabs/drafts/scroll; table reactivation can refresh applied conditions while consoles require explicit rerun. The 16 MiB/eight-page allocation budget is best effort, excluding metadata/drafts/GPU/export temporary memory.
 
 The current utility subset is **36 Lucide SVGs**, eight added to 28 at the same revision with existing ISC/Feather notices; `text-initial` is the upstream text glyph alias, not new branding. Native screenshots remain permission-blocked; test component pins and simulated operation counts are not native visual/performance proof. See [table browser](docs/table-browser.md) and [current evidence](docs/testing.md#rich-canvas-table-browser). Earlier slice counts/design below are historical where superseded; primary-run totals and this tree's hosted CI remain pending.
+
+## Supplied application artwork
+
+The user supplied `dalan-db.icon`, an Apple Icon Composer package. Original files are retained unchanged in `crates/app/assets/brand/Dalan.icon`; the README uses the PNG fallback, and macOS bundles use a generated multi-size `.icns` unless Icon Composer compilation is explicitly requested. This is application/logo artwork, separate from utility icons. No replacement logo or compositor effects were invented. Project/artwork redistribution terms remain unspecified; see [artwork provenance](crates/app/assets/brand/README.md).
 
 ## Adopted direction
 

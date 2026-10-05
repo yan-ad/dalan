@@ -80,7 +80,7 @@ A pane toggle changes the user's visibility preference, independently of width c
 
 ## About Dalan
 
-The native macOS application menu opens **About Dalan** in a separate 420 × 280 nonresizable GPUI window. It displays the Cargo package version, the name’s Javanese meaning “ways,” and database-workspace scope. It uses existing GPUI/native integration, not external libraries. macOS application-menu, native window metadata and About naming remain **Dalan**, while the custom titlebar replaces its duplicate label with the database toggle; no brand/app icon artwork is introduced. Utility icons are distinct from app identity.
+The native macOS application menu opens **About Dalan** in a separate 420 × 280 nonresizable GPUI window. It displays the Cargo package version, the name’s Javanese meaning “ways,” and database-workspace scope. It uses existing GPUI/native integration, not external libraries. macOS application-menu, native window metadata and About naming remain **Dalan**, while the custom titlebar replaces its duplicate label with the database toggle; the supplied application artwork is now retained in [brand assets](../crates/app/assets/brand/README.md), separate from utility icons.
 
 ## Adopted Carbonfox - opaque tokens
 

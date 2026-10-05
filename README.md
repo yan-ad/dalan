@@ -1,191 +1,54 @@
+<p align="center">
+  <img src="crates/app/assets/brand/dalan.png" width="128" alt="Dalan app logo">
+</p>
+
 # Dalan
 
-An experimental native database workspace in Rust and GPUI. The goal is to cover daily DataGrip workflows first and MongoDB Compass workflows later, with user-selected Zed-like compact UI and **Carbonfox - opaque**. DataGrip is a database UX/workflow reference only: the user explicitly rejects its visual style and button-heavy layout/chrome.
+[![CI](https://github.com/yan-ad/dalan/actions/workflows/ci.yml/badge.svg)](https://github.com/yan-ad/dalan/actions/workflows/ci.yml)
+![Status: experimental](https://img.shields.io/badge/status-experimental-orange)
+![macOS first](https://img.shields.io/badge/platform-macOS%20first-lightgrey)
+![Rust + GPUI](https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-black)
 
-The name **Dalan** means “ways” in Javanese.
+## Introduction
 
-The product name is **Dalan** everywhere it is displayed. Lowercase `dalan-*` Rust package names, executable identifiers, paths, and bundle IDs are technical identifiers, not display branding.
+Dalan means “ways” in Javanese. It is a native Rust + GPUI database workspace with DataGrip-inspired workflows, compact Zed-style UI, and the Carbonfox opaque theme.
 
-**Status: experimental read-only MySQL/MariaDB sources, multi-table tabs and query consoles.** The macOS app can persist profiles, test/connect, discover databases and browse bounded table pages with column sorting and loaded-page CSV export. PostgreSQL and Redis remain planned; agents are not connected yet. The project license and distribution model are undecided.
+MySQL and MariaDB are experimental: source management, offline schema browsing, table tabs, WHERE/ORDER BY, restricted read-only query consoles, and loaded CSV export are implemented. PostgreSQL, Redis, plugins, and live ACP-only AI integration are planned. No application BYOK or general-purpose IDE tools.
 
-## Ecosystem direction
+## Installation
 
-See the root [ROADMAP.md](ROADMAP.md) for **now, next and future** plans across drivers, database-focused plugins, and ACP-only AI. DBX was cloned and inspected at a recorded revision; the first small adaptation is a tested driver capability catalog, not a replacement of Dalan's UI or database execution layer. [Reuse assessment](docs/dbx-reuse.md) records source links, licensing, differences and port gates. No DBX direct-provider/BYOK integration, Vue/Tauri shell, infrastructure toolbox or sandbox claim is adopted.
-
-## Rich canvas table browser
-
-The production table body now paints viewport cells directly with cached shaped text, without per-cell Divs. Compact name-only type/key headers retain native interaction and explicit single-click sort targets; a pinned 44 px row-number gutter stays vertically aligned while columns scroll. Editable **WHERE** and **ORDER BY** drafts apply on Enter/Apply, not on typing. A bounded MySQL-dialect clause compiler validates current column metadata before credential/network work, binds exact literal values and generates fixed SELECT/LIMIT/OFFSET queries. Invalid clauses preserve visibly stale previous rows. DataGrip remains a database UX reference only; **Carbonfox - opaque** is retained.
-
-The workspace evicts inactive results by LRU against an estimated 16 MiB/eight-page budget, not the 32 retained tabs or their SQL/condition/scroll drafts. Active/busy/export-protected pages can exceed this best-effort budget. Evicted tables refresh applied conditions on activation; consoles ask for an explicit rerun and never autoexecute. See [table browser](docs/table-browser.md) for grammar, limits, controls, canvas statistics and memory exclusions.
-
-Historical rich-canvas verification passed **114 headless unit tests + one native-wire integration test, 154 simulated UI tests, four Python bundle tests and 29 unique live cases**, plus formatting, strict lint and signed debug bundle checks. The narrow canvas fixture paints 40 cells with zero production per-cell elements and reuses shaped text on small scrolls. Integrated 1280 × 720 evidence retains 300/51,200 viewport-cache cells, paints only visible intersections, and renders 32 sidebar rows with zero projection rebuilds. These are simulated counters, not native FPS. Historical `4e389d0` passed all five jobs in [run 37266563119](https://github.com/yan-ad/dalan/actions/runs/37266563119); current hosted CI and native visual/performance review still require this revision's own evidence.
-
-## Relocated source controls
-
-The main titlebar keeps the 28 px Database collapse toggle at x = 84 px after the traffic-light reservation. Immediately to its right, a same-height **New Connection** control combines the existing plus glyph and explicit text. It opens the retained source dialog by pointer, Enter or Space even with Database Explorer hidden, with loading/saving guards and a tooltip. The duplicate in-window Dalan label stays removed; Carbonfox - opaque remains tooltip-only.
-
-Database Explorer now has exactly three 28 px toolbar icons: **Refresh selected source**, one stateful **Expand Loaded / Collapse All** toggle (`toggle-tree-expansion`), and the existing **New Query Console** action. A visibly expanded saved source makes the toggle Collapse All; otherwise it expands loaded metadata only, without network fan-out. Hidden child preferences never require an extra click. There is no explorer Add/plus button.
-
-Each source row has an 18 px Manage gear (`source-actions-{id}`) opening a bounds-anchored **Manage / Copy / Remove** popover for that exact UUID, independent of explorer selection. Keyboard traversal, Escape/outside dismissal and focus restoration are retained; actions are disabled while saving. Copy opens an unsaved new-UUID draft with a UTF-8-safe, at-most-256-byte name ending in ` copy`, cloned nonsecret settings and no password or Keychain retrieval. Cached schema choices are copied only into form memory, not SQLite; Save uses normal fresh discovery. Existing drafts are never discarded, and the 100-profile limit remains. Remove confirms its captured UUID and never deletes server objects. See [source actions](docs/source-management.md#row-actions-and-copy-boundaries).
-
-Verified local totals are **115 unit tests + one native-wire integration test, 159 simulated UI tests and four Python bundle tests**, with formatting, strict lint and signed bundle checks passed. Live database and native Keychain suites were not rerun for this UI/model change. Native visual/performance/accessibility and current hosted CI remain separate gates. No dependencies, utility assets or branding changes belong to this relocation; existing provider-icon provenance remains separate. See [verification](docs/testing.md#relocated-source-controls).
-
-## Source manager redesign
-
-The source window now has General, Options, SSH/SSL and Schemas tabs in its 34 px transparent native titlebar, with an 84 px traffic-light reservation and no duplicated native title. Its Carbonfox body remains opaque, flat and compact; initial/minimum sizes remain 1040 × 760 / 780 × 560. General provides real driver/authentication combos, Default, Unix Socket and credential-free URL-only modes; Options applies connect/query deadlines and page size. Schemas filters explorer visibility only. An independent reusable SSH manager persists credential-free metadata, resolves referenced settings and keeps strict host verification. SSL exposes four explicit modes and paired PEM client-identity paths, without Java truststores or encrypted-key passphrase controls. See the [source management guide](docs/source-management.md) for exact boundaries.
-
-Historical source-manager verification passed **105 headless unit tests plus one native-wire integration test**, **141 simulated UI tests**, **four Python bundle tests**, and **29 unique live cases** (11 direct/URL/socket/CONNECT/authentication, 12 TLS, 6 SSH). Formatting, strict lint and signed debug bundle checks passed. No Auth is verified to send no username/password; unknown MySQL accounts can receive a decoy unsupported plugin instead of error 1045, and both fail closed. Positive mTLS, live SSH-manager remote `true`, native visual/accessibility review and current hosted CI remain open. Historical `9ecae4c` passed all five jobs in [run 37255792022](https://github.com/yan-ad/dalan/actions/runs/37255792022). No icons or project/license changes were introduced; `url` and `percent-encoding` are declared directly from the existing dependency graph.
-
-## Product boundaries
-
-- MySQL/MariaDB come first by user direction, superseding the earlier PostgreSQL-first sequence. First release still targets PostgreSQL, MySQL, MariaDB, and Redis.
-- MongoDB comes after the first release. Other drivers follow later.
-- macOS first, Linux second, Windows third. Apple Silicon is the initial development target; Intel and minimum OS support remain decisions.
-- Database-only workspace: database explorer, query consoles/data views, results and sessions dock, optional ACP panel. No general file explorer, code viewer, Git UI, build tools, or general-purpose terminal.
-- AI is available only through **Agent Client Protocol (ACP)**. No application BYOK settings or direct model-provider integrations. External agents handle their own authentication, provider selection, and billing.
-- First AI milestone proposes suggestions and explicit insertion, not autonomous database execution. ACP agents are external programs, not sandboxed by this application.
-
-## What exists today
-
-| Area | Current state |
-| --- | --- |
-| Planning | Product scope, roadmap, UX, technical design, and decision records |
-| Core | Engine identities, finite execution limits, conservative declared-risk decisions |
-| Drivers | Experimental MySQL/MariaDB read-only adapter using mysql_async; PostgreSQL and Redis planned |
-| ACP | Official SDK schema boundary, empty client capabilities, launch-path shape validation; no process or transport |
-| App | Diagnostic command and macOS GPUI shell: native titlebar, layout menu, titlebar database toggle, collapsible/resizable Database Explorer, optional disconnected ACP panel, About Dalan window, dedicated source dialog window, retained table tabs and restricted SELECT consoles |
-| macOS bundle | Debug/release `Dalan.app` build helper with metadata and local ad-hoc signing |
-| CI | Headless formatting/test/lint jobs on macOS, Linux, and Windows; macOS desktop build job; Ubuntu direct/HTTP CONNECT and database-TLS fixture jobs (historical hosted results recorded; next main push verification pending) |
-
-The shell uses the exact Carbonfox - opaque default with shared compiled tokens, flush square panes and explicitly opaque main/source/About windows, not blur or transparency. There is no theme switch or fake light mode. Main content remains the database browser/read-only table workspace; source setup opens in a dedicated resizable dialog window, not inside the main area. Read-only query consoles have an in-memory multiline SQL editor; there is no write UI or agent session. See [query consoles](docs/query-consoles.md) for execution policy, shortcuts and limitations. Profiles use version 1 local JSON without passwords; native macOS Keychain saving is opt-in. See [MySQL sources](docs/mysql-sources.md) for setup, transports, TLS warnings, limits and verified versus untested paths. See [UI foundation](docs/ui-foundation.md) for controls and [development](docs/development.md) for build prerequisites.
-
-The bottom-right 28 px Lucide **bot-message-square** icon button (**AI · ACP** tooltip, Cmd-Shift-A) toggles a scoped right panel that honestly reports **Not connected**: no ACP transport or agent launch is implemented, and there is no text prompt input or BYOK/provider settings. The native macOS **About Dalan** menu opens a separate window showing the Cargo version, the Javanese meaning “ways,” and database-workspace scope. Dalan is the display name; Rust crates, identifiers, executable names, commands, and bundle IDs retain their conventional spelling.
-
-Previous icon/sorting/export validation: 48 headless Rust tests, 42 simulated GPUI tests, four Python bundle-helper tests, one generated native Keychain round-trip and 22 live database/transport checks passed, including sorting on MySQL 8.4.11 and MariaDB 11.4.13. The debug app bundle passed plist/signature/license-resource checks. Trusted system-CA HTTPS proxy success, manual native UI/accessibility and release/offline-Metal validation remain unverified; hosted results are recorded separately below. See [testing](docs/testing.md) for commands and boundaries.
-
-The connection-UX revision fixes source-form Tab traversal and double-click selection, adds an explicit metadata-only SSH identity picker, and provides sanitized typed connection diagnostics. A fresh, uncached MySQL `caching_sha2_password` account passed its first login with TLS explicitly disabled, using RSA authentication through mysql_async. The live suites passed 23 unique cases (7 direct/CONNECT/authentication, 10 TLS, 6 SSH); 52 headless, 46 simulated UI and four Python tests passed, along with formatting, strict lint and debug bundle plist/signature checks. No native Keychain rerun is claimed for this revision. The reported remote connection is **not confirmed fixed**: a credential-free probe connected at TCP level but was reset before the MySQL greeting. Retry with the new diagnostic; see [troubleshooting](docs/mysql-sources.md#connection-troubleshooting). No new dependencies or license changes were introduced.
-
-Source setup now uses one application-wide **Data Sources · Dalan** dialog window (1040 × 760 initially, minimum 780 × 560), separate from the main browser/table workspace. New Connection, row Manage/Copy and the centered Connect to a Source action use it without resetting an unsaved draft; a new or refreshed form focuses Name. Cancel, Escape, Cmd-W and native close discard the draft and cancel its test, except while credential/JSON saving is in progress. Successful Save closes the window, then automatically refreshes metadata only; it does not browse table data. Host and Port share a row for database, SSH and HTTP/HTTPS endpoints; nonshrinking controls and a scrolling natural-height body prevent the reported narrow-field collapse. This is a normal separate window, not an OS modal sheet or a focus trap for the main window.
-
-Historical local source-dialog evidence: **54 headless**, **63 simulated GPUI** and **four Python bundle-helper** tests passed. Native visual/accessibility interaction remains unverified. Hosted run **37192402473** failed only the Windows SSH-key fixture because its newline filename is invalid on Windows; macOS/Linux headless, database fixtures and macOS desktop jobs passed in that historical run. The fix restricts newline/carriage-return/tab filename fixtures to Unix while preserving Windows metadata-discovery assertions; no checks or workflows are disabled. That fix passed all five jobs on `3c4fdae` in [CI run 37194669634](https://github.com/yan-ad/dalan/actions/runs/37194669634). The current tree revision still needs its own run. See [testing](docs/testing.md#source-dialog-window-and-windows-fixture-fix).
-
-The UI uses thirty-six pinned Lucide SVGs, embedded through the desktop asset source. Complete Lucide ISC and retained Feather MIT notices, plus GPUI input Apache-2.0 attribution, are in [third-party notices](THIRD_PARTY_NOTICES.md); bundle resources include the notices and Lucide license. These utility glyphs do not introduce a Dalan app/brand icon or select a project license.
-
-Database Explorer has a 28 px toolbar with three 28 px icons: Refresh selected source, combined Expand Loaded / Collapse All and New Query Console. Creation is in the titlebar's labeled New Connection control; Manage, Copy and Remove are source-row actions. The explorer title header, activity rail and header hide/minimise controls remain removed. The database toggle sits at x = 84 px, immediately followed by New Connection; no bottom-left duplicate remains. Cmd-B and native View/Layout alternatives, retained closed preference and the four-row Layout popover remain. Dalan is identified by the macOS application menu, native window metadata and About dialog, not a duplicated custom titlebar label. The status spacer has a Carbonfox - opaque tooltip only. Outer padding is 0 px, divider hit area 4 px (1 px line), titlebar 34 px and status 28 px. At 720 px the explorer maximum is 476 px while preserving 240 px main content.
-
-Source rows retain readable names and engine cues; the engine name is in the tooltip, not a duplicate row badge. Optional source colors are markers only. Color below Name accepts `#RRGGBB` or labeled Default, Blue, Green, Amber, Red and Purple swatches. Legacy version 1 profiles load with no color and are not automatically rewritten; password rejection and Keychain behavior are unchanged. With no sources, the main area centers a working **Connect to a Source** button that opens the same dedicated source dialog window by mouse, Enter or Space, even while the explorer is hidden. With saved sources but no selected table, it instead shows a small table icon and **Select a table**, without a fake browser/read-only header or giant welcome. No demo/trial welcome content is added.
-
-Historical explorer redesign verification passed **54 headless Rust tests**, **57 simulated UI tests** and **four Python bundle tests**, plus formatting, strict lint and debug bundle plist/signature/license-resource checks. Migration tests verify exact legacy None, case-preserving hex and malformed-color no-overwrite behavior. See [testing](docs/testing.md#database-explorer-redesign-verified). Native visual/accessibility remains unverified; previous live transport results are historical for this UI/profile-only change. Hosted CI evidence and the pending next-main gate are recorded below. Asset provenance, including the trash filename alias, is in the [asset README](crates/app/assets/README.md).
-
-### Compact lazy explorer
-
-The tree uses 22 px rows: source driver/color/name, database disclosure/icon rows, meaningful Tables and Views folders, and table-icon leaves. Known counts move to full-name tooltips rather than trailing numbers; unread metadata never invents zero counts. Names are explicitly width-constrained, nonblank and ellipsized; Unicode and quoted identifiers retain collision-safe identities. A single-focus keyboard tree and viewport-only uniform list replace the old per-node buttons/full-hierarchy layout. The reported blank buttons were not traced to a measured root cause; no font or GPU diagnosis is claimed.
-
-Startup restores persisted metadata without network or Keychain calls. Cached expansion survives table pagination, filters and source changes; Tables opens automatically and Views starts collapsed and remains unavailable for reading. Expand Loaded never fans out network work; Collapse All preserves metadata. Explicit Refresh replaces the complete explorer-selected source catalog only after success, retaining the previous tree and table page on failure. Catalog jobs remain independent of table-page/form jobs with generation/abort checks; each complete discovery uses one serial owned connection/tunnel, not per-database fan-out.
-
-Historical compact-tree local verification passed **57 headless tests**, **71 simulated UI tests** and **four Python bundle tests**, plus formatting, strict lint and debug bundle plist/signature/license checks. The large-catalog regression paints at most 40 rows out of 1,000 databases and scrolls to row 900/End; that is structural evidence, not a native FPS/latency measurement. That compact-tree commit `8dc3d27` passed all five hosted jobs in [run 37198333660](https://github.com/yan-ad/dalan/actions/runs/37198333660). The icon subset now has nineteen assets at the same Lucide revision and existing license notices.
-
-### Persistent offline metadata
-
-Saved profiles remain version 1 password-free JSON and credentials remain session-only or opt-in native macOS Keychain. A separate `~/Library/Application Support/Dalan/metadata.sqlite3` cache uses pinned `rusqlite 0.40.2` with bundled SQLite, no external daemon, libSQL or cloud service. It stores visible database names and table/view names/kinds, not columns, indexes, DDL or rows. Successful Save commits credentials/profile first, closes the dialog, then refreshes metadata for all visible databases (or just the configured database); it never automatically browses data.
-
-The 22 px virtual tree restores offline with fixed 18 px **Cached** hard-drive, **Stale** warning-triangle and **Refreshing…** static loader-circle markers; meaning, timestamp and sanitized error remain in tooltips, not persistent labels. Refresh requires an explicit valid explorer selection, not a current-table fallback; failed refresh retains the old snapshot. Disk-cache failures remain visible nonfatal warning text and do not block profile JSON loading or falsely report a successful profile save as failed. Cached metadata is sensitive, unencrypted and can reflect old permissions; it does not grant offline server-data access. See [cache scope and limits](docs/mysql-sources.md#persistent-offline-metadata), [architecture](docs/architecture.md#persistent-metadata-cache-implemented), [security](docs/security.md#persistent-metadata-privacy) and [license notices](THIRD_PARTY_NOTICES.md).
-
-Historical metadata-revision evidence: **67 headless tests**, **83 simulated UI tests**, **four Python bundle tests**, and all disposable database/transport scripts passed (**7 direct/CONNECT/authentication**, **10 TLS**, **6 SSH**). Formatting, strict lint and signed debug bundle checks passed. That metadata commit `4c8af09` passed all five hosted jobs in [run 37201696519](https://github.com/yan-ad/dalan/actions/runs/37201696519); this is historical evidence, not a result for the current wide-grid revision. Native Keychain was not rerun. The automatic-save regression verifies that discovery starts after Save and that failure preserves the committed source and prior metadata without implicitly enabling Refresh. Cached metadata restores without contacting servers; native UI/accessibility remains unverified.
-
-### Carbonfox compact foundation
-
-The exact complete **Carbonfox - opaque** variant is [vendored](crates/app/assets/themes/carbonfox-opaque.json) from `cange/nightfox.zed` commit `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`, `themes/nvim-nightfox.json`. Both MIT licenses (2024 Christian Angermann, 2021 James Simpson) are retained with [provenance](crates/app/assets/themes/README.md) and [third-party notices](THIRD_PARTY_NOTICES.md). The original project's license pin is separate, not a claim about which palette revision the port used. No affiliation or Zed editor asset import is implied.
-
-Runtime uses compiled opaque tokens, including input colors; upstream alpha toolbar/selection/border entries are composited over the panel. Blue is focus/active state and Save/Connect primary action with dark text; controls stay neutral and disabled labels remain readable without opacity. System UI type is 13 px, browse data 12 px, controls/headers 28 px, tree/grid rows 22 px and control radius 3 px. The source window keeps its sizes, draft/traversal/saving APIs, 28 px inputs, 30 px endpoint parents and 18 px checkbox, with 8 px gaps/16 px scroll padding and compact footer. Optional user source colors remain marker-only and unchanged, with no arbitrary-color AA promise.
-
-Pure token checks calculate minimum normal-state contrast of 13.04:1 primary, 7.22:1 secondary, 6.10:1 focus and 3.44:1 input boundary. The theme revision passed 67 headless tests, 88 simulated UI tests and four bundle tests, plus formatting, strict lint and signed bundle/license checks. Dalan.app was rebuilt and reopened. Native window capture was blocked, so visual/accessibility verification is not claimed. Theme commit `0ca0221` passed all five hosted jobs in [run 37204370849](https://github.com/yan-ad/dalan/actions/runs/37204370849). This is historical evidence for that commit; the wide-grid revision needs its own next-main CI run. Database/cache/SSH/password persistence is unchanged. Light/system support is an unselected future proposal, not a shipped toggle. See [design](DESIGN.md), [UI foundation](docs/ui-foundation.md) and [testing](docs/testing.md#carbonfox-opaque-revision).
-
-### Historical wide-table viewport
-
-The reported lag with 100 rows and 100+ columns exposed eager rendering/formatting of every loaded cell and a deep page clone on browser redraw: 10,000 cells at 100 columns, or 51,200 at the 512-column limit. A retained, separate GPUI `DataGrid` now virtualizes both axes, with fixed 180 px columns, 22 px rows and a pinned 28 px header sharing the horizontal offset. Wheel/trackpad, Shift-wheel, keyboard scrolling and draggable two-axis scrollbars operate locally rather than rebuilding the explorer or reloading data.
-
-The model and grid share immutable `Arc<TablePage>` snapshots; only visible/overscan cell text and headers are cached. Backend limits, typed values, SQL, profile/password storage, SQLite metadata and loaded-page-only CSV semantics are unchanged. This is a database data view, not a general code viewer; column resizing, active-cell selection and cell inspection/copy remain unimplemented.
-
-The combined simulated 1,000-database/100 × 512 fixture at 1280 × 720 reported a 950 × 574.5 body viewport, **310/51,200 cells (~0.61%)** materialized after scrolling, 32 sidebar rows and zero explorer projection rebuilds. The shared page pointer stayed unchanged and no catalog work started. These are per-frame operation counts, not native FPS or millisecond measurements. Current verification passed 74 headless tests, 99 UI tests and four bundle tests, plus formatting, strict lint and signed-bundle checks. Hosted CI for the new commit remains pending; see [wide-grid evidence and commands](docs/testing.md#wide-grid-performance-revision). Native screenshot/manual review and high-DPI/GPU profiling remain open.
-
-### Historical icon-led chrome
-
-Selected/loaded tables keep their qualified title and a passive 28 px read-only lock tooltip; the lock is not an edit action. Apply, Clear, Export, Previous and Next are 28 px icon buttons with action tooltips and unchanged IDs, keyboard activation and guards. Actual filter column names, operators and values stay visible. The footer shows only the loaded range (for example `1–100`); its tooltip reports loaded rows and `has_more`, never an invented total. Errors, stale-page messages and cache warnings remain readable text. Two-axis virtualization, shared page snapshots, cached rows and connection/selection behavior are unchanged.
-
-Saved-credential fix `9b3d3d8` passed all five jobs in [CI run 37212641100](https://github.com/yan-ad/dalan/actions/runs/37212641100): historical evidence, not a new-main result. Icon-led revision local validation passed **74 headless**, **106 simulated UI** and **four Python** tests, plus formatting, strict lint and signed bundle/resource checks. Current hosted CI remains pending. No live database/Keychain rerun is required for this UI-only change. Native screenshot/manual/accessibility review remains open; do not publish private source-identifying values. See [testing](docs/testing.md#icon-led-chrome-revision).
-
-## Start locally
-
-The pinned Rust toolchain is installed through rustup when Cargo runs.
+Requires macOS, Rust/rustup, Python 3, and Xcode Command Line Tools. Build and open the local debug app:
 
 ```sh
-cargo run -p dalan-app --bin dalan-doctor
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
-```
-
-### Build and open Dalan.app (macOS debug)
-
-```sh
+git clone https://github.com/yan-ad/dalan.git
+cd dalan
 ./scripts/macos --open
 ```
 
-This creates `target/debug/bundles/Dalan.app` and opens it as a macOS application, not a loose executable. Requires Rust, Python 3, and Xcode Command Line Tools. Debug defaults to runtime shaders so the offline Metal compiler is not required. Finder/Dock/app-menu display name is **Dalan**; no custom app icon has been selected.
+Output: `target/debug/bundles/Dalan.app`. This is a local ad-hoc signed build, not a notarized installer. It uses the supplied PNG/icns icon fallback by default; optional Icon Composer compilation requires full Xcode. [Build and icon details](docs/development.md).
+
+## Development
 
 ```sh
-./scripts/macos          # Build bundle only
-./scripts/macos --run    # Run bundle executable in terminal for debug logs
-open target/debug/bundles/Dalan.app  # Open an already-built bundle
-./scripts/macos --release --open    # Optimized bundle; requires full Xcode/Metal
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+./scripts/macos --run
 ```
 
-Quit an older Dalan instance before rebuilding/reopening. These are local ad-hoc signed builds, not notarized distribution packages. Custom Cargo target directories are supported; the script prints the actual bundle location. See [development](docs/development.md) for debugger commands and build options.
+The pinned toolchain is installed by rustup. Headless tests run on macOS, Linux, and Windows; desktop support is macOS-first. See [development setup](docs/development.md) and [test strategy](docs/testing.md) for UI, database fixture, and release commands.
 
-## Workspace
+## Contribution
 
-```text
-crates/
-  app/       Diagnostic command and macOS GPUI entry point
-  core/      UI-independent engine and execution policy types
-  drivers/   Experimental MySQL/MariaDB adapter and future engine catalog
-  acp/       ACP SDK boundary, future agent lifecycle
-docs/        Product and technical planning
-```
+Implement one tested database workflow at a time. Preserve credential safety, lossless values, bounded results, and ACP-only AI. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [ROADMAP.md](ROADMAP.md) before changing architecture or scope.
 
-Experimental MySQL/MariaDB I/O, source persistence and macOS credential storage exist. Editor behavior, writes, PostgreSQL/Redis adapters and real ACP sessions remain implementation work. Avoid adding speculative crates before a vertical slice needs them.
+## Reference
 
-## Planning map
+- [Roadmap](ROADMAP.md): drivers, plugins, and ACP AI, now through future.
+- [Source management](docs/source-management.md), [table browser](docs/table-browser.md), and [query consoles](docs/query-consoles.md).
+- [Architecture](docs/architecture.md), [security](docs/security.md), and [feature checklist](docs/feature-checklist.md).
+- [DBX reuse assessment](docs/dbx-reuse.md) and [design direction](DESIGN.md).
 
-- [Product plan](docs/product-plan.md): workflows, release scope, exclusions, acceptance scenarios.
-- [Roadmap](ROADMAP.md): canonical now/next/future driver, plugin and ACP milestones.
-- [DBX reuse assessment](docs/dbx-reuse.md): pinned source investigation and selective port boundary.
-- [Feature checklist](docs/feature-checklist.md): completed experimental slices and the next one-by-one workflow sequence.
-- [UX](docs/ux.md) and [design direction](DESIGN.md): Zed/DataGrip references, pane behavior, keyboard and state requirements.
-- [Architecture](docs/architecture.md): module boundaries, runtime ownership, sessions, result handling, persistence.
-- [Drivers](docs/drivers.md): engine-specific behavior and dependency choices.
-- [Source management](docs/source-management.md): tabbed configuration, reusable SSH settings, credential and visibility boundaries.
-- [MySQL sources](docs/mysql-sources.md): experimental source how-to, scope matrix and live-test boundaries.
-- [Table browser](docs/table-browser.md): canvas rendering, column/gutter controls, WHERE/ORDER BY grammar and best-effort workspace result retention.
-- [ACP integration](docs/acp.md): protocol lifecycle, authentication, context consent, permission handling.
-- [Security](docs/security.md): credentials, TLS, execution safety, external-agent trust.
-- [Development](docs/development.md) and [testing](docs/testing.md): setup, commands, CI, and release evidence.
-- [Decision records](docs/adr/README.md): requirements, provisional choices, and unresolved decisions.
-- [Research sources](docs/references.md): primary documentation and version notes.
-- [Initial validation](docs/initial-validation.md): checks run, local Metal limitation, and unverified paths.
+## License
 
-## Contributing
-
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). This experimental read-only client is not feature-complete. Planned capabilities are not compatibility claims. Do not submit provider-key UI, direct provider SDKs, or credentials in fixtures.
-
-No project license has been selected. Dependency licenses do not license this repository; choose a project license before public distribution.
-
-### Multi-table tabs and read-only query consoles
-
-Tables open in a flat 28 px workspace strip, deduplicated by source UUID, database and table; reopening a table activates its existing tab. Up to 32 table/console tabs retain independent requests, filters, grid scroll and result pages while switching. Consoles are uniquely numbered **Console N** and keep unsaved SQL only in memory. New Query Console is available in the explorer toolbar or the populated tab strip's plus control (Cmd-Shift-N); Cmd-Alt-Left/Right switches tabs. Cmd-W closes an active workspace tab, with Keep Open / Discard confirmation for any nonempty console draft. The native OS window-close control is unchanged.
-
-The native GPUI editor supports multiline text, selection, IME, clipboard and bounded undo, with Menlo 13 px, 22 px lines and a 44 px gutter. Run (Cmd-Enter) submits selected text or the whole draft, not a guessed statement under the cursor. Cancel (Cmd-Period) closes the owned client connection; it is not a confirmed server KILL. Exactly one supported read-only SELECT query is accepted using pinned sqlparser 0.62.0/MySQL dialect and AST validation, including nested SELECT, CTE and UNION. Writes, SHOW/EXPLAIN, session commands, executable comments/hints and unknown or qualified functions are rejected before connection. Each run has a fresh read-only transaction and configured server/client query limits (20 seconds by default), never a persistent user transaction. Use a SELECT-only role and trusted server objects: this is defense in depth, not an absolute sandbox.
-
-Results use immutable shared pages and the existing virtual grid, without header sorting, table filters or query pagination. Fresh nontruncated loaded results can use loaded CSV export, not full-query export. Failures preserve visibly stale prior results with their original SQL, elapsed time and warnings. Drafts/results are not persisted or sent to telemetry/ACP. See the [guide](docs/query-consoles.md), [ADR 0004](docs/adr/0004-workspace-tabs-and-read-only-consoles.md) and [validation boundary](docs/testing.md#workspace-tabs-and-query-consoles).
-
-Historical workspace-console verification passed **93 headless Rust tests**, **132 simulated UI tests**, **four Python bundle tests**, and **23 unique live database/transport cases** with positive console SQL. Formatting, strict lint and signed debug bundle checks passed. Historical `cf24e48` passed all five jobs in [run 37215973701](https://github.com/yan-ad/dalan/actions/runs/37215973701); hosted CI for this revision is still a separate gate. Native visual/IME/accessibility, performance, release signing and positive system-trusted HTTPS proxy verification remain unclaimed.
+Dalan's project and supplied artwork licenses have not yet been selected; no open-source redistribution grant is implied. Third-party assets and adapted code retain their own licenses in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Resolve project/artwork licensing before public distribution.

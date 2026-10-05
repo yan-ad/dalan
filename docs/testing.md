@@ -1,5 +1,13 @@
 # Test strategy and release evidence
 
+## README and supplied application icon
+
+The README now has only Introduction, Installation, Development, Contribution, Reference and License sections, with the supplied PNG logo and truthful CI/experimental/platform/build badges. The original Icon Composer package is preserved byte-for-byte. `scripts/prepare-icons` generated the 1024 px PNG and conventional macOS multi-size `.icns`; bundle resources and `CFBundleIconFile` identify that fallback.
+
+Seven Python bundle/icon tests passed, including resource bytes, PNG/icns headers, package-layer references, fallback versus compiled metadata, and simulated compiler missing/invalid/success outcomes. The app bundle built, passed plist lint, and verified its ad-hoc signature. This does not verify real Apple Icon Composer output: the local host has no `actool`; `--icon-composer` is an explicit Xcode 26+ path and failure must preserve the existing bundle. PNG is available for future platforms; Linux/Windows desktop integration is not claimed. Artwork redistribution terms remain unspecified. Rust UI/database behavior was unchanged and those suites were not rerun for this packaging/docs-only iteration; current hosted CI still needs its own run.
+
+The rebuilt app was reopened. `NSWorkspace.icon(forFile:)` resolved the supplied database/path artwork for Dalan.app, and that icon image was inspected without screen capture. This verifies macOS bundle-icon recognition, not the native Icon Composer material/appearance variants or a full app UI screenshot. Missing `actool` was tested directly and left the existing bundle metadata unchanged. The earlier roadmap commit `17c64f9` passed all five jobs in run 37280905819; current icon packaging needs its own hosted run.
+
 ## DBX reference and ecosystem roadmap
 
 The root [ROADMAP.md](../ROADMAP.md) is the canonical forward plan. DBX was cloned for read-only investigation at `38ce7b5dd25db0ec058090ffbb4ab0b707a9bfad`; upstream builds/tests were not run. The initial Dalan catalog adapts descriptor/capability lookup and validation patterns only, with source attribution and the complete upstream Apache-2.0 license retained in source and bundle Resources. No driver executor, plugin host or AI transport was copied.
