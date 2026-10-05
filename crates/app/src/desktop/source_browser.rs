@@ -24,6 +24,10 @@ pub(super) struct SourceExplorer {
     active_key: Option<TreeKey>,
     tree_focus: gpui::FocusHandle,
     scroll: gpui::UniformListScrollHandle,
+    menu_source: Option<String>,
+    menu_position: gpui::Point<gpui::Pixels>,
+    bounds: gpui::Bounds<gpui::Pixels>,
+    menu_focus: [gpui::FocusHandle; 3],
     #[cfg(test)]
     last_rendered_row_count: usize,
     #[cfg(test)]
@@ -126,6 +130,13 @@ impl SourceExplorer {
                     })
                     .map(|row| row.key.clone());
             }
+            if this
+                .menu_source
+                .as_ref()
+                .is_some_and(|id| !model.profiles.iter().any(|profile| &profile.id == id))
+            {
+                this.menu_source = None;
+            }
             this.rows = rows;
             cx.notify();
         });
@@ -135,12 +146,40 @@ impl SourceExplorer {
             active_key: None,
             tree_focus: cx.focus_handle().tab_stop(true).tab_index(20),
             scroll: gpui::UniformListScrollHandle::new(),
+            menu_source: None,
+            menu_position: gpui::Point::default(),
+            bounds: gpui::Bounds::default(),
+            menu_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true).tab_index(20)),
             #[cfg(test)]
             last_rendered_row_count: 0,
             #[cfg(test)]
             projection_rebuilds: 0,
             _subscription: subscription,
         }
+    }
+
+    fn open_source_menu(
+        &mut self,
+        source: String,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Pointer positions are in window coordinates, not sidebar coordinates.
+        self.menu_position = position - self.bounds.origin;
+        self.menu_source = Some(source);
+        self.menu_focus[0].focus(window);
+        // Focus after dispatch as well: GPUI's click dispatch may restore the
+        // trigger's implicit focus after this callback returns.
+        let focus = self.menu_focus[0].clone();
+        cx.defer_in(window, move |_, window, _| focus.focus(window));
+        cx.notify();
+    }
+
+    fn close_source_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_source = None;
+        self.tree_focus.focus(window);
+        cx.notify();
     }
 
     fn select_key(&mut self, key: TreeKey, cx: &mut Context<Self>) {
@@ -448,6 +487,57 @@ impl SourceExplorer {
                     )),
             );
         }
+        if let TreeKey::Source(source) = &row.key {
+            let source = source.clone();
+            let keyboard_source = source.clone();
+            let action_id = format!("source-actions-{source}");
+            element = element.child(
+                div()
+                    .id(gpui::SharedString::from(action_id.clone()))
+                    .debug_selector(move || action_id.clone())
+                    .tab_index(20)
+                    .tab_stop(true)
+                    .w(px(18.))
+                    .h(px(18.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(CONTROL_RADIUS))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(HOVER)))
+                    .focus(|style| style.bg(rgb(SELECTION)))
+                    .child(icon(Icon::Manage, MUTED))
+                    .tooltip(|_, cx| cx.new(|_| TreeTooltip("Source actions".into())).into())
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_, _, _, cx| {
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_click(
+                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.open_source_menu(source.clone(), event.position(), window, cx);
+                        }),
+                    )
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                cx.stop_propagation();
+                                let position =
+                                    this.bounds.origin + gpui::point(px(0.), px(TOOLBAR_HEIGHT));
+                                this.open_source_menu(
+                                    keyboard_source.clone(),
+                                    position,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        },
+                    )),
+            );
+        }
         element = element.tooltip(move |_, cx| cx.new(|_| TreeTooltip(tooltip.clone())).into());
         element
     }
@@ -460,14 +550,10 @@ impl Render for SourceExplorer {
             .explorer_source
             .as_ref()
             .or(model.selected_source.as_ref());
-        let disabled = target.is_none_or(|id| !model.profiles.iter().any(|p| &p.id == id))
-            || model.busy
-            || model.saving;
         let console_disabled =
             target.is_none_or(|id| !model.profiles.iter().any(|p| &p.id == id)) || model.saving;
         let refresh_is_disabled = refresh_disabled(model);
         let metadata_notice = model.metadata_notice.clone();
-        let saving = model.saving;
         let busy = model.busy;
         let confirm = model.delete_confirm;
         let error = model.error.clone();
@@ -475,6 +561,8 @@ impl Render for SourceExplorer {
             .removal_source_name()
             .unwrap_or("Data source")
             .to_owned();
+        let expanded = model.tree.has_visible_expansion(&model.profiles);
+        let menu_disabled = model.busy || model.saving;
         let toolbar = div()
             .id("source-explorer-toolbar")
             .debug_selector(|| "source-explorer-toolbar".into())
@@ -486,22 +574,6 @@ impl Render for SourceExplorer {
             .flex()
             .items_center()
             .gap(px(2.))
-            .child(toolbar_button(
-                "add-source",
-                Icon::Add,
-                "Add data source",
-                saving,
-                cx,
-                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.new_source(cx)),
-            ))
-            .child(toolbar_button(
-                "edit-source",
-                Icon::Manage,
-                "Manage selected source",
-                disabled,
-                cx,
-                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.edit_explorer_source(cx)),
-            ))
             .child(toolbar_button(
                 "refresh-source",
                 Icon::Refresh,
@@ -517,28 +589,20 @@ impl Render for SourceExplorer {
                 },
             ))
             .child(toolbar_button(
-                "delete-source",
-                Icon::Remove,
-                "Remove saved source (not its databases)",
-                disabled,
-                cx,
-                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.request_delete_explorer(cx)),
-            ))
-            .child(toolbar_button(
-                "expand-loaded-tree",
-                Icon::ExpandTree,
-                "Expand loaded metadata only (no network requests)",
+                "toggle-tree-expansion",
+                if expanded {
+                    Icon::CollapseTree
+                } else {
+                    Icon::ExpandTree
+                },
+                if expanded {
+                    "Collapse all"
+                } else {
+                    "Expand loaded metadata"
+                },
                 false,
                 cx,
-                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.expand_loaded_tree(cx)),
-            ))
-            .child(toolbar_button(
-                "collapse-all-tree",
-                Icon::CollapseTree,
-                "Collapse all",
-                false,
-                cx,
-                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.collapse_tree(cx)),
+                |this: &mut Self, cx| this.model.update(cx, |m, cx| m.toggle_tree_expansion(cx)),
             ))
             .child(toolbar_button(
                 "explorer-new-console",
@@ -572,15 +636,33 @@ impl Render for SourceExplorer {
         .min_h(px(0.))
         .min_w(px(0.))
         .track_scroll(self.scroll.clone());
+        let view = cx.entity().downgrade();
+        let previous_bounds = self.bounds;
+        let measurement = gpui::canvas(
+            move |bounds, _, cx| {
+                if bounds != previous_bounds {
+                    cx.defer(move |cx| {
+                        let _ = view.update(cx, |this, _| this.bounds = bounds);
+                    });
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
         let mut root = div()
             .id("source-explorer")
             .debug_selector(|| "source-explorer".into())
             .track_focus(&self.tree_focus)
-            .on_key_down(cx.listener(|this, event, window, cx| {
-                if this.tree_focus.is_focused(window) {
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.menu_source.is_some() && event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.close_source_menu(window, cx);
+                } else if this.menu_source.is_none() && this.tree_focus.is_focused(window) {
                     this.keyboard(event, cx);
                 }
             }))
+            .relative()
             .size_full()
             .min_w(px(0.))
             .flex()
@@ -592,6 +674,7 @@ impl Render for SourceExplorer {
             .border_1()
             .border_color(rgb(PANEL))
             .focus(|style| style.border_color(rgb(FOCUS)))
+            .child(measurement)
             .child(toolbar);
         if self.rows.is_empty() {
             root = root.child(
@@ -667,6 +750,102 @@ impl Render for SourceExplorer {
                     .child(error.clone())
                     .tooltip(move |_, cx| cx.new(|_| TreeTooltip(error.clone())).into()),
             );
+        }
+        if let Some(source) = self.menu_source.clone() {
+            // Render one overlay outside the virtual list so row clipping and
+            // recycled rows never clip the menu or eagerly materialize the tree.
+            let top = self
+                .menu_position
+                .y
+                .max(px(TOOLBAR_HEIGHT))
+                .min((self.bounds.size.height - px(100.)).max(px(TOOLBAR_HEIGHT)));
+            let mut menu = div()
+                .id("source-actions-menu")
+                .debug_selector(|| "source-actions-menu".into())
+                .absolute()
+                .top(top)
+                .right(px(6.))
+                .w(px(160.))
+                .p(px(4.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .bg(rgb(CHROME))
+                .border_1()
+                .border_color(rgb(MUTED))
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                    this.close_source_menu(window, cx);
+                }))
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "tab" {
+                        cx.stop_propagation();
+                        window.prevent_default();
+                        let index = this
+                            .menu_focus
+                            .iter()
+                            .position(|focus| focus.is_focused(window))
+                            .unwrap_or(0);
+                        let next = if event.keystroke.modifiers.shift {
+                            (index + 2) % 3
+                        } else {
+                            (index + 1) % 3
+                        };
+                        this.menu_focus[next].focus(window);
+                    }
+                }));
+            for (index, (id, label)) in [
+                ("source-action-manage", "Manage"),
+                ("source-action-copy", "Copy"),
+                ("source-action-remove", "Remove"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let source = source.clone();
+                let activate =
+                    move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                        if !menu_disabled {
+                            this.close_source_menu(window, cx);
+                            this.model.update(cx, |model, cx| match index {
+                                0 => model.manage_source(source.clone(), cx),
+                                1 => model.copy_source(source.clone(), cx),
+                                _ => model.request_delete_source(source.clone(), cx),
+                            });
+                        }
+                    };
+                let keyboard_activate = activate.clone();
+                menu = menu.child(
+                    div()
+                        .id(id)
+                        .debug_selector(move || id.into())
+                        .track_focus(&self.menu_focus[index])
+                        .tab_stop(!menu_disabled)
+                        .h(px(28.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .text_color(rgb(if menu_disabled { MUTED } else { TEXT }))
+                        .when(!menu_disabled, |el| {
+                            el.cursor_pointer().hover(|style| style.bg(rgb(HOVER)))
+                        })
+                        .focus(|style| style.bg(rgb(SELECTION)))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            activate(this, window, cx);
+                        }))
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    cx.stop_propagation();
+                                    keyboard_activate(this, window, cx);
+                                }
+                            },
+                        )),
+                );
+            }
+            root = root.child(menu);
         }
         root
     }
@@ -1272,10 +1451,10 @@ mod tests {
     };
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
 
-    fn click(cx: &mut VisualTestContext, id: &'static str) {
+    fn click(cx: &mut VisualTestContext, id: &str) {
         cx.run_until_parked();
         let bounds = cx
-            .debug_bounds(id)
+            .debug_bounds(Box::leak(id.to_owned().into_boxed_str()))
             .unwrap_or_else(|| panic!("missing {id}"));
         cx.simulate_click(bounds.center(), Modifiers::default());
         cx.run_until_parked();
@@ -1838,11 +2017,13 @@ mod tests {
         cx.refresh().unwrap();
         cx.run_until_parked();
         assert!(cx.debug_bounds("confirm-delete").is_none());
-        click(cx, "delete-source");
+        click(cx, &format!("source-actions-{id}"));
+        click(cx, "source-action-remove");
         assert!(model.read_with(cx, |model, _| model.delete_confirm));
         click(cx, "cancel-delete");
         assert!(!model.read_with(cx, |model, _| model.delete_confirm));
-        click(cx, "delete-source");
+        click(cx, &format!("source-actions-{id}"));
+        click(cx, "source-action-remove");
         click(cx, "confirm-delete");
         model.read_with(cx, |model, _| {
             assert_eq!(model.profiles.len(), 1);
@@ -1851,7 +2032,8 @@ mod tests {
             assert!(!model.busy);
         });
         click(cx, "cancel-delete");
-        click(cx, "edit-source");
+        click(cx, &format!("source-actions-{id}"));
+        click(cx, "source-action-manage");
         assert_eq!(
             model.read_with(cx, |model, _| model
                 .form_profile
@@ -1888,12 +2070,9 @@ mod tests {
         assert_eq!(toolbar.top(), px(1.));
         let mut previous = toolbar.left();
         for id in [
-            "add-source",
-            "edit-source",
             "refresh-source",
-            "delete-source",
-            "expand-loaded-tree",
-            "collapse-all-tree",
+            "toggle-tree-expansion",
+            "explorer-new-console",
         ] {
             let bounds = cx.debug_bounds(id).unwrap();
             assert_eq!(bounds.size.width, px(28.));
@@ -1909,20 +2088,81 @@ mod tests {
         ] {
             assert!(cx.debug_bounds(id).is_some(), "missing {id}");
         }
-        for id in ["edit-source", "refresh-source", "delete-source"] {
-            click(cx, id);
+        for id in [
+            "add-source",
+            "edit-source",
+            "delete-source",
+            "expand-loaded-tree",
+            "collapse-all-tree",
+        ] {
+            assert!(
+                cx.debug_bounds(id).is_none(),
+                "removed toolbar control {id}"
+            );
         }
+        click(cx, "refresh-source");
         model.read_with(cx, |m, _| {
             assert!(!m.form_open);
             assert!(!m.delete_confirm);
             assert!(!m.busy);
         });
-        click(cx, "add-source");
-        assert!(model.read_with(cx, |m, _| m.form_open));
+        click(cx, "source-actions-maria-fixture");
+        assert!(cx.debug_bounds("source-actions-menu").is_some());
+        click(cx, "source-action-manage");
+        model.read_with(cx, |m, _| {
+            assert!(m.form_open);
+            assert_eq!(m.form_profile.as_ref().unwrap().id, "maria-fixture");
+        });
         assert_eq!(source_color(Some("#ff0000")), 0xff0000);
         for invalid in ["ff0000", "#fff", "#zzzzzz", "#1000000"] {
             assert_eq!(source_color(Some(invalid)), MUTED);
         }
+    }
+
+    #[gpui::test]
+    fn source_actions_copy_exact_row_and_keyboard_dismissal(cx: &mut TestAppContext) {
+        let selected = SourceProfile {
+            id: "11111111-1111-4111-8111-111111111111".into(),
+            name: "Selected".into(),
+            ..SourceProfile::default()
+        };
+        let other = SourceProfile {
+            id: "22222222-2222-4222-8222-222222222222".into(),
+            name: "Other".into(),
+            ..SourceProfile::default()
+        };
+        let model = cx.new(|_| {
+            let mut model = SourceModel::for_tests(vec![selected, other]);
+            model.explorer_source = Some("11111111-1111-4111-8111-111111111111".into());
+            model
+        });
+        let (explorer, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        cx.refresh().unwrap();
+        click(cx, "source-actions-22222222-2222-4222-8222-222222222222");
+        model.read_with(cx, |model, _| {
+            assert_eq!(
+                model.explorer_source.as_deref(),
+                Some("11111111-1111-4111-8111-111111111111")
+            );
+            assert!(model.tree.expanded_sources.is_empty());
+            assert!(model.tree.loading.is_empty());
+        });
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        model.read_with(cx, |model, _| {
+            assert!(model.form_open);
+            let copy = model.form_profile.as_ref().unwrap();
+            assert_eq!(copy.name, "Other copy");
+            assert_ne!(copy.id, "22222222-2222-4222-8222-222222222222");
+            assert_eq!(model.profiles.len(), 2);
+        });
+        explorer.read_with(cx, |view, _| assert!(view.menu_source.is_none()));
+        click(cx, "source-actions-22222222-2222-4222-8222-222222222222");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        explorer.read_with(cx, |view, _| assert!(view.menu_source.is_none()));
     }
 
     #[gpui::test]
@@ -1995,12 +2235,12 @@ mod tests {
             );
             assert!(view.last_rendered_row_count <= 40);
         });
-        click(cx, "collapse-all-tree");
+        click(cx, "toggle-tree-expansion");
         explorer.read_with(cx, |view, _| assert_eq!(view.rows.len(), 1));
         model.read_with(cx, |model, _| {
             assert_eq!(model.tree.databases["virtual-source"].len(), 1000)
         });
-        click(cx, "expand-loaded-tree");
+        click(cx, "toggle-tree-expansion");
         explorer.read_with(cx, |view, _| assert_eq!(view.rows.len(), 1001));
         model.read_with(cx, |model, _| assert!(model.tree.loading.is_empty()));
     }
@@ -2082,7 +2322,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn selected_toolbar_manage_and_remove_are_guarded(cx: &mut TestAppContext) {
+    fn source_row_manage_and_remove_are_guarded(cx: &mut TestAppContext) {
         let profile = SourceProfile {
             save_password: false,
             ..SourceProfile::default()
@@ -2094,11 +2334,13 @@ mod tests {
         });
         let (_, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
         cx.refresh().unwrap();
-        click(cx, "edit-source");
+        click(cx, &format!("source-actions-{}", profile.id));
+        click(cx, "source-action-manage");
         model.read_with(cx, |m, _| {
             assert_eq!(m.form_profile.as_ref(), Some(&profile))
         });
-        click(cx, "delete-source");
+        click(cx, &format!("source-actions-{}", profile.id));
+        click(cx, "source-action-remove");
         assert!(model.read_with(cx, |m, _| m.delete_confirm));
         click(cx, "cancel-delete");
         for saving in [false, true] {
@@ -2108,9 +2350,17 @@ mod tests {
                 m.saving = saving;
                 cx.notify();
             });
-            for id in ["edit-source", "refresh-source", "delete-source"] {
+            click(cx, "refresh-source");
+            click(cx, &format!("source-actions-{}", profile.id));
+            for id in [
+                "source-action-manage",
+                "source-action-copy",
+                "source-action-remove",
+            ] {
                 click(cx, id);
             }
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
             model.read_with(cx, |m, _| {
                 assert!(!m.form_open);
                 assert!(!m.delete_confirm);

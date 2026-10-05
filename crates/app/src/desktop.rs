@@ -91,8 +91,8 @@ struct Shell {
     drag: Option<DragState>,
     explorer: gpui::Entity<source_browser::SourceExplorer>,
     workspace: gpui::Entity<source_workspace::SourceWorkspace>,
-    #[cfg(all(test, feature = "ui-tests"))]
     sources: gpui::Entity<source_model::SourceModel>,
+    _source_subscription: gpui::Subscription,
 }
 
 impl Shell {
@@ -102,6 +102,7 @@ impl Shell {
         let ids = [
             "layout-menu",
             "database-toggle",
+            "new-connection",
             "database-resize",
             "acp-toggle",
             "acp-close",
@@ -128,6 +129,7 @@ impl Shell {
         let model = cx.new(source_model::SourceModel::new);
         let explorer = cx.new(|cx| source_browser::SourceExplorer::new(model.clone(), cx));
         let workspace = cx.new(|cx| source_workspace::SourceWorkspace::new(model.clone(), cx));
+        let source_subscription = cx.observe(&model, |_, _, cx| cx.notify());
         Self {
             state: ShellState::default(),
             root_focus,
@@ -136,8 +138,8 @@ impl Shell {
             drag: None,
             explorer,
             workspace,
-            #[cfg(all(test, feature = "ui-tests"))]
             sources: model,
+            _source_subscription: source_subscription,
         }
     }
 
@@ -230,6 +232,8 @@ impl Shell {
     }
 
     fn titlebar(&self, database_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let disabled = self.sources.read(cx).saving
+            || (self.sources.read(cx).busy && self.sources.read(cx).profiles.is_empty());
         div()
             .id("titlebar")
             .debug_selector(|| "titlebar".into())
@@ -248,6 +252,44 @@ impl Shell {
                 )
                 .w(px(CONTROL_HEIGHT))
                 .child(icon(Icon::Database, TEXT)),
+            )
+            .child(
+                div()
+                    .id("new-connection")
+                    .debug_selector(|| "new-connection".into())
+                    .track_focus(&self.controls["new-connection"])
+                    .h(px(CONTROL_HEIGHT))
+                    .px(px(8.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .rounded(px(CONTROL_RADIUS))
+                    .border_1()
+                    .border_color(rgb(CHROME))
+                    .bg(rgb(CHROME))
+                    .text_color(rgb(if disabled { MUTED } else { TEXT }))
+                    .when(!disabled, |button| {
+                        button.cursor_pointer().hover(|style| style.bg(rgb(HOVER)))
+                    })
+                    .focus(|style| style.border_color(rgb(FOCUS)))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| ControlTooltip("Create a new database connection"))
+                            .into()
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !disabled {
+                            this.sources.update(cx, |model, cx| model.new_source(cx));
+                        }
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                        if !disabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            this.sources.update(cx, |model, cx| model.new_source(cx));
+                        }
+                    }))
+                    .child(icon(Icon::Add, MUTED))
+                    .child("New Connection"),
             )
             .child(
                 div()

@@ -26,7 +26,12 @@ fn center_connect_action_works_with_explorer_hidden(cx: &mut TestAppContext) {
 #[gpui::test]
 fn add_source_opens_real_form_and_cancel_returns_browser(cx: &mut TestAppContext) {
     let (_, cx) = fixture(cx);
-    click(cx, "add-source");
+    let toggle = cx.debug_bounds("database-toggle").unwrap();
+    let create = cx.debug_bounds("new-connection").unwrap();
+    assert_eq!(create.left(), toggle.right());
+    assert_eq!(create.size.height, px(CONTROL_HEIGHT));
+    assert!(create.size.width > px(CONTROL_HEIGHT));
+    click(cx, "new-connection");
     assert!(
         cx.debug_bounds("source-form").is_none(),
         "Form must not replace the main workspace"
@@ -39,11 +44,33 @@ fn add_source_opens_real_form_and_cancel_returns_browser(cx: &mut TestAppContext
     cx.run_until_parked();
     assert!(cx.debug_bounds("source-browser").is_some());
     assert_eq!(cx.cx.read(|app| app.windows().len()), 1);
-    click(cx, "add-source");
+    click(cx, "new-connection");
     let mut dialog = source_dialog_context(cx);
     click(&mut dialog, "source-cancel");
     cx.run_until_parked();
     assert_eq!(cx.cx.read(|app| app.windows().len()), 1);
+}
+
+#[gpui::test]
+fn new_connection_is_keyboard_operable_with_sidebar_hidden(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    click(cx, "database-toggle");
+    cx.update(|window, app| shell.read(app).controls["new-connection"].focus(window));
+    cx.simulate_keystrokes("space");
+    cx.run_until_parked();
+    let mut dialog = source_dialog_context(cx);
+    assert!(dialog.debug_bounds("source-name").is_some());
+    dialog.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!state(&shell, cx).database_visible);
+    let sources = shell.read_with(cx, |shell, _| shell.sources.clone());
+    sources.update(cx, |model, cx| {
+        model.saving = true;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    click(cx, "new-connection");
+    assert!(!sources.read_with(cx, |model, _| model.form_open));
 }
 
 fn source_dialog_context(cx: &VisualTestContext) -> VisualTestContext {
@@ -159,6 +186,7 @@ fn tab_order_reaches_every_visible_control_in_both_directions(cx: &mut TestAppCo
     let order = [
         "layout-menu",
         "database-toggle",
+        "new-connection",
         "database-resize",
         "acp-toggle",
     ];

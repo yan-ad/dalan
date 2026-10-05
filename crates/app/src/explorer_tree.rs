@@ -69,6 +69,12 @@ fn visible_database(profile: &SourceProfile, database: &str) -> bool {
     }
 }
 impl ExplorerTree {
+    pub fn has_visible_expansion(&self, profiles: &[SourceProfile]) -> bool {
+        profiles
+            .iter()
+            .any(|profile| self.expanded_sources.contains(&profile.id))
+    }
+
     pub fn collapse_all(&mut self) {
         self.expanded_sources.clear();
         self.expanded_databases.clear();
@@ -358,5 +364,25 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(!rows[1].label.is_empty());
         assert_eq!(rows[1].status.as_deref(), Some("Loading…"));
+    }
+
+    #[test]
+    fn hidden_descendant_flags_do_not_count_as_visible_expansion() {
+        let profiles = [profile("a")];
+        let mut tree = ExplorerTree::default();
+        tree.databases.insert("a".into(), vec!["db".into()]);
+        tree.tables.insert(
+            ("a".into(), "db".into()),
+            vec![table("items", "BASE TABLE")],
+        );
+        tree.expand_loaded();
+        assert!(tree.has_visible_expansion(&profiles));
+        tree.expanded_sources.remove("a");
+        assert!(!tree.expanded_databases.is_empty());
+        assert!(!tree.has_visible_expansion(&profiles));
+        tree.expanded_sources.insert("removed-source".into());
+        assert!(!tree.has_visible_expansion(&profiles));
+        tree.expand_loaded();
+        assert!(tree.has_visible_expansion(&profiles));
     }
 }

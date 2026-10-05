@@ -4,7 +4,19 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 
 ## Confirmed scoped completions
 
-### Rich canvas table browser (current)
+### Relocated source controls (current)
+
+- [x] Titlebar Database collapse toggle retained at x = 84 px; immediately adjacent 28 px New Connection plus/text control, pointer/Enter/Space, tooltip and loading/saving guards. Works with sidebar hidden via retained root subscription; no explorer plus or duplicate Dalan label.
+- [x] Three explorer toolbar icons only: Refresh selected source, combined `toggle-tree-expansion` and existing New Query Console. Visible saved-source expansion selects Collapse All; otherwise Expand Loaded uses cached metadata only, no network fan-out or extra click for hidden child preferences.
+- [x] Per-source 18 px `source-actions-{id}` Manage gear and real-bounds Manage / Copy / Remove popover targeting captured row UUID, not selection; keyboard traversal/dismissal/focus restoration and saving guards.
+- [x] Manage reuses existing General/Options/SSH/SSL/Schemas SourceDialog. Copy opens unsaved fresh-UUID draft with UTF-8-safe at-most-256-byte ` copy` name and nonsecret endpoint/auth/schema/Options/TLS/color/SSH reference settings, no password or credential retrieval, `save_password = false`. Original JSON/results/schema caches unchanged; form schema choices memory-only, SQLite not copied and Save starts fresh discovery.
+- [x] Existing drafts preserved with static close-current-draft metadata notice; 100-profile guard. Remove confirms stable captured UUID despite selection changes, never deletes server objects and preserves unrelated results. Test-only selected-edit helper/native SSH manager and cached virtual tree/grid contracts unchanged.
+- [x] Relocated source-control verification: 115 unit tests, one native-wire test, 159 UI and four Python bundle tests passed with formatting, strict lint and signed bundle checks. Hosted CI and native review remain separate gates.
+- [ ] Current-tree hosted CI before push and native screenshot/performance/accessibility review. No new dependencies, utility assets or branded logo; existing provider-icon attribution/commit ancestry retained separately, not a source-icon change claimed for relocation.
+
+See [source actions](source-management.md#row-actions-and-copy-boundaries) and [verification](testing.md#relocated-source-controls).
+
+### Rich canvas table browser (historical baseline)
 
 - [x] Production canvas body with row/grid quads and cached shaped text, zero per-cell Divs; native interactive headers, viewport/overscan-bounded caches and distinct painted/materialized/shaped counters.
 - [x] Grapheme-safe 128-grapheme previews and cell-fit ellipsis; typed values/loaded CSV unchanged, no full page clone/format walk on redraw.
@@ -30,13 +42,13 @@ See [table-browser guide](table-browser.md). Earlier slice inventories/counts be
 - [x] Loaded-page CSV with native save picker, fresh complete rows only, visible success/cancel/error and no overwrite. Default name `Dalan-loaded-page.csv`; no extension enforcement. UTF-8/CRLF/quoted fields, explicit NULL syntax, default spreadsheet-safe text protection and private same-filesystem hard-link publication. No full-query or whole-table export. See [exact export limits](mysql-sources.md#export-loaded-csv).
 - [x] Headless, simulated GPUI, bundle-helper and disposable live transport coverage. Historical icon/sorting/export results: 48 headless, 42 simulated UI, four bundle-helper, one generated Keychain and 22 live checks passed, including sorting on actual routes.
 
-- [x] Compact explorer: no title header; one horizontally scrolling 28 px toolbar with seven 28 px Add/Manage/Refresh/Remove/Expand Loaded/Collapse All/New Query Console icons, tooltips and selection/busy/save guards; titlebar database toggle retained; no rail or inactive advanced tools.
+- [x] Compact explorer: no title header; three 28 px Refresh selected source/combined expansion/New Query Console toolbar icons, action tooltips and guards; titlebar New Connection and per-row Manage/Copy/Remove replace explorer creation/edit/delete controls. No rail or inactive advanced tools.
 - [x] Virtual lazy tree for large catalogs: 22 px rows, cached expansion, viewport-only rendering, readable ellipsized names/full-name tooltips, Tables/Views groups and unavailable view leaves.
 - [x] Selection-safe explorer actions independent of the current table page; UUID-pinned removal confirmation, complete-source metadata Refresh with retained old snapshot on failure and per-branch catalog cancellation/errors.
 - [x] Single-focus tree keyboard navigation and guarded toolbar Enter/Space activation; scoped 71-test simulated suite includes 1,000-database visible-range, scroll-to-900 and End regressions. No native smoothness/FPS claim.
 - [x] Compact-explorer local verification: 57 headless, 71 UI and four Python tests passed with formatting, strict lint and bundle verification; current hosted CI and native review remain pending. See [testing](testing.md#compact-lazy-explorer).
 - [x] Titlebar 28 px database toggle beside traffic lights retaining the closed preference; Cmd-B and View/Layout alternatives unchanged. Flush body edges have 0 px outer padding and a 4 px divider hit area/1 px visible line; 320 px preferred sidebar, 200–480 px bounds and 476 px maximum at 720 px retain main 240 px and compact ACP behavior.
-- [x] Source rows with readable names and abstract Lucide database/MySQL and database-zap/MariaDB cues, not vendor logos or duplicate engine badges; engine and known counts in full-name tooltips. Optional marker color, manual hex and labeled Default/Blue/Green/Amber/Red/Purple form presets; no color-only risk meaning or arbitrary-color AA claim.
+- [x] Source rows with readable names and engine cues, without duplicate engine badges; existing provider assets and attribution unchanged by this relocation; engine and known counts in full-name tooltips. Optional marker color, manual hex and labeled Default/Blue/Green/Amber/Red/Purple form presets; no color-only risk meaning or arbitrary-color AA claim.
 - [x] Backward-compatible version 1 color metadata with absent None, case-preserving hex, unchanged password rejection and no automatic rewrite/Keychain migration. Scoped migration and malformed-color no-overwrite tests passed.
 - [x] Working centered no-source Connect to a Source action using the same dedicated source dialog window by mouse/Enter/Space, including with explorer hidden; no demo/trial welcome.
 - [x] Historical explorer redesign verified: 54 headless, 57 simulated UI and four Python tests passed, including legacy color migration and centered connection with the sidebar hidden; formatting/lint/bundle checks passed. See [testing](testing.md#database-explorer-redesign-verified).
@@ -116,7 +128,7 @@ Database explorer, query consoles, data views, results/sessions and optional ACP
 
 - [x] Table identity `(SourceUUID, database, table)`, duplicate activation, 32-tab total cap, unique monotonic Console N labels and active-close neighboring selection.
 - [x] Retained per-tab models, requests, filter state, grid scroll and immutable result snapshots; cancellation/generation isolation on close and affected-source connection changes/removal. Cosmetic labels/colors preserve state.
-- [x] Flat 28 px Carbonfox table/query strip, close x, meaningful draft/running indicators, populated-strip plus and seventh explorer query icon with narrow-width horizontal scrolling. Cmd-Shift-N and Cmd-Alt-Left/Right controls, with context-specific source/database selection.
+- [x] Flat 28 px Carbonfox table/query strip, close x, meaningful draft/running indicators, populated-strip plus and existing explorer query icon among three toolbar actions with narrow-width horizontal scrolling. Cmd-Shift-N and Cmd-Alt-Left/Right controls, with context-specific source/database selection.
 - [x] Native GPUI multiline SQL selection/IME/clipboard, Menlo 13 px/22 px lines/44 px gutter, visible shaping, 64 KiB and 100 undo-state bounds; Tab four spaces, Shift-Tab unindent and newline autoindent.
 - [x] Run selected SQL or whole draft by play/Cmd-Enter and local cancel by stop/Cmd-Period; one parsed SELECT with optional trailing semicolon, nested CTE/UNION and curated functions. Unsupported statements/constructs fail visibly before connection.
 - [x] Fresh physical read-only transaction per Run, 20-second MySQL/MariaDB server/client limits, finite parser/result budgets and no submitted-SQL pagination rewriting. No server KILL confirmation, persistent transaction/autocommit or write UI.

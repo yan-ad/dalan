@@ -48,6 +48,22 @@ type StartupCatalog = (
     Option<String>,
 );
 
+/// Preserve the copy suffix while respecting the profile's byte (not character) limit.
+fn copied_source_profile(original: &SourceProfile) -> Result<SourceProfile> {
+    original.validate()?;
+    let mut profile = original.clone();
+    profile.id = uuid::Uuid::new_v4().to_string();
+    let mut end = original.name.len().min(256 - " copy".len());
+    while !original.name.is_char_boundary(end) {
+        end -= 1;
+    }
+    profile.name = format!("{} copy", &original.name[..end]);
+    // A copy is metadata only: credentials remain solely under the original ID.
+    profile.save_password = false;
+    profile.validate()?;
+    Ok(profile)
+}
+
 /// Settings remain usable even when the optional metadata store cannot be opened.
 fn load_profiles_and_cache(
     repo: &SourceRepository,
@@ -824,6 +840,14 @@ impl SourceModel {
         cx.notify();
     }
 
+    pub fn toggle_tree_expansion(&mut self, cx: &mut Context<Self>) {
+        if self.tree.has_visible_expansion(&self.profiles) {
+            self.collapse_tree(cx);
+        } else {
+            self.expand_loaded_tree(cx);
+        }
+    }
+
     pub fn collapse_tree(&mut self, cx: &mut Context<Self>) {
         self.cancel_catalogs(|_| true);
         self.tree.collapse_all();
@@ -1134,6 +1158,13 @@ impl SourceModel {
             return;
         }
         if self.form_open {
+            self.metadata_notice =
+                Some("Close the current draft before opening another source.".into());
+            cx.notify();
+            return;
+        }
+        if self.profiles.len() >= 100 {
+            self.metadata_notice = Some("The limit of 100 sources has been reached. Remove a source before creating another.".into());
             cx.notify();
             return;
         }
@@ -1146,20 +1177,65 @@ impl SourceModel {
         cx.notify();
     }
 
+    #[cfg(all(test, feature = "ui-tests"))]
     pub fn edit_explorer_source(&mut self, cx: &mut Context<Self>) {
         let target = self
             .explorer_source
-            .as_ref()
-            .or(self.selected_source.as_ref());
+            .clone()
+            .or_else(|| self.selected_source.clone());
+        if let Some(id) = target {
+            self.manage_source(id, cx);
+        }
+    }
+
+    /// Manage this row's source without selecting it in the table browser.
+    pub fn manage_source(&mut self, id: String, cx: &mut Context<Self>) {
         let Some(profile) = self
             .profiles
             .iter()
-            .find(|profile| Some(&profile.id) == target)
+            .find(|profile| profile.id == id)
             .cloned()
         else {
             return;
         };
         self.edit_profile(profile, cx);
+    }
+
+    /// Open an unsaved, editable metadata copy. No credentials or cached metadata
+    /// are registered under its fresh ID until the normal save flow completes.
+    pub fn copy_source(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.saving || (!self.storage_ready && self.busy) {
+            return;
+        }
+        let Some(original) = self.profiles.iter().find(|profile| profile.id == id) else {
+            return;
+        };
+        if self.form_open {
+            self.metadata_notice = Some("Close the current draft before copying a source.".into());
+            cx.notify();
+            return;
+        }
+        if self.profiles.len() >= 100 {
+            self.metadata_notice = Some("The limit of 100 sources has been reached. Remove a source before copying another.".into());
+            cx.notify();
+            return;
+        }
+        let profile = match copied_source_profile(original) {
+            Ok(profile) => profile,
+            Err(_) => {
+                self.metadata_notice =
+                    Some("This source's settings are invalid and cannot be copied.".into());
+                cx.notify();
+                return;
+            }
+        };
+        self.form_databases = self.tree.databases.get(&id).cloned().unwrap_or_default();
+        self.form_generation += 1;
+        self.form_profile = Some(profile);
+        self.form_open = true;
+        self.form_busy = false;
+        self.form_feedback = None;
+        cx.notify();
     }
 
     fn edit_profile(&mut self, profile: SourceProfile, cx: &mut Context<Self>) {
@@ -1175,6 +1251,8 @@ impl SourceModel {
             return;
         }
         if self.form_open {
+            self.metadata_notice =
+                Some("Close the current draft before managing another source.".into());
             cx.notify();
             return;
         }
@@ -1641,6 +1719,10 @@ impl SourceModel {
                 .or_else(|| self.selected_source.clone()),
             cx,
         );
+    }
+
+    pub fn request_delete_source(&mut self, id: String, cx: &mut Context<Self>) {
+        self.request_delete_for(Some(id), cx);
     }
 
     fn request_delete_for(&mut self, target: Option<String>, cx: &mut Context<Self>) {
@@ -2693,6 +2775,95 @@ mod tests {
             serde_json::to_value(model.page.as_ref().unwrap()).unwrap(),
             serde_json::to_value(page).unwrap(),
         );
+    }
+
+    #[test]
+    fn copy_profile_preserves_metadata_and_bounds_utf8_name() {
+        let original = SourceProfile {
+            name: "界".repeat(85),
+            save_password: true,
+            ..Default::default()
+        };
+        let copied = copied_source_profile(&original).unwrap();
+        assert_ne!(copied.id, original.id);
+        uuid::Uuid::parse_str(&copied.id).unwrap();
+        assert!(copied.name.ends_with(" copy"));
+        assert!(copied.name.len() <= 256);
+        assert!(!copied.save_password);
+        copied.validate().unwrap();
+        let mut expected = original.clone();
+        expected.id = copied.id.clone();
+        expected.name = copied.name.clone();
+        expected.save_password = false;
+        assert_eq!(
+            serde_json::to_value(copied).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+
+    #[gpui::test]
+    fn targeted_copy_is_unsaved_and_never_changes_viewer_or_credentials(cx: &mut TestAppContext) {
+        let model = cx.new(|_| two_source_model());
+        model.update(cx, |model, cx| {
+            let a = model.profiles[0].id.clone();
+            let b = model.profiles[1].id.clone();
+            let page = model.page.clone().unwrap();
+            model.explorer_source = Some(a.clone());
+            model.explorer_database = Some("inventory".into());
+            let passwords = model.passwords.clone();
+            let generation = model.generation;
+            model.copy_source(b.clone(), cx);
+            let draft = model.form_profile.clone().unwrap();
+            assert_ne!(draft.id, b);
+            assert_eq!(draft.name, "Source B copy");
+            assert_eq!(model.password(&draft.id), "");
+            assert_eq!(model.passwords, passwords);
+            assert!(!draft.save_password);
+            assert_eq!(model.form_databases, vec!["inventory"]);
+            assert_eq!(model.profiles.len(), 2);
+            assert!(!model.tree.databases.contains_key(&draft.id));
+            assert_eq!(model.generation, generation);
+            assert_eq!(model.explorer_source.as_deref(), Some(a.as_str()));
+            assert_eq!(model.explorer_database.as_deref(), Some("inventory"));
+            assert_displayed_a(model, &a, &page);
+            model.copy_source(a.clone(), cx);
+            assert_eq!(model.form_profile.as_ref().unwrap().id, draft.id);
+            assert!(
+                model
+                    .metadata_notice
+                    .as_ref()
+                    .unwrap()
+                    .contains("current draft")
+            );
+            model.manage_source(b.clone(), cx);
+            assert_eq!(model.form_profile.as_ref().unwrap().id, draft.id);
+            model.close_form(cx);
+            model.manage_source(b.clone(), cx);
+            assert_eq!(model.form_profile.as_ref().unwrap().id, b);
+            assert_displayed_a(model, &a, &page);
+            model.close_form(cx);
+            model.request_delete_source(b.clone(), cx);
+            assert_eq!(model.pending_delete_source.as_deref(), Some(b.as_str()));
+            assert_displayed_a(model, &a, &page);
+        });
+    }
+
+    #[gpui::test]
+    fn copy_ignores_missing_targets_and_respects_capacity_and_save_guard(cx: &mut TestAppContext) {
+        let model = cx.new(|_| two_source_model());
+        model.update(cx, |model, cx| {
+            let id = model.profiles[1].id.clone();
+            model.copy_source(uuid::Uuid::new_v4().to_string(), cx);
+            assert!(!model.form_open);
+            model.saving = true;
+            model.copy_source(id.clone(), cx);
+            assert!(!model.form_open);
+            model.saving = false;
+            model.profiles.resize_with(100, SourceProfile::default);
+            model.copy_source(id, cx);
+            assert!(!model.form_open);
+            assert!(model.metadata_notice.as_ref().unwrap().contains("100"));
+        });
     }
 
     #[gpui::test]
