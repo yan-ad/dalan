@@ -25,6 +25,7 @@ fn profile(engine: DbEngine) -> anyhow::Result<SourceProfile> {
             user: std::env::var("DALAN_SSH_USER")?,
             identity_file: Some(std::env::var("DALAN_SSH_KEY")?),
             known_hosts_file: Some(std::env::var("DALAN_SSH_KNOWN_HOSTS")?),
+            parse_config: false,
         },
         ..SourceProfile::default()
     })

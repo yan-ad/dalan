@@ -1,7 +1,12 @@
-use std::collections::HashMap;
+use dalan_app::ssh_config_store::SshProfile;
+#[cfg(not(feature = "ui-tests"))]
+use dalan_app::ssh_config_store::SshRepository;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context as _, Result, ensure};
-use dalan_drivers::sources::{DbEngine, SourceProfile, TlsMode, Transport};
+use dalan_drivers::sources::{
+    Authentication, ConnectionMode, DbEngine, SchemaSelection, SourceProfile, TlsMode, Transport,
+};
 use gpui::{
     App, Context, Div, Entity, FocusHandle, Stateful, Subscription, Window, div, prelude::*, px,
     rgb,
@@ -36,11 +41,26 @@ pub(super) struct SourceForm {
     transport: u8,
     tls: TlsMode,
     save_password: bool,
+    ssh_profiles: Vec<SshProfile>,
+    ssh_load_error: Option<String>,
+    ssh_selected: Option<String>,
+    ssh_combo_open: bool,
+    selected_schema_names: HashSet<String>,
+    ssh_scroll: gpui::UniformListScrollHandle,
+    schema_scroll: gpui::UniformListScrollHandle,
     ssh_keys: Vec<dalan_app::ssh_keys::SshKeyCandidate>,
     key_picker_open: bool,
     key_picker_busy: bool,
     key_picker_error: Option<String>,
     ca_picker_open: bool,
+    active_tab: u8,
+    endpoint_mode: u8,
+    authentication: Authentication,
+    schemas_all: bool,
+    parse_ssh_config: bool,
+    driver_open: bool,
+    authentication_open: bool,
+    tls_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -107,6 +127,7 @@ impl SourceForm {
                 user,
                 identity_file,
                 known_hosts_file,
+                ..
             } => {
                 fields[7].1 = host.clone();
                 fields[8].1 = port.to_string();
@@ -122,6 +143,71 @@ impl SourceForm {
                 if *https { 3 } else { 2 }
             }
         };
+        // Append new fields: the transport initialization above deliberately keeps its indices.
+        let endpoint_mode = match &profile.endpoint {
+            ConnectionMode::Default => 0,
+            ConnectionMode::UnixSocket { .. } => 1,
+            ConnectionMode::UrlOnly { .. } => 2,
+        };
+        let socket = match &profile.endpoint {
+            ConnectionMode::UnixSocket { path } => path.clone(),
+            _ => String::new(),
+        };
+        let url = match &profile.endpoint {
+            ConnectionMode::UrlOnly { url } => url.clone(),
+            _ => profile.canonical_url().unwrap_or_default(),
+        };
+        let schemas = match &profile.schemas {
+            SchemaSelection::All => String::new(),
+            SchemaSelection::Selected(names) => names.join(", "),
+        };
+        fields.extend([
+            ("source-socket", socket, "/tmp/mysql.sock", false),
+            ("source-url", url, "mysql://localhost:3306/", false),
+            (
+                "source-connect-timeout",
+                profile.options.connect_timeout_seconds.to_string(),
+                "10",
+                false,
+            ),
+            (
+                "source-query-timeout",
+                profile.options.query_timeout_seconds.to_string(),
+                "20",
+                false,
+            ),
+            (
+                "source-page-size",
+                profile.options.page_size.to_string(),
+                "100",
+                false,
+            ),
+            (
+                "source-client-cert",
+                profile.ssl_client_cert.clone().unwrap_or_default(),
+                "Optional client certificate path",
+                false,
+            ),
+            (
+                "source-client-key",
+                profile.ssl_client_key.clone().unwrap_or_default(),
+                "Optional client key path",
+                false,
+            ),
+            (
+                "source-ssh-configuration",
+                profile.ssh_configuration_id.clone().unwrap_or_default(),
+                "Optional configuration ID",
+                false,
+            ),
+            ("source-schemas", schemas, "schema_one, schema_two", false),
+            (
+                "source-schema-search",
+                String::new(),
+                "Filter schemas",
+                false,
+            ),
+        ]);
         let mut inputs = HashMap::new();
         let mut last_values = HashMap::new();
         let mut subscriptions = Vec::new();
@@ -144,8 +230,23 @@ impl SourceForm {
                 // TextInput also notifies for cursor/selection movement. Only text edits
                 // invalidate a running test; no draft values are logged or formatted.
                 if this.last_values.get(id) != Some(&value) {
+                    if id == "source-schemas" {
+                        this.selected_schema_names = value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_owned)
+                            .collect();
+                    }
                     this.last_values.insert(id, value);
-                    this.model.update(cx, |model, cx| model.edit_form(cx));
+                    if id == "source-url" {
+                        this.endpoint_mode = 2;
+                    } else if matches!(id, "source-host" | "source-port" | "source-database") {
+                        this.refresh_generated_url(cx);
+                    }
+                    if id != "source-schema-search" {
+                        this.model.update(cx, |model, cx| model.edit_form(cx));
+                    }
                 }
                 cx.notify();
             }));
@@ -167,15 +268,91 @@ impl SourceForm {
             "source-cancel",
             "source-keys",
             "source-ca-browse",
+            "source-tab-general",
+            "source-tab-options",
+            "source-tab-ssh",
+            "source-tab-schemas",
+            "source-driver",
+            "source-ssh-profile",
+            "source-manage-ssh",
+            "source-ssh-custom",
+            "source-fetch-schemas",
+            "source-tls-mode",
+            "source-tls-required",
+            "source-tls-verify-ca",
+            "source-authentication",
+            "source-auth-user-password",
+            "source-auth-none",
+            "source-mode-default",
+            "source-mode-socket",
+            "source-mode-url",
+            "source-schemas-all",
+            "source-schemas-selected",
+            "source-parse-ssh-config",
+            "source-socket-browse",
+            "source-client-cert-browse",
+            "source-client-key-browse",
         ]
         .into_iter()
         .chain(COLOR_PRESETS.iter().map(|(id, _, _, _)| *id))
         .map(|id| (id, cx.focus_handle().tab_stop(true)))
         .collect();
+        #[cfg(not(feature = "ui-tests"))]
+        {
+            let task = cx.background_executor().spawn(async {
+                SshRepository::default_path().and_then(|path| SshRepository::new(path).load())
+            });
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                let _ = this.update(cx, |this, cx| {
+                    match result {
+                        Ok(profiles) => {
+                            // Loading labels must not overwrite an edited transport draft.
+                            for profile in profiles {
+                                if !this
+                                    .ssh_profiles
+                                    .iter()
+                                    .any(|existing| existing.id == profile.id)
+                                {
+                                    this.ssh_profiles.push(profile);
+                                }
+                            }
+                        }
+                        Err(error) => this.ssh_load_error = Some(error.to_string()),
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
         Self {
+            ssh_selected: profile.ssh_configuration_id.clone(),
+            ssh_profiles: Vec::new(),
+            ssh_load_error: None,
+            ssh_combo_open: false,
+            selected_schema_names: match &profile.schemas {
+                SchemaSelection::All => HashSet::new(),
+                SchemaSelection::Selected(names) => names.iter().cloned().collect(),
+            },
+            ssh_scroll: gpui::UniformListScrollHandle::new(),
+            schema_scroll: gpui::UniformListScrollHandle::new(),
             engine: profile.engine,
             tls: profile.tls,
             save_password: profile.save_password,
+            active_tab: 0,
+            endpoint_mode,
+            authentication: profile.authentication,
+            schemas_all: matches!(profile.schemas, SchemaSelection::All),
+            parse_ssh_config: matches!(
+                profile.transport,
+                Transport::Ssh {
+                    parse_config: true,
+                    ..
+                }
+            ),
+            driver_open: false,
+            authentication_open: false,
+            tls_open: false,
             original: profile,
             model,
             inputs,
@@ -192,12 +369,244 @@ impl SourceForm {
         }
     }
 
+    /// The manager calls this only after persisting a configuration and choosing Use.
+    pub(super) fn set_ssh_configuration(&mut self, profile: SshProfile, cx: &mut Context<Self>) {
+        if self.model.read(cx).saving {
+            return;
+        }
+        self.transport = 1;
+        self.ssh_selected = Some(profile.id.clone());
+        self.parse_ssh_config = profile.parse_config;
+        self.ssh_combo_open = false;
+        self.key_picker_open = false;
+        for (id, value) in [
+            ("source-ssh-configuration", profile.id.clone()),
+            ("source-tunnel-host", profile.host.clone()),
+            ("source-tunnel-port", profile.port.to_string()),
+            ("source-tunnel-user", profile.user.clone()),
+            (
+                "source-tunnel-key",
+                profile.identity_file.clone().unwrap_or_default(),
+            ),
+            (
+                "source-known-hosts",
+                profile.known_hosts_file.clone().unwrap_or_default(),
+            ),
+        ] {
+            self.last_values.insert(id, value.clone());
+            self.inputs[id].update(cx, |input, cx| input.set_value(value, cx));
+        }
+        if let Some(existing) = self
+            .ssh_profiles
+            .iter_mut()
+            .find(|existing| existing.id == profile.id)
+        {
+            *existing = profile;
+        } else {
+            self.ssh_profiles.push(profile);
+        }
+        self.model.update(cx, |model, cx| model.edit_form(cx));
+        cx.notify();
+    }
+
+    fn ssh_profile_control(&self, cx: &mut Context<Self>) -> Div {
+        let label = self
+            .ssh_profiles
+            .iter()
+            .find(|profile| Some(&profile.id) == self.ssh_selected.as_ref())
+            .map(|profile| {
+                format!(
+                    "{} · {}@{}:{}",
+                    profile.name, profile.user, profile.host, profile.port
+                )
+            })
+            .unwrap_or_else(|| {
+                if self.ssh_selected.is_some() {
+                    "Saved SSH configuration (unavailable)".into()
+                } else {
+                    "Custom SSH connection".into()
+                }
+            });
+        let trigger = div()
+            .id("source-ssh-profile")
+            .debug_selector(|| "source-ssh-profile".into())
+            .track_focus(&self.controls["source-ssh-profile"])
+            .tab_index(0)
+            .min_w(px(0.))
+            .flex_1()
+            .h(px(CONTROL_HEIGHT))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .border_1()
+            .border_color(rgb(MUTED))
+            .rounded(px(CONTROL_RADIUS))
+            .cursor_pointer()
+            .focus(|style| style.border_color(rgb(FOCUS)))
+            .on_click(cx.listener(|this, _, _, cx| this.activate("source-ssh-profile", cx)))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    this.activate("source-ssh-profile", cx);
+                }
+            }))
+            .child(div().text_ellipsis().child(label));
+        let control = div().relative().w_full().flex().gap(px(8.))
+            .child(trigger).child(self.button("source-manage-ssh", "…", false, 0, cx))
+            .when(self.ssh_combo_open, |container| container.child(gpui::deferred(
+                div().absolute().top(px(CONTROL_HEIGHT + 2.)).left(px(0.)).w(px(360.))
+                    .occlude().bg(rgb(HEADER)).border_1().border_color(rgb(MUTED)).p(px(4.))
+                    .child(self.button("source-ssh-custom", "Custom SSH connection", self.ssh_selected.is_none(), 0, cx))
+                    .child(gpui::uniform_list("source-ssh-profile-list", self.ssh_profiles.len(),
+                        cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                            range.map(|index| {
+                                let profile = this.ssh_profiles[index].clone();
+                                let label = format!("{} · {}@{}:{}", profile.name, profile.user, profile.host, profile.port);
+                                let keyboard_profile = profile.clone();
+                                div().id(gpui::SharedString::from(format!("source-ssh-profile-{index}")))
+                                    .debug_selector(move || format!("source-ssh-profile-{index}"))
+                                    .tab_index(0).h(px(32.)).w_full().px(px(8.)).flex().items_center()
+                                    .cursor_pointer().hover(|style| style.bg(rgb(HOVER)))
+                                    .focus(|style| style.bg(rgb(HOVER)))
+                                    .on_click(cx.listener(move |this, _, _, cx| this.set_ssh_configuration(profile.clone(), cx)))
+                                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                            cx.stop_propagation(); this.set_ssh_configuration(keyboard_profile.clone(), cx);
+                                        }
+                                    })).child(div().text_ellipsis().child(label))
+                            }).collect::<Vec<_>>()
+                        }))
+                        .h(px((self.ssh_profiles.len().min(6) * 32) as f32))
+                        .track_scroll(self.ssh_scroll.clone()))
+            ).with_priority(1)));
+        self.row(
+            "SSH configuration",
+            div()
+                .child(control)
+                .when_some(self.ssh_load_error.clone(), |container, error| {
+                    container.child(div().text_color(rgb(ERROR)).child(error))
+                }),
+        )
+    }
+
+    fn available_schemas(&self, cx: &App) -> Vec<String> {
+        let model = self.model.read(cx);
+        let mut names = if !model.form_databases.is_empty() {
+            model.form_databases.clone()
+        } else {
+            model
+                .tree
+                .databases
+                .get(&self.original.id)
+                .cloned()
+                .unwrap_or_default()
+        };
+        names.extend(self.selected_schema_names.iter().cloned());
+        if let Some(database) = optional(self.value("source-database", cx)) {
+            names.push(database);
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    fn filtered_schemas(&self, cx: &App) -> Vec<String> {
+        let search = self.value("source-schema-search", cx).to_lowercase();
+        self.available_schemas(cx)
+            .into_iter()
+            .filter(|name| name.to_lowercase().contains(&search))
+            .collect()
+    }
+
+    fn toggle_schema(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.model.read(cx).saving {
+            return;
+        }
+        if self.schemas_all {
+            self.selected_schema_names = self.available_schemas(cx).into_iter().collect();
+            self.schemas_all = false;
+        }
+        if !self.selected_schema_names.remove(&name) {
+            self.selected_schema_names.insert(name);
+        }
+        self.model.update(cx, |model, cx| model.edit_form(cx));
+        cx.notify();
+    }
+
+    fn schema_list(&self, cx: &mut Context<Self>) -> Div {
+        let count = self.filtered_schemas(cx).len();
+        div()
+            .child(
+                gpui::uniform_list(
+                    "source-schema-list",
+                    count,
+                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                        let names = this.filtered_schemas(cx);
+                        range
+                            .map(|index| {
+                                let name = names[index].clone();
+                                let checked =
+                                    this.schemas_all || this.selected_schema_names.contains(&name);
+                                let label = name.clone();
+                                let keyboard_name = name.clone();
+                                div()
+                                    .id(gpui::SharedString::from(format!("source-schema-{index}")))
+                                    .debug_selector(move || format!("source-schema-{index}"))
+                                    .tab_index(0)
+                                    .h(px(30.))
+                                    .w_full()
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(rgb(HOVER)))
+                                    .focus(|style| style.bg(rgb(HOVER)))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_schema(name.clone(), cx)
+                                    }))
+                                    .on_key_down(cx.listener(
+                                        move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                            if matches!(
+                                                event.keystroke.key.as_str(),
+                                                "enter" | "space"
+                                            ) {
+                                                cx.stop_propagation();
+                                                this.toggle_schema(keyboard_name.clone(), cx);
+                                            }
+                                        },
+                                    ))
+                                    .gap(px(8.0))
+                                    .child(check_indicator(checked))
+                                    .child(
+                                        div().flex_1().min_w(px(0.0)).text_ellipsis().child(label),
+                                    )
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .debug_selector(|| "source-schema-list".into())
+                .h(px((count * 30).clamp(120, 260) as f32))
+                .track_scroll(self.schema_scroll.clone()),
+            )
+            .when(count == 0, |container| {
+                container.child(
+                    div()
+                        .text_color(rgb(MUTED))
+                        .child("No matching schemas. Fetch schemas or add names below."),
+                )
+            })
+    }
+
     fn value(&self, id: &'static str, cx: &App) -> String {
         self.inputs[id].read(cx).value().trim().to_owned()
     }
 
     pub(super) fn password(&self, cx: &App) -> String {
-        self.inputs["source-password"].read(cx).value()
+        if self.authentication == Authentication::NoAuth {
+            String::new()
+        } else {
+            self.inputs["source-password"].read(cx).value()
+        }
     }
 
     pub(super) fn preferred_first_focus(&self, cx: &App) -> FocusHandle {
@@ -213,13 +622,58 @@ impl SourceForm {
         profile.name = self.value("source-name", cx);
         profile.color = optional(self.value("source-color", cx));
         profile.host = self.value("source-host", cx);
-        profile.port = parse_port(&self.value("source-port", cx), "Database")?;
-        profile.username = self.value("source-user", cx);
+        profile.port = if self.endpoint_mode == 0 {
+            parse_port(&self.value("source-port", cx), "Database")?
+        } else {
+            self.original.port
+        };
+        profile.authentication = self.authentication;
+        profile.username = if self.authentication == Authentication::NoAuth {
+            String::new()
+        } else {
+            self.value("source-user", cx)
+        };
+        profile.endpoint = match self.endpoint_mode {
+            1 => ConnectionMode::UnixSocket {
+                path: self.value("source-socket", cx),
+            },
+            2 => ConnectionMode::UrlOnly {
+                url: self.value("source-url", cx),
+            },
+            _ => ConnectionMode::Default,
+        };
+        profile.options.connect_timeout_seconds = self
+            .value("source-connect-timeout", cx)
+            .parse()
+            .context("Connect timeout must be a whole number of seconds")?;
+        profile.options.query_timeout_seconds = self
+            .value("source-query-timeout", cx)
+            .parse()
+            .context("Query timeout must be a whole number of seconds")?;
+        profile.options.page_size = self
+            .value("source-page-size", cx)
+            .parse()
+            .context("Page size must be a whole number")?;
+        profile.ssl_client_cert = optional(self.value("source-client-cert", cx));
+        profile.ssl_client_key = optional(self.value("source-client-key", cx));
+        profile.ssh_configuration_id = if self.transport == 1 {
+            self.ssh_selected.clone()
+        } else {
+            None
+        };
+        profile.schemas = if self.schemas_all {
+            SchemaSelection::All
+        } else {
+            let mut names: Vec<_> = self.selected_schema_names.iter().cloned().collect();
+            names.sort();
+            SchemaSelection::Selected(names)
+        };
         profile.database = optional(self.value("source-database", cx));
         profile.ca_path = optional(self.value("source-ca", cx));
         profile.engine = self.engine;
         profile.tls = self.tls;
-        profile.save_password = self.save_password;
+        profile.save_password =
+            self.save_password && self.authentication == Authentication::UserPassword;
         profile.transport = match self.transport {
             1 => Transport::Ssh {
                 host: self.value("source-tunnel-host", cx),
@@ -227,6 +681,7 @@ impl SourceForm {
                 user: self.value("source-tunnel-user", cx),
                 identity_file: optional(self.value("source-tunnel-key", cx)),
                 known_hosts_file: optional(self.value("source-known-hosts", cx)),
+                parse_config: self.parse_ssh_config,
             },
             2 | 3 => Transport::HttpConnect {
                 host: self.value("source-proxy-host", cx),
@@ -247,6 +702,26 @@ impl SourceForm {
         };
         profile.validate()?;
         Ok(profile)
+    }
+
+    fn refresh_generated_url(&mut self, cx: &mut Context<Self>) {
+        if self.endpoint_mode != 0 {
+            return;
+        }
+        let Ok(port) = parse_port(&self.value("source-port", cx), "Database") else {
+            return;
+        };
+        let draft = SourceProfile {
+            host: self.value("source-host", cx),
+            port,
+            database: optional(self.value("source-database", cx)),
+            ..Default::default()
+        };
+        if let Ok(url) = draft.canonical_url() {
+            // Set expected text before notifying; observers must not treat this as a manual edit.
+            self.last_values.insert("source-url", url.clone());
+            self.inputs["source-url"].update(cx, |input, cx| input.set_value(url, cx));
+        }
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
@@ -271,6 +746,90 @@ impl SourceForm {
             return;
         }
         match id {
+            "source-tab-general" | "source-tab-options" | "source-tab-ssh"
+            | "source-tab-schemas" => {
+                self.active_tab = match id {
+                    "source-tab-options" => 1,
+                    "source-tab-ssh" => 2,
+                    "source-tab-schemas" => 3,
+                    _ => 0,
+                };
+                self.driver_open = false;
+                self.authentication_open = false;
+                self.ssh_combo_open = false;
+                self.tls_open = false;
+                cx.notify();
+                return;
+            }
+            "source-tls-mode" => {
+                self.tls_open = !self.tls_open;
+                cx.notify();
+                return;
+            }
+            "source-tls-required" => {
+                self.tls = TlsMode::Required;
+                self.tls_open = false;
+            }
+            "source-tls-verify-ca" => {
+                self.tls = TlsMode::VerifyCa;
+                self.tls_open = false;
+            }
+            "source-ssh-profile" => {
+                self.ssh_combo_open = !self.ssh_combo_open;
+                cx.notify();
+                return;
+            }
+            "source-manage-ssh" => {
+                self.ssh_combo_open = false;
+                super::ssh_manager::show(cx.entity(), self.ssh_selected.clone(), cx);
+                return;
+            }
+            "source-ssh-custom" => {
+                self.ssh_selected = None;
+                self.ssh_combo_open = false;
+                self.last_values
+                    .insert("source-ssh-configuration", String::new());
+                self.inputs["source-ssh-configuration"]
+                    .update(cx, |input, cx| input.set_value("", cx));
+            }
+            "source-fetch-schemas" => {
+                self.activate("source-test", cx);
+                return;
+            }
+            "source-driver" => {
+                self.driver_open = !self.driver_open;
+                self.authentication_open = false;
+                cx.notify();
+                return;
+            }
+            "source-authentication" => {
+                self.authentication_open = !self.authentication_open;
+                self.driver_open = false;
+                cx.notify();
+                return;
+            }
+            "source-mode-default" => {
+                self.endpoint_mode = 0;
+                self.refresh_generated_url(cx);
+            }
+            "source-mode-socket" => {
+                self.endpoint_mode = 1;
+                self.transport = 0;
+                self.tls = TlsMode::Disabled;
+            }
+            "source-mode-url" => self.endpoint_mode = 2,
+            "source-auth-user-password" => {
+                self.authentication = Authentication::UserPassword;
+                self.authentication_open = false;
+            }
+            "source-auth-none" => {
+                self.authentication = Authentication::NoAuth;
+                self.save_password = false;
+                self.authentication_open = false;
+            }
+            "source-schemas-all" => self.schemas_all = true,
+            "source-schemas-selected" => self.schemas_all = false,
+            "source-parse-ssh-config" => self.parse_ssh_config = !self.parse_ssh_config,
             "source-keys" => {
                 self.key_picker_open = !self.key_picker_open;
                 if self.key_picker_open && !self.key_picker_busy {
@@ -322,14 +881,26 @@ impl SourceForm {
                 }
                 return;
             }
-            "source-engine-mysql" => self.engine = DbEngine::MySql,
-            "source-engine-mariadb" => self.engine = DbEngine::MariaDb,
+            "source-engine-mysql" => {
+                self.engine = DbEngine::MySql;
+                self.driver_open = false;
+            }
+            "source-engine-mariadb" => {
+                self.engine = DbEngine::MariaDb;
+                self.driver_open = false;
+            }
             "source-direct" => self.transport = 0,
-            "source-ssh" => self.transport = 1,
-            "source-http" => self.transport = 2,
-            "source-https" => self.transport = 3,
-            "source-tls-verify" => self.tls = TlsMode::VerifyIdentity,
-            "source-tls-disabled" => self.tls = TlsMode::Disabled,
+            "source-ssh" if self.endpoint_mode != 1 => self.transport = 1,
+            "source-http" if self.endpoint_mode != 1 => self.transport = 2,
+            "source-https" if self.endpoint_mode != 1 => self.transport = 3,
+            "source-tls-verify" if self.endpoint_mode != 1 => {
+                self.tls = TlsMode::VerifyIdentity;
+                self.tls_open = false;
+            }
+            "source-tls-disabled" => {
+                self.tls = TlsMode::Disabled;
+                self.tls_open = false;
+            }
             "source-save-password" => self.save_password = !self.save_password,
             _ => return,
         }
@@ -615,8 +1186,30 @@ impl SourceForm {
         }
     }
 
+    fn finish_path_pick(
+        &mut self,
+        field: &'static str,
+        selection: Result<Option<Vec<std::path::PathBuf>>>,
+        original: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_path_pick_impl(field, selection, original, window, cx);
+    }
+
     fn finish_ca_pick(
         &mut self,
+        selection: Result<Option<Vec<std::path::PathBuf>>>,
+        original: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_path_pick("source-ca", selection, original, window, cx);
+    }
+
+    fn finish_path_pick_impl(
+        &mut self,
+        field: &'static str,
         selection: Result<Option<Vec<std::path::PathBuf>>>,
         original: String,
         window: &mut Window,
@@ -629,18 +1222,16 @@ impl SourceForm {
         }
         match selection {
             Ok(Some(paths)) if paths.len() == 1 => {
-                if self.inputs["source-ca"].read(cx).value() != original {
-                    self.model.update(cx, |model, cx| { model.form_feedback = Some("CA selection ignored because the path was edited while the dialog was open.".into()); cx.notify(); });
+                if self.inputs[field].read(cx).value() != original {
+                    self.model.update(cx, |model, cx| { model.form_feedback = Some("Path selection ignored because the path was edited while the dialog was open.".into()); cx.notify(); });
                 } else if let Some(path) = paths[0].to_str() {
-                    self.inputs["source-ca"]
-                        .update(cx, |input, cx| input.set_value(path.to_owned(), cx));
-                    self.last_values.insert("source-ca", path.to_owned());
+                    self.inputs[field].update(cx, |input, cx| input.set_value(path.to_owned(), cx));
+                    self.last_values.insert(field, path.to_owned());
                     self.model.update(cx, |model, cx| model.edit_form(cx));
                 } else {
                     self.model.update(cx, |model, cx| {
                         model.form_feedback = Some(
-                            "The selected CA path is not UTF-8; enter another path manually."
-                                .into(),
+                            "The selected path is not UTF-8; enter another path manually.".into(),
                         );
                         cx.notify();
                     });
@@ -648,37 +1239,45 @@ impl SourceForm {
             }
             Ok(None) => {}
             Ok(Some(_)) => self.model.update(cx, |model, cx| {
-                model.form_feedback = Some("Choose one CA certificate file.".into());
+                model.form_feedback = Some("Choose one file.".into());
                 cx.notify();
             }),
             Err(_) => self.model.update(cx, |model, cx| {
-                model.form_feedback = Some(
-                    "Could not open the CA file dialog. You can enter its path manually.".into(),
-                );
+                model.form_feedback =
+                    Some("Could not open the file dialog. You can enter its path manually.".into());
                 cx.notify();
             }),
         }
-        self.inputs["source-ca"]
-            .read(cx)
-            .focus_handle()
-            .focus(window);
+        self.inputs[field].read(cx).focus_handle().focus(window);
         cx.notify();
     }
 
     fn browse_ca(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.browse_path("source-ca", window, cx);
+    }
+
+    fn browse_path(&mut self, field: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         if self.ca_picker_open || self.model.read(cx).saving {
             return;
         }
         self.ca_picker_open = true;
-        let original = self.inputs["source-ca"].read(cx).value();
-        let picker = cx.prompt_for_paths(Self::ca_picker_options());
+        let original = self.inputs[field].read(cx).value();
+        let mut options = Self::ca_picker_options();
+        if field != "source-ca" {
+            options.prompt = Some("Choose a connection file".into());
+        }
+        let picker = cx.prompt_for_paths(options);
         cx.spawn_in(window, async move |this, cx| {
             let selection = picker
                 .await
                 .map_err(|_| anyhow::anyhow!("File dialog stopped"))
                 .and_then(|result| result);
             let _ = this.update_in(cx, |this, window, cx| {
-                this.finish_ca_pick(selection, original, window, cx)
+                if field == "source-ca" {
+                    this.finish_ca_pick(selection, original, window, cx);
+                } else {
+                    this.finish_path_pick(field, selection, original, window, cx);
+                }
             });
         })
         .detach();
@@ -714,6 +1313,95 @@ impl SourceForm {
                 }
             }))
             .child("Browse…")
+    }
+
+    fn path_field(
+        &self,
+        field: &'static str,
+        label: &'static str,
+        browse: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        self.row(
+            label,
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .id(field)
+                        .debug_selector(move || field.into())
+                        .flex_1()
+                        .min_w(px(0.))
+                        .child(self.inputs[field].clone()),
+                )
+                .child(
+                    div()
+                        .id(browse)
+                        .debug_selector(move || browse.into())
+                        .track_focus(&self.controls[browse])
+                        .h(px(CONTROL_HEIGHT))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(rgb(PANEL))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(HOVER)))
+                        .focus(|s| s.border_color(rgb(FOCUS)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.browse_path(field, window, cx)
+                        }))
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    cx.stop_propagation();
+                                    this.browse_path(field, window, cx);
+                                }
+                            },
+                        ))
+                        .child("Browse…"),
+                ),
+        )
+    }
+
+    fn combo(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        open: bool,
+        choices: &[(&'static str, &'static str, bool)],
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div()
+            .relative()
+            .child(self.button(id, label, open, 0, cx))
+            .when(open, |container| {
+                container.child(
+                    gpui::deferred(
+                        div()
+                            .absolute()
+                            .top(px(CONTROL_HEIGHT + 2.))
+                            .left(px(0.))
+                            .w(px(210.))
+                            .occlude()
+                            .bg(rgb(HEADER))
+                            .border_1()
+                            .border_color(rgb(MUTED))
+                            .rounded(px(CONTROL_RADIUS))
+                            .p(px(4.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .children(choices.iter().map(|&(id, label, selected)| {
+                                self.button(id, label, selected, 0, cx)
+                            })),
+                    )
+                    .with_priority(1),
+                )
+            })
     }
 
     fn choose_key(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -790,202 +1478,411 @@ impl Render for SourceForm {
             .max_w(px(720.))
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .child(
-                self.row(
-                    "Engine",
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(self.button(
-                            "source-engine-mysql",
-                            "MySQL",
-                            self.engine == DbEngine::MySql,
-                            1,
+            .gap(px(10.))
+            .child(self.field("source-name", "Name", 0, cx));
+        match self.active_tab {
+            0 => {
+                body = body
+                    .child(self.color_row(cx))
+                    .child(self.row(
+                        "Driver",
+                        self.combo(
+                            "source-driver",
+                            if self.engine == DbEngine::MySql {
+                                "MySQL ▾"
+                            } else {
+                                "MariaDB ▾"
+                            },
+                            self.driver_open,
+                            &[
+                                (
+                                    "source-engine-mysql",
+                                    "MySQL",
+                                    self.engine == DbEngine::MySql,
+                                ),
+                                (
+                                    "source-engine-mariadb",
+                                    "MariaDB",
+                                    self.engine == DbEngine::MariaDb,
+                                ),
+                            ],
                             cx,
-                        ))
-                        .child(self.button(
-                            "source-engine-mariadb",
-                            "MariaDB",
-                            self.engine == DbEngine::MariaDb,
-                            2,
-                            cx,
-                        )),
-                ),
-            )
-            .child(self.field("source-name", "Name", 3, cx))
-            .child(self.color_row(cx))
-            .child(self.host_port_row("Host", "source-host", "source-port"))
-            .child(self.field("source-user", "User", 6, cx))
-            .child(
-                self.row(
-                    "Password",
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .w_full()
-                        .min_w(px(0.))
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(
+                        ),
+                    ))
+                    .child(
+                        self.row(
+                            "Connection type",
                             div()
-                                .id("source-password")
-                                .debug_selector(|| "source-password".into())
-                                .flex_1()
-                                .min_w(px(120.0))
-                                .child(self.inputs["source-password"].clone()),
-                        )
-                        .child(self.checkbox(cx)),
-                ),
-            )
-            .child(self.field("source-database", "Database (optional)", 8, cx))
-            .child(
-                self.row(
-                    "Transport",
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(8.))
-                        .child(self.button("source-direct", "Direct", self.transport == 0, 9, cx))
-                        .child(self.button("source-ssh", "SSH", self.transport == 1, 10, cx))
-                        .child(self.button(
-                            "source-http",
-                            "HTTP CONNECT",
-                            self.transport == 2,
-                            11,
-                            cx,
-                        ))
-                        .child(self.button(
-                            "source-https",
-                            "HTTPS CONNECT",
-                            self.transport == 3,
-                            12,
-                            cx,
-                        )),
-                ),
-            );
-        if self.transport == 1 {
-            body = body
-                .child(self.host_port_row("SSH host", "source-tunnel-host", "source-tunnel-port"))
-                .child(self.field("source-tunnel-user", "SSH user", 15, cx))
-                .child(self.field("source-tunnel-key", "Identity file", 16, cx))
-                .child(self.field("source-known-hosts", "Known hosts file", 17, cx))
-                .child(self.row(
-                    "",
-                    self.button("source-keys", "SSH keys…", self.key_picker_open, 16, cx),
-                ));
-            if self.key_picker_open {
-                let mut picker = div()
-                    .id("ssh-key-picker")
-                    .debug_selector(|| "ssh-key-picker".into())
-                    .w_full()
-                    .min_w(px(0.))
-                    .flex_shrink_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.0))
-                    .p(px(8.0))
-                    .bg(rgb(HEADER))
-                    .child(self.key_row(
-                        "ssh-use-agent",
-                        "Use SSH agent (no explicit identity file)".into(),
-                        String::new(),
+                                .flex()
+                                .gap(px(8.))
+                                .child(self.button(
+                                    "source-mode-default",
+                                    "Default",
+                                    self.endpoint_mode == 0,
+                                    0,
+                                    cx,
+                                ))
+                                .child(self.button(
+                                    "source-mode-socket",
+                                    "Unix Socket",
+                                    self.endpoint_mode == 1,
+                                    0,
+                                    cx,
+                                ))
+                                .child(self.button(
+                                    "source-mode-url",
+                                    "URL-only",
+                                    self.endpoint_mode == 2,
+                                    0,
+                                    cx,
+                                )),
+                        ),
+                    );
+                if self.endpoint_mode == 0 {
+                    body = body.child(self.host_port_row("Host", "source-host", "source-port"));
+                } else if self.endpoint_mode == 1 {
+                    body = body.child(self.path_field("source-socket", "Socket path", "source-socket-browse", cx))
+                        .child(div().text_color(rgb(WARNING)).child("Unix socket connections use local socket permissions; TLS unavailable."));
+                }
+                if self.endpoint_mode != 1 {
+                    body = body.child(self.field("source-url", "Connection URL", 0, cx))
+                        .child(self.row("", div().text_color(rgb(MUTED)).text_size(px(12.)).child(if self.endpoint_mode == 2 {
+                            "URL controls host, port and database. Credentials are configured below."
+                        } else { "Edit URL switches to URL-only. Generated URLs contain no credentials." })));
+                }
+                body = body.child(self.row(
+                    "Authentication",
+                    self.combo(
+                        "source-authentication",
+                        if self.authentication == Authentication::UserPassword {
+                            "User & Password ▾"
+                        } else {
+                            "No Auth ▾"
+                        },
+                        self.authentication_open,
+                        &[
+                            (
+                                "source-auth-user-password",
+                                "User & Password",
+                                self.authentication == Authentication::UserPassword,
+                            ),
+                            (
+                                "source-auth-none",
+                                "No Auth",
+                                self.authentication == Authentication::NoAuth,
+                            ),
+                        ],
                         cx,
-                    ));
-                if self.key_picker_busy {
-                    picker = picker.child("Listing ~/.ssh identity filenames…");
+                    ),
+                ));
+                if self.authentication == Authentication::UserPassword {
+                    body = body.child(self.field("source-user", "User", 0, cx)).child(
+                        self.row(
+                            "Password",
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .min_w(px(0.))
+                                .child(
+                                    div()
+                                        .id("source-password")
+                                        .debug_selector(|| "source-password".into())
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .child(self.inputs["source-password"].clone()),
+                                )
+                                .child(self.checkbox(cx)),
+                        ),
+                    );
                 }
-                if let Some(error) = &self.key_picker_error {
-                    picker = picker.child(error.clone());
+                if self.endpoint_mode != 2 {
+                    body = body.child(self.field("source-database", "Database (optional)", 0, cx));
                 }
-                if !self.key_picker_busy && self.ssh_keys.is_empty() {
-                    picker = picker
-                        .child("No candidate keys found. You can enter an identity path manually.");
-                }
-                picker = picker.child(
-                    div()
-                        .id("ssh-key-list")
-                        .debug_selector(|| "ssh-key-list".into())
-                        .w_full()
-                        .min_w(px(0.))
-                        .flex_shrink_0()
-                        .max_h(px(150.0))
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.0))
-                        .children(self.ssh_keys.iter().enumerate().map(|(index, key)| {
-                            self.key_row(
-                                format!("ssh-key-{index}"),
-                                key.name.clone(),
-                                key.path.to_string_lossy().into_owned(),
-                                cx,
-                            )
-                        })),
-                );
-                picker = picker.child(div().text_size(px(12.0)).text_color(rgb(MUTED))
-                    .child("Candidates are listed by filename only. Unlock encrypted keys with ssh-add; private key contents are not read by this picker."));
-                body = body.child(self.row("", picker));
             }
-        } else if self.transport == 2 || self.transport == 3 {
-            body = body.child(self.host_port_row(
-                "Proxy host",
-                "source-proxy-host",
-                if self.transport == 3 {
-                    "source-https-port"
+            1 => {
+                body = body
+                    .child(self.field("source-connect-timeout", "Connect timeout (s)", 0, cx))
+                    .child(self.field("source-query-timeout", "Query timeout (s)", 0, cx))
+                    .child(self.field("source-page-size", "Page size", 0, cx))
+                    .child(div().text_color(rgb(MUTED)).child(
+                        "Connect: 1–60 seconds · Query: 1–120 seconds · Page size: 1–200 rows",
+                    ));
+            }
+            2 => {
+                if self.endpoint_mode == 1 {
+                    body = body.child(div().text_color(rgb(WARNING)).child("Unix socket connections use local socket permissions; TLS unavailable. SSH and proxies are unavailable for local sockets."));
                 } else {
-                    "source-proxy-port"
-                },
-            ));
+                    body = body.child(
+                        self.row(
+                            "Transport",
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(8.))
+                                .child(self.button(
+                                    "source-direct",
+                                    "Direct",
+                                    self.transport == 0,
+                                    0,
+                                    cx,
+                                ))
+                                .child(self.button("source-ssh", "SSH", self.transport == 1, 0, cx))
+                                .child(self.button(
+                                    "source-http",
+                                    "HTTP CONNECT",
+                                    self.transport == 2,
+                                    0,
+                                    cx,
+                                ))
+                                .child(self.button(
+                                    "source-https",
+                                    "HTTPS CONNECT",
+                                    self.transport == 3,
+                                    0,
+                                    cx,
+                                )),
+                        ),
+                    );
+                    if self.transport == 1 {
+                        body = body.child(self.ssh_profile_control(cx)).child(
+                            self.row(
+                                "Local port",
+                                div()
+                                    .text_color(rgb(MUTED))
+                                    .child("Dynamic (assigned when connecting)"),
+                            ),
+                        );
+                        if self.ssh_selected.is_none() {
+                            body = body
+                                .child(self.host_port_row(
+                                    "SSH host",
+                                    "source-tunnel-host",
+                                    "source-tunnel-port",
+                                ))
+                                .child(self.field("source-tunnel-user", "SSH user", 0, cx))
+                                .child(self.field("source-tunnel-key", "Identity file", 0, cx))
+                                .child(self.field("source-known-hosts", "Known hosts file", 0, cx))
+                                .when(self.parse_ssh_config, |body| body.child(div().text_color(rgb(WARNING))
+                                    .child("Only enable trusted SSH configuration: ProxyCommand and Match exec can run local commands.")))
+                                .child(self.row(
+                                    "SSH config",
+                                    self.button(
+                                        "source-parse-ssh-config",
+                                        "Parse ~/.ssh/config",
+                                        self.parse_ssh_config,
+                                        0,
+                                        cx,
+                                    ),
+                                ))
+                                .child(self.row(
+                                    "",
+                                    self.button(
+                                        "source-keys",
+                                        "SSH keys…",
+                                        self.key_picker_open,
+                                        0,
+                                        cx,
+                                    ),
+                                ));
+                            if self.key_picker_open {
+                                let mut picker = div()
+                                    .id("ssh-key-picker")
+                                    .debug_selector(|| "ssh-key-picker".into())
+                                    .w_full()
+                                    .min_w(px(0.))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .p(px(8.0))
+                                    .bg(rgb(HEADER))
+                                    .child(self.key_row(
+                                        "ssh-use-agent",
+                                        "Use SSH agent (no explicit identity file)".into(),
+                                        String::new(),
+                                        cx,
+                                    ));
+                                if self.key_picker_busy {
+                                    picker = picker.child("Listing ~/.ssh identity filenames…");
+                                }
+                                if let Some(error) = &self.key_picker_error {
+                                    picker = picker.child(error.clone());
+                                }
+                                if !self.key_picker_busy && self.ssh_keys.is_empty() {
+                                    picker = picker
+                        .child("No candidate keys found. You can enter an identity path manually.");
+                                }
+                                picker = picker.child(
+                                    div()
+                                        .id("ssh-key-list")
+                                        .debug_selector(|| "ssh-key-list".into())
+                                        .w_full()
+                                        .min_w(px(0.))
+                                        .flex_shrink_0()
+                                        .max_h(px(150.0))
+                                        .overflow_y_scroll()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.0))
+                                        .children(self.ssh_keys.iter().enumerate().map(
+                                            |(index, key)| {
+                                                self.key_row(
+                                                    format!("ssh-key-{index}"),
+                                                    key.name.clone(),
+                                                    key.path.to_string_lossy().into_owned(),
+                                                    cx,
+                                                )
+                                            },
+                                        )),
+                                );
+                                picker = picker.child(div().text_size(px(12.0)).text_color(rgb(MUTED))
+                    .child("Candidates are listed by filename only. Unlock encrypted keys with ssh-add; private key contents are not read by this picker."));
+                                body = body.child(self.row("", picker));
+                            }
+                        }
+                    } else if self.transport == 2 || self.transport == 3 {
+                        body = body.child(self.host_port_row(
+                            "Proxy host",
+                            "source-proxy-host",
+                            if self.transport == 3 {
+                                "source-https-port"
+                            } else {
+                                "source-proxy-port"
+                            },
+                        ));
+                    }
+                    body = body.child(self.row(
+                        "TLS",
+                        self.combo(
+                            "source-tls-mode",
+                            match self.tls {
+                                TlsMode::Disabled => "Disabled",
+                                TlsMode::Required => "Required",
+                                TlsMode::VerifyCa => "Verify CA",
+                                TlsMode::VerifyIdentity => "Verify identity",
+                            },
+                            self.tls_open,
+                            &[
+                                (
+                                    "source-tls-disabled",
+                                    "Disabled",
+                                    self.tls == TlsMode::Disabled,
+                                ),
+                                (
+                                    "source-tls-required",
+                                    "Required",
+                                    self.tls == TlsMode::Required,
+                                ),
+                                (
+                                    "source-tls-verify-ca",
+                                    "Verify CA",
+                                    self.tls == TlsMode::VerifyCa,
+                                ),
+                                (
+                                    "source-tls-verify",
+                                    "Verify identity",
+                                    self.tls == TlsMode::VerifyIdentity,
+                                ),
+                            ],
+                            cx,
+                        ),
+                    ));
+                    if let Some(warning) = tls_warning(self.tls) {
+                        body = body.child(
+                            div()
+                                .id("source-tls-warning")
+                                .debug_selector(|| "source-tls-warning".into())
+                                .text_color(rgb(WARNING))
+                                .child(warning),
+                        );
+                    }
+                    if self.tls != TlsMode::Disabled {
+                        body = body
+                            .child(
+                                self.row(
+                                    "CA file (optional)",
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .id("source-ca")
+                                                .debug_selector(|| "source-ca".into())
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .child(self.inputs["source-ca"].clone()),
+                                        )
+                                        .child(self.ca_browse_button(cx)),
+                                ),
+                            )
+                            .child(self.path_field(
+                                "source-client-cert",
+                                "Client certificate",
+                                "source-client-cert-browse",
+                                cx,
+                            ))
+                            .child(self.path_field(
+                                "source-client-key",
+                                "Client key",
+                                "source-client-key-browse",
+                                cx,
+                            ));
+                    }
+                }
+            }
+            _ => {
+                body = body
+                    .child(
+                        self.row(
+                            "Schemas",
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(
+                                    self.button(
+                                        "source-schemas-all",
+                                        "All schemas",
+                                        self.schemas_all,
+                                        0,
+                                        cx,
+                                    )
+                                    .gap(px(7.0))
+                                    .child(check_indicator(self.schemas_all)),
+                                )
+                                .child(
+                                    self.button(
+                                        "source-schemas-selected",
+                                        "Selected schemas",
+                                        !self.schemas_all,
+                                        0,
+                                        cx,
+                                    )
+                                    .gap(px(7.0))
+                                    .child(check_indicator(!self.schemas_all)),
+                                ),
+                        ),
+                    )
+                    .child(
+                        div().text_color(rgb(MUTED)).child(
+                            "Display filtering only; this does not restrict database access.",
+                        ),
+                    );
+                body = body
+                    .child(self.field("source-schema-search", "Search", 0, cx))
+                    .child(self.schema_list(cx))
+                    .child(self.row(
+                        "",
+                        self.button("source-fetch-schemas", "Fetch schemas", false, 0, cx),
+                    ));
+                if !self.schemas_all {
+                    body = body.child(self.field("source-schemas", "Additional schemas", 0, cx))
+                        .child(div().text_color(rgb(MUTED)).child("Enter schema names separated by commas. An empty selection displays no schemas."));
+                }
+            }
         }
         body = body
-            .child(
-                self.row(
-                    "TLS",
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(self.button(
-                            "source-tls-verify",
-                            "Verify identity",
-                            self.tls == TlsMode::VerifyIdentity,
-                            17,
-                            cx,
-                        ))
-                        .child(self.button(
-                            "source-tls-disabled",
-                            "Disabled",
-                            self.tls == TlsMode::Disabled,
-                            18,
-                            cx,
-                        )),
-                ),
-            )
-            .when(self.tls == TlsMode::Disabled, |body| {
-                body.child(div().text_color(rgb(WARNING)).child(
-                    "Warning: database TLS is disabled. Traffic is not protected by database TLS.",
-                ))
-            })
-            .child(
-                self.row(
-                    "CA file (optional)",
-                    div()
-                        .w_full()
-                        .min_w(px(0.))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .id("source-ca")
-                                .debug_selector(|| "source-ca".into())
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .child(self.inputs["source-ca"].clone()),
-                        )
-                        .child(self.ca_browse_button(cx)),
-                ),
-            )
             .when_some(feedback, |body, feedback| {
                 let color = if feedback.starts_with("Connected:") {
                     SUCCESS
@@ -1030,8 +1927,64 @@ impl Render for SourceForm {
             }))
             .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
                 cx.stop_propagation();
-                this.cancel(cx);
+                if this.driver_open
+                    || this.authentication_open
+                    || this.ssh_combo_open
+                    || this.tls_open
+                {
+                    this.driver_open = false;
+                    this.authentication_open = false;
+                    this.ssh_combo_open = false;
+                    this.tls_open = false;
+                    cx.notify();
+                } else {
+                    this.cancel(cx);
+                }
             }))
+            .child(
+                div()
+                    .id("source-tab-bar")
+                    .debug_selector(|| "source-tab-bar".into())
+                    .h(px(34.))
+                    .flex_shrink_0()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .bg(rgb(HEADER))
+                    .child(
+                        div()
+                            .w(px(84.))
+                            .h_full()
+                            .flex_shrink_0()
+                            .window_control_area(gpui::WindowControlArea::Drag)
+                            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                                window.start_window_move()
+                            }),
+                    )
+                    .children(
+                        [
+                            ("source-tab-general", "General", 0),
+                            ("source-tab-options", "Options", 1),
+                            ("source-tab-ssh", "SSH/SSL", 2),
+                            ("source-tab-schemas", "Schemas", 3),
+                        ]
+                        .into_iter()
+                        .map(|(id, label, tab)| {
+                            self.button(id, label, self.active_tab == tab, 0, cx)
+                                .h(px(34.))
+                                .rounded(px(0.))
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .window_control_area(gpui::WindowControlArea::Drag)
+                            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                                window.start_window_move()
+                            }),
+                    ),
+            )
             .child(
                 div()
                     .id("source-form-scroll")
@@ -1068,6 +2021,37 @@ impl Render for SourceForm {
     }
 }
 
+fn check_indicator(checked: bool) -> Div {
+    div()
+        .size(px(18.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(rgb(if checked { FOCUS } else { MUTED }))
+        .bg(rgb(if checked { SELECTION } else { PANEL }))
+        .when(checked, |indicator| {
+            indicator.child(icon(Icon::Check, FOCUS))
+        })
+}
+
+fn tls_warning(mode: TlsMode) -> Option<&'static str> {
+    match mode {
+        TlsMode::Disabled => {
+            Some("Database TLS is disabled. Traffic is not protected by database TLS.")
+        }
+        TlsMode::Required => {
+            Some("TLS encrypts traffic but does not verify certificate trust or server identity.")
+        }
+        TlsMode::VerifyCa => {
+            Some("The certificate chain is verified, but the server hostname is not verified.")
+        }
+        TlsMode::VerifyIdentity => None,
+    }
+}
+
 fn optional(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
@@ -1084,57 +2068,7 @@ fn parse_port(value: &str, label: &str) -> Result<u16> {
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn empty_database_is_nullable_and_ports_are_checked() {
-        assert_eq!(optional(String::new()), None);
-        assert_eq!(optional("db".into()), Some("db".into()));
-        assert_eq!(parse_port(" 3306 ", "Database").unwrap(), 3306);
-        for value in ["", "zero", "0", "65536", "-1", "22.5"] {
-            assert!(parse_port(value, "Database").is_err());
-        }
-        let profile = SourceProfile::default();
-        assert_eq!(profile.database, None);
-        assert_eq!(profile.tls, TlsMode::VerifyIdentity);
-        assert!(profile.validate().is_ok());
-    }
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
-
-    #[test]
-    fn form_input_and_about_use_opaque_theme_tokens() {
-        for source in [
-            include_str!("source_form.rs"),
-            include_str!("input.rs"),
-            include_str!("about.rs"),
-        ] {
-            // User-owned color presets are data, not hardcoded semantic paint colors.
-            assert!(!source.contains(&["rgb(", "0x"].concat()));
-            assert!(!source.contains(&["rgba", "("].concat()));
-            assert!(!source.contains(&[".opacity", "("].concat()));
-        }
-        assert_eq!(CONTROL_HEIGHT, 28.0);
-        assert_eq!(CONTROL_RADIUS, 3.0);
-    }
-
-    #[gpui::test]
-    fn compact_footer_and_controls_fit_without_collapsing(cx: &mut TestAppContext) {
-        let (_, _, cx) = fixture(cx);
-        cx.simulate_resize(gpui::size(px(850.), px(600.)));
-        cx.run_until_parked();
-        let footer = cx.debug_bounds("source-form-footer").unwrap();
-        assert_eq!(footer.size.height, px(CONTROL_HEIGHT + 16.));
-        assert!(footer.bottom() <= px(600.));
-        for id in [
-            "source-engine-mysql",
-            "source-test",
-            "source-save",
-            "source-cancel",
-        ] {
-            let bounds = cx.debug_bounds(id).unwrap();
-            assert_eq!(bounds.size.height, px(CONTROL_HEIGHT), "{id}");
-            assert!(bounds.size.width > px(0.), "{id}");
-        }
-    }
 
     fn fixture(
         cx: &mut TestAppContext,
@@ -1149,8 +2083,7 @@ mod tests {
         let profile = model.read_with(cx, |model, _| model.form_profile.clone().unwrap());
         let (form, visual) =
             cx.add_window_view(|_, cx| SourceForm::new(profile, model.clone(), cx));
-        visual.simulate_resize(gpui::size(px(1000.), px(1100.)));
-        visual.update(|window, app| form.read(app).root_focus.focus(window));
+        visual.simulate_resize(gpui::size(px(850.), px(600.)));
         visual.refresh().unwrap();
         visual.run_until_parked();
         (form, model, visual)
@@ -1171,662 +2104,364 @@ mod tests {
         cx.run_until_parked();
     }
 
-    fn assert_inline_ports(cx: &mut VisualTestContext, host: &'static str, port: &'static str) {
-        let host = cx.debug_bounds(host).unwrap();
-        let port = cx.debug_bounds(port).unwrap();
-        assert!(host.size.width >= px(300.), "host width: {:?}", host);
-        assert!(port.left() > host.right());
-        assert_eq!(host.top(), port.top());
-        assert_eq!(host.size.height, px(28.));
-        assert_eq!(port.size.height, px(28.));
-        assert_eq!(port.size.width, px(96.));
+    #[test]
+    fn empty_database_is_nullable_and_ports_are_checked() {
+        assert_eq!(optional(String::new()), None);
+        assert_eq!(optional("db".into()), Some("db".into()));
+        assert_eq!(parse_port(" 3306 ", "Database").unwrap(), 3306);
+        for value in ["", "zero", "0", "65536", "-1", "22.5"] {
+            assert!(parse_port(value, "Database").is_err());
+        }
     }
 
-    #[gpui::test]
-    fn inline_ports_keep_native_visual_order_for_all_transports(cx: &mut TestAppContext) {
-        let (form, _, cx) = fixture(cx);
-        cx.simulate_resize(gpui::size(px(1040.), px(760.)));
-        for (transport, host, port) in [
-            (0, "source-host", "source-port"),
-            (1, "source-tunnel-host", "source-tunnel-port"),
-            (2, "source-proxy-host", "source-proxy-port"),
-            (3, "source-proxy-host", "source-https-port"),
+    #[test]
+    fn form_input_and_about_use_opaque_theme_tokens() {
+        for source in [
+            include_str!("source_form.rs"),
+            include_str!("input.rs"),
+            include_str!("about.rs"),
         ] {
-            form.update(cx, |form, cx| {
-                form.transport = transport;
-                cx.notify();
-            });
-            cx.run_until_parked();
-            assert_inline_ports(cx, host, port);
-            cx.update(|window, app| {
-                form.read(app).inputs[host]
-                    .read(app)
-                    .focus_handle()
-                    .focus(window)
-            });
-            cx.simulate_keystrokes("tab");
-            assert_input_focus(&form, cx, port);
-            cx.simulate_keystrokes("shift-tab");
-            assert_input_focus(&form, cx, host);
+            assert!(!source.contains(&["rgb(", "0x"].concat()));
+            assert!(!source.contains(&["rgba", "("].concat()));
+            assert!(!source.contains(&[".opacity", "("].concat()));
         }
     }
 
     #[gpui::test]
-    fn expanding_keys_and_draft_edits_do_not_shrink_fields_or_footer(cx: &mut TestAppContext) {
+    fn tabs_are_compact_and_keep_drafts_and_footer(cx: &mut TestAppContext) {
         let (form, _, cx) = fixture(cx);
-        for (width, height) in [(1040., 760.), (850., 600.)] {
-            cx.simulate_resize(gpui::size(px(width), px(height)));
-            form.update(cx, |form, cx| {
-                form.transport = 1;
-                form.key_picker_open = false;
-                cx.notify();
-            });
-            cx.run_until_parked();
-            let before_host = cx.debug_bounds("source-host").unwrap();
-            let before_ssh = cx.debug_bounds("source-tunnel-user").unwrap();
-            let before_footer = cx.debug_bounds("source-form-footer").unwrap();
-            assert!(before_ssh.size.width >= px(420.));
-            for value in ["a".repeat(400), "short".into()] {
-                for id in [
-                    "source-host",
-                    "source-tunnel-user",
-                    "source-tunnel-key",
-                    "source-password",
-                ] {
-                    set(&form, cx, id, &value);
-                }
-                set(&form, cx, "source-color", "#123456");
-                form.update(cx, |form, cx| {
-                    form.save_password = !form.save_password;
-                    form.key_picker_open = true;
-                    // Inject metadata, never discover the developer's ~/.ssh files.
-                    form.ssh_keys = (0..12)
-                        .map(|index| dalan_app::ssh_keys::SshKeyCandidate {
-                            name: format!("key-{index}-{}", "long-name".repeat(50)),
-                            path: format!("/tmp/dalan-layout/key-{index}").into(),
-                        })
-                        .collect();
-                    cx.notify();
-                });
-                cx.run_until_parked();
-                assert_inline_ports(cx, "source-host", "source-port");
-                assert_inline_ports(cx, "source-tunnel-host", "source-tunnel-port");
-                assert_eq!(
-                    cx.debug_bounds("source-host").unwrap().size,
-                    before_host.size
-                );
-                assert_eq!(
-                    cx.debug_bounds("source-tunnel-user").unwrap().size,
-                    before_ssh.size
-                );
-                assert_eq!(before_ssh.size.height, px(28.));
-                let list = cx.debug_bounds("ssh-key-list").unwrap();
-                assert_eq!(list.size.height, px(150.));
-                for id in [
-                    "ssh-key-0",
-                    "ssh-key-1",
-                    "ssh-key-2",
-                    "ssh-key-3",
-                    "ssh-key-4",
-                    "ssh-key-5",
-                    "ssh-key-6",
-                    "ssh-key-7",
-                    "ssh-key-8",
-                    "ssh-key-9",
-                    "ssh-key-10",
-                    "ssh-key-11",
-                ] {
-                    let key = cx.debug_bounds(id).unwrap();
-                    assert_eq!(key.size.height, px(30.));
-                    assert!(key.right() <= list.right());
-                }
-                let body = cx.debug_bounds("source-form-body").unwrap();
-                let scroll = cx.debug_bounds("source-form-scroll").unwrap();
-                assert!(body.size.height > scroll.size.height);
-                assert_eq!(body.size.width, px(720.));
-                let footer = cx.debug_bounds("source-form-footer").unwrap();
-                assert_eq!(footer.size.height, before_footer.size.height);
-                assert_eq!(footer.bottom(), px(height));
-                for id in ["source-test", "source-save", "source-cancel"] {
-                    let button = cx.debug_bounds(id).unwrap();
-                    assert!(button.top() >= footer.top());
-                    assert!(button.bottom() <= footer.bottom());
-                }
-                assert!(cx.debug_bounds("source-form-header").is_none());
+        set(&form, cx, "source-name", "Development");
+        for id in [
+            "source-tab-options",
+            "source-tab-ssh",
+            "source-tab-schemas",
+            "source-tab-general",
+        ] {
+            click(cx, id);
+            assert_eq!(
+                cx.debug_bounds("source-tab-bar").unwrap().size.height,
+                px(34.)
+            );
+            assert_eq!(cx.debug_bounds(id).unwrap().size.height, px(34.));
+            assert!(cx.debug_bounds("source-name").is_some());
+            let footer = cx.debug_bounds("source-form-footer").unwrap();
+            assert_eq!(footer.size.height, px(CONTROL_HEIGHT + 16.));
+            assert!(footer.bottom() <= px(600.));
+            assert_eq!(
+                form.read_with(cx, |form, app| form.value("source-name", app)),
+                "Development"
+            );
+        }
+        assert_eq!(form.read_with(cx, |form, _| form.active_tab), 0);
+        assert!(cx.debug_bounds("source-tunnel-host").is_none());
+    }
+
+    #[gpui::test]
+    fn driver_and_authentication_are_keyboard_operable_popovers(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        assert!(cx.debug_bounds("source-engine-mariadb").is_none());
+        click(cx, "source-driver");
+        click(cx, "source-engine-mariadb");
+        assert_eq!(form.read_with(cx, |form, _| form.engine), DbEngine::MariaDb);
+        assert!(!form.read_with(cx, |form, _| form.driver_open));
+        cx.update(|window, app| form.read(app).controls["source-driver"].focus(window));
+        cx.simulate_keystrokes("space");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("source-engine-mysql").is_some());
+        click(cx, "source-engine-mysql");
+        set(&form, cx, "source-password", "fixture-secret");
+        click(cx, "source-save-password");
+        click(cx, "source-authentication");
+        click(cx, "source-auth-none");
+        assert_eq!(
+            form.read_with(cx, |form, _| form.authentication),
+            Authentication::NoAuth
+        );
+        let draft = cx.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(draft.authentication, Authentication::NoAuth);
+        assert_eq!(draft.username, "");
+        assert!(!draft.save_password);
+        assert_eq!(cx.update(|_, app| form.read(app).password(app)), "");
+    }
+
+    #[gpui::test]
+    fn generated_url_and_manual_override_use_backend_canonicalization(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        set(&form, cx, "source-host", "::1");
+        set(&form, cx, "source-database", "my database");
+        assert_eq!(form.read_with(cx, |form, _| form.endpoint_mode), 0);
+        let generated = form.read_with(cx, |form, app| form.value("source-url", app));
+        assert!(generated.contains("[::1]:3306"));
+        assert!(generated.contains("my%20database"));
+        set(&form, cx, "source-url", "mysql://db.example:3307/inventory");
+        assert_eq!(form.read_with(cx, |form, _| form.endpoint_mode), 2);
+
+        set(&form, cx, "source-port", "not active");
+        let draft = cx.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(
+            draft.endpoint,
+            ConnectionMode::UrlOnly {
+                url: "mysql://db.example:3307/inventory".into()
             }
-        }
+        );
     }
 
     #[gpui::test]
-    fn default_draft_and_native_field_edits(cx: &mut TestAppContext) {
-        let (form, model, cx) = fixture(cx);
-        let profile = cx.update(|_, app| form.read(app).profile(app).unwrap());
-        assert_eq!(profile.host, "localhost");
-        assert_eq!(profile.port, 3306);
-        assert_eq!(profile.database, None);
-        assert_eq!(profile.ca_path, None);
-        assert!(model.read_with(cx, |model, _| model.form_open));
-        click(cx, "source-host");
-        cx.simulate_keystrokes("cmd-a");
-        cx.simulate_input("db.internal");
-        for (id, value) in [
-            ("source-name", "  Development  "),
-            ("source-port", "3307"),
-            ("source-user", "reader"),
-            ("source-database", "  inventory  "),
-        ] {
-            set(&form, cx, id, value);
-        }
-        let profile = cx.update(|_, app| form.read(app).profile(app).unwrap());
-        assert_eq!(profile.host, "db.internal");
-        assert_eq!(profile.port, 3307);
-        assert_eq!(profile.name, "Development");
-        assert_eq!(profile.username, "reader");
-        assert_eq!(profile.database.as_deref(), Some("inventory"));
-        assert!(model.read_with(cx, |model, _| model.profiles.is_empty()));
+    fn unix_socket_is_explicitly_local_and_validated(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        click(cx, "source-tab-ssh");
+        click(cx, "source-http");
+        click(cx, "source-tab-general");
+        click(cx, "source-mode-socket");
+        assert!(cx.debug_bounds("source-socket").is_some());
+
+        set(&form, cx, "source-socket", "/tmp/mysql.sock");
+        let draft = cx.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(draft.transport, Transport::Direct);
+        assert_eq!(draft.tls, TlsMode::Disabled);
+        assert_eq!(
+            draft.endpoint,
+            ConnectionMode::UnixSocket {
+                path: "/tmp/mysql.sock".into()
+            }
+        );
+        click(cx, "source-tab-ssh");
+        assert_eq!(form.read_with(cx, |form, _| form.endpoint_mode), 1);
     }
 
     #[gpui::test]
-    fn color_constructor_preserves_existing_profile_and_ssh_fields(cx: &mut TestAppContext) {
+    fn options_and_schema_selections_round_trip_and_validate(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        click(cx, "source-tab-options");
+        set(&form, cx, "source-connect-timeout", "60");
+        set(&form, cx, "source-query-timeout", "120");
+        set(&form, cx, "source-page-size", "200");
+        click(cx, "source-tab-schemas");
+        click(cx, "source-schemas-selected");
+        set(&form, cx, "source-schemas", "inventory, analytics");
+        let draft = cx.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(draft.options.page_size, 200);
+        assert_eq!(draft.options.connect_timeout_seconds, 60);
+        assert_eq!(
+            draft.schemas,
+            SchemaSelection::Selected(vec!["analytics".into(), "inventory".into()])
+        );
+        set(&form, cx, "source-page-size", "201");
+        assert!(cx.update(|_, app| form.read(app).profile(app)).is_err());
+    }
+
+    #[gpui::test]
+    fn constructor_preserves_appended_fields_and_ssh_config(cx: &mut TestAppContext) {
         let profile = SourceProfile {
-            color: Some("#C7AAF5".into()),
             transport: Transport::Ssh {
                 host: "bastion.internal".into(),
                 port: 2222,
-                user: "tunnel-user".into(),
+                user: "tunnel".into(),
                 identity_file: Some("/fixture/identity".into()),
-                known_hosts_file: Some("/fixture/known_hosts".into()),
+                known_hosts_file: None,
+                parse_config: true,
             },
+            ssl_client_cert: Some("/fixture/cert.pem".into()),
+            ssl_client_key: Some("/fixture/key.pem".into()),
+            ssh_configuration_id: Some("9e0cb661-3f23-4c1f-945a-cda90e876e6b".into()),
+            schemas: SchemaSelection::Selected(vec!["inventory".into()]),
             ..SourceProfile::default()
         };
         let model = cx.new(|_| SourceModel::for_tests(vec![profile.clone()]));
         let (form, visual) =
             cx.add_window_view(|_, cx| SourceForm::new(profile.clone(), model.clone(), cx));
         assert_eq!(
-            form.read_with(visual, |form, app| form.inputs["source-known-hosts"]
-                .read(app)
-                .value()),
-            "/fixture/known_hosts"
-        );
-        // Validate the round trip without touching a real known_hosts file.
-        set(&form, visual, "source-known-hosts", "");
-        let draft = visual.update(|_, app| form.read(app).profile(app).unwrap());
-        assert_eq!(draft.color, profile.color);
-        let mut expected_transport = profile.transport;
-        if let Transport::Ssh {
-            known_hosts_file, ..
-        } = &mut expected_transport
-        {
-            *known_hosts_file = None;
-        }
-        assert_eq!(draft.transport, expected_transport);
-        assert_eq!(
-            form.read_with(visual, |form, app| form.inputs["source-color"]
-                .read(app)
-                .value()),
-            "#C7AAF5"
+            visual.update(|_, app| form.read(app).profile(app).unwrap()),
+            profile
         );
     }
 
     #[gpui::test]
-    fn color_presets_manual_validation_and_cancel_are_draft_only(cx: &mut TestAppContext) {
+    fn native_picker_rejects_stale_paths_and_preserves_manual_edits(cx: &mut TestAppContext) {
         let (form, model, cx) = fixture(cx);
-        assert_eq!(
-            cx.update(|_, app| form.read(app).profile(app).unwrap().color),
-            None
-        );
-        let original = form.read_with(cx, |form, _| form.original.clone());
-        for (id, _, hex, _) in COLOR_PRESETS {
-            model.update(cx, |model, cx| {
-                model.form_feedback = Some("Previous test result".into());
-                cx.notify();
-            });
-            click(cx, id);
-            assert_eq!(
-                cx.update(|_, app| form.read(app).profile(app).unwrap().color),
-                optional(hex.to_owned())
-            );
-            assert!(model.read_with(cx, |model, _| model.form_feedback.is_none()));
-        }
-        // Preset handles survive rerenders and support keyboard activation.
-        cx.simulate_keystrokes("shift-tab enter");
-        assert_eq!(
-            cx.update(|_, app| form
-                .read(app)
-                .profile(app)
-                .unwrap()
-                .color
-                .as_deref()
-                .map(str::to_owned)),
-            Some("#EE9296".into())
-        );
-        set(&form, cx, "source-color", "  #12aBcF  ");
-        assert_eq!(
-            cx.update(|_, app| form.read(app).profile(app).unwrap().color),
-            Some("#12aBcF".into())
-        );
-        model.update(cx, |model, cx| {
-            model.form_feedback = Some("Previous test result".into());
-            cx.notify();
+        click(cx, "source-tab-ssh");
+        set(&form, cx, "source-ca", "/tmp/newer.pem");
+        form.update_in(cx, |form, window, cx| {
+            form.finish_ca_pick(
+                Ok(Some(vec!["/tmp/selected.pem".into()])),
+                "/tmp/older.pem".into(),
+                window,
+                cx,
+            )
         });
-        set(&form, cx, "source-color", "#xyz");
-        assert!(model.read_with(cx, |model, _| model.form_feedback.is_none()));
-        assert!(cx.update(|_, app| form.read(app).profile(app).is_err()));
-        click(cx, "source-test");
-        model.read_with(cx, |model, _| {
-            assert!(model.form_feedback.is_some());
-            assert!(!model.form_busy);
-        });
-        click(cx, "source-color-default");
         assert_eq!(
-            form.read_with(cx, |form, app| form.inputs["source-color"]
-                .read(app)
-                .value()),
-            ""
+            form.read_with(cx, |form, app| form.value("source-ca", app)),
+            "/tmp/newer.pem"
         );
-        set(&form, cx, "source-color", "   ");
-        assert_eq!(
-            cx.update(|_, app| form.read(app).profile(app).unwrap().color),
-            None
-        );
-        set(&form, cx, "source-color", "#8AB4F8");
-        model.update(cx, |model, cx| {
-            model.saving = true;
-            cx.notify();
-        });
-        click(cx, "source-color-red");
-        cx.simulate_keystrokes("space");
-        set(&form, cx, "source-color", "#E7BD6A");
-        assert_eq!(
-            cx.update(|_, app| form.read(app).profile(app).unwrap().color),
-            Some("#8AB4F8".into())
-        );
-        model.update(cx, |model, cx| {
-            model.saving = false;
-            cx.notify();
-        });
-        click(cx, "source-cancel");
-        assert!(!model.read_with(cx, |model, _| model.form_open));
-        assert!(model.read_with(cx, |model, _| model.profiles.is_empty()));
-        assert_eq!(
-            form.read_with(cx, |form, _| form.original.color.clone()),
-            original.color
-        );
-    }
-
-    #[gpui::test]
-    fn engine_transport_tls_and_credential_controls(cx: &mut TestAppContext) {
-        let (form, _, cx) = fixture(cx);
-        click(cx, "source-engine-mariadb");
-        assert_eq!(form.read_with(cx, |form, _| form.engine), DbEngine::MariaDb);
-        click(cx, "source-engine-mysql");
-        click(cx, "source-ssh");
-        assert!(cx.debug_bounds("source-tunnel-host").is_some());
-        set(&form, cx, "source-tunnel-user", "tunnel-user");
-        assert!(matches!(
-            cx.update(|_, app| form.read(app).profile(app).unwrap().transport),
-            Transport::Ssh { port: 22, .. }
-        ));
-        click(cx, "source-http");
-        assert!(matches!(
-            cx.update(|_, app| form.read(app).profile(app).unwrap().transport),
-            Transport::HttpConnect {
-                port: 8080,
-                https: false,
-                ..
-            }
-        ));
-        click(cx, "source-https");
-        assert!(matches!(
-            cx.update(|_, app| form.read(app).profile(app).unwrap().transport),
-            Transport::HttpConnect {
-                port: 443,
-                https: true,
-                ..
-            }
-        ));
-        click(cx, "source-direct");
-        click(cx, "source-tls-disabled");
-        assert_eq!(form.read_with(cx, |form, _| form.tls), TlsMode::Disabled);
-        click(cx, "source-tls-verify");
-        click(cx, "source-save-password");
-        assert!(form.read_with(cx, |form, _| form.save_password));
-        click(cx, "source-save-password");
-        let profile = cx.update(|_, app| form.read(app).profile(app).unwrap());
-        assert_eq!(profile.engine, DbEngine::MySql);
-        assert_eq!(profile.tls, TlsMode::VerifyIdentity);
-        assert_eq!(profile.transport, Transport::Direct);
-        assert!(!profile.save_password);
-    }
-
-    #[gpui::test]
-    fn invalid_test_and_unavailable_save_are_local_and_cancel_clears_secret(
-        cx: &mut TestAppContext,
-    ) {
-        let (form, model, cx) = fixture(cx);
-        set(&form, cx, "source-password", "session-only-secret");
-        for value in ["0", "65536", "not-a-port"] {
-            set(&form, cx, "source-port", value);
-            click(cx, "source-test");
-            model.read_with(cx, |model, _| {
-                assert!(
-                    model
-                        .form_feedback
-                        .as_deref()
-                        .unwrap()
-                        .contains("Database port")
-                );
-                assert!(!model.form_busy);
-                assert!(!model.busy);
-            });
-        }
-        set(&form, cx, "source-port", "3306");
-        click(cx, "source-save-password");
-        click(cx, "source-save");
-        model.read_with(cx, |model, _| {
-            assert_eq!(
-                model.form_feedback.as_deref(),
-                Some("Profile storage is unavailable; nothing was saved.")
-            );
-            assert!(model.form_open);
-            assert!(!model.saving);
-            assert!(model.profiles.is_empty());
-        });
-        click(cx, "source-cancel");
-        assert_eq!(cx.update(|_, app| form.read(app).password(app)), "");
-        model.read_with(cx, |model, _| {
-            assert!(!model.form_open);
-            assert!(model.form_profile.is_none());
-            assert!(model.form_feedback.is_none());
-        });
-    }
-
-    fn assert_input_focus(form: &Entity<SourceForm>, cx: &mut VisualTestContext, id: &'static str) {
-        cx.run_until_parked();
         assert!(
-            cx.update(|window, app| {
-                form.read(app).inputs[id]
-                    .read(app)
-                    .focus_handle()
-                    .is_focused(window)
-            }),
-            "expected focus on {id}"
+            model
+                .read_with(cx, |model, _| model.form_feedback.clone().unwrap())
+                .contains("edited")
+        );
+        form.update_in(cx, |form, window, cx| {
+            form.finish_path_pick(
+                "source-client-cert",
+                Ok(Some(vec!["/tmp/client.pem".into()])),
+                String::new(),
+                window,
+                cx,
+            )
+        });
+        assert_eq!(
+            form.read_with(cx, |form, app| form.value("source-client-cert", app)),
+            "/tmp/client.pem"
         );
     }
 
     #[gpui::test]
-    fn tab_and_shift_tab_follow_inputs_without_duplicate_stops(cx: &mut TestAppContext) {
+    fn ssh_key_picker_and_native_inline_ports_remain_functional(cx: &mut TestAppContext) {
         let (form, _, cx) = fixture(cx);
-        let fields = [
-            "source-name",
-            "source-color",
-            "source-host",
-            "source-port",
-            "source-user",
-            "source-password",
-            "source-database",
-        ];
-        click(cx, fields[0]);
-        for (i, id) in fields.iter().enumerate() {
-            assert_input_focus(&form, cx, id);
-            cx.simulate_keystrokes("cmd-a");
-            cx.simulate_input(&format!("field-{i}"));
-            // Rerendering must not replace the focused handle.
-            form.update(cx, |_, cx| cx.notify());
-            cx.run_until_parked();
-            assert_input_focus(&form, cx, id);
-            if i + 1 < fields.len() {
-                cx.simulate_keystrokes("tab");
-                if *id == "source-color" {
-                    for (preset, _, _, _) in COLOR_PRESETS {
-                        assert!(cx.update(|window, app| {
-                            form.read(app).controls[preset].is_focused(window)
-                        }));
-                        cx.simulate_keystrokes("tab");
-                    }
-                }
-                if *id == "source-password" {
-                    assert!(cx.update(|window, app| {
-                        form.read(app).controls["source-save-password"].is_focused(window)
-                    }));
-                    cx.simulate_keystrokes("tab");
-                }
-            }
-        }
-        for id in fields.iter().rev().skip(1) {
-            cx.simulate_keystrokes("shift-tab");
-            if *id == "source-color" {
-                for (preset, _, _, _) in COLOR_PRESETS.into_iter().rev() {
-                    assert!(cx.update(|window, app| {
-                        form.read(app).controls[preset].is_focused(window)
-                    }));
-                    cx.simulate_keystrokes("shift-tab");
-                }
-            }
-            if *id == "source-password" {
-                assert!(cx.update(|window, app| {
-                    form.read(app).controls["source-save-password"].is_focused(window)
-                }));
-                cx.simulate_keystrokes("shift-tab");
-            }
-            assert_input_focus(&form, cx, id);
-        }
-        for (i, id) in fields.iter().enumerate() {
-            assert_eq!(
-                form.read_with(cx, |form, app| form.inputs[id].read(app).value()),
-                format!("field-{i}")
-            );
-        }
-    }
-
-    #[gpui::test]
-    fn conditional_transport_inputs_follow_visual_order(cx: &mut TestAppContext) {
-        let (form, _, cx) = fixture(cx);
-        click(cx, "source-ssh");
-        let fields = [
-            "source-tunnel-host",
-            "source-tunnel-port",
-            "source-tunnel-user",
-            "source-tunnel-key",
-            "source-known-hosts",
-        ];
-        click(cx, fields[0]);
-        for id in fields.iter().skip(1) {
-            cx.simulate_keystrokes("tab");
-            assert_input_focus(&form, cx, id);
-        }
-        for id in fields.iter().rev().skip(1) {
-            cx.simulate_keystrokes("shift-tab");
-            assert_input_focus(&form, cx, id);
-        }
-        click(cx, "source-direct");
-        assert_eq!(form.read_with(cx, |form, _| form.transport), 0);
-        click(cx, "source-database");
-        // Transport and TLS controls remain keyboard-accessible, but hidden SSH
-        // fields are not part of the tab sequence.
-        for _ in 0..7 {
-            cx.simulate_keystrokes("tab");
-        }
-        assert_input_focus(&form, cx, "source-ca");
-        click(cx, "source-http");
-        click(cx, "source-proxy-host");
-        cx.simulate_keystrokes("tab");
-        assert_input_focus(&form, cx, "source-proxy-port");
-        click(cx, "source-https");
-        click(cx, "source-proxy-host");
-        cx.simulate_keystrokes("tab");
-        assert_input_focus(&form, cx, "source-https-port");
-    }
-
-    #[gpui::test]
-    fn keyboard_controls_and_escape_belong_to_form(cx: &mut TestAppContext) {
-        let (form, model, cx) = fixture(cx);
-        cx.simulate_keystrokes("tab");
-        assert!(cx.update(|window, app| {
-            form.read(app).controls["source-engine-mysql"].is_focused(window)
-        }));
-        cx.simulate_keystrokes("tab space");
-        assert_eq!(form.read_with(cx, |form, _| form.engine), DbEngine::MariaDb);
-        set(&form, cx, "source-password", "discard-me");
-        cx.simulate_keystrokes("escape");
-        assert!(!model.read_with(cx, |model, _| model.form_open));
-        assert_eq!(cx.update(|_, app| form.read(app).password(app)), "");
-    }
-    #[gpui::test]
-    fn key_picker_selects_identity_and_agent_without_reading_user_files(cx: &mut TestAppContext) {
-        let (form, _, cx) = fixture(cx);
+        click(cx, "source-tab-ssh");
         click(cx, "source-ssh");
         form.update(cx, |form, cx| {
             form.key_picker_open = true;
             form.ssh_keys = vec![dalan_app::ssh_keys::SshKeyCandidate {
-                name: "work key.pem".into(),
-                path: std::path::PathBuf::from("/tmp/dalan-test/work key.pem"),
+                name: "fixture-key".into(),
+                path: "/tmp/fixture-key".into(),
             }];
             cx.notify();
         });
         cx.run_until_parked();
         click(cx, "ssh-key-0");
         assert_eq!(
-            form.read_with(cx, |form, app| form.inputs["source-tunnel-key"]
-                .read(app)
-                .value()),
-            "/tmp/dalan-test/work key.pem"
+            form.read_with(cx, |form, app| form.value("source-tunnel-key", app)),
+            "/tmp/fixture-key"
         );
-        assert_input_focus(&form, cx, "source-tunnel-key");
-        assert!(!form.read_with(cx, |form, _| form.key_picker_open));
+        cx.update(|window, app| {
+            form.read(app).inputs["source-tunnel-host"]
+                .read(app)
+                .focus_handle()
+                .focus(window)
+        });
+        cx.simulate_keystrokes("tab");
+        assert!(cx.update(|window, app| {
+            form.read(app).inputs["source-tunnel-port"]
+                .read(app)
+                .focus_handle()
+                .is_focused(window)
+        }));
+        set(&form, cx, "source-password", "discard-me");
+        cx.simulate_keystrokes("escape");
+        assert_eq!(cx.update(|_, app| form.read(app).password(app)), "");
+    }
+    #[gpui::test]
+    fn ssh_manager_callback_updates_only_draft_and_clears_feedback(cx: &mut TestAppContext) {
+        let (form, model, cx) = fixture(cx);
+        let profile = SshProfile {
+            name: "Production bastion".into(),
+            host: "jump.example".into(),
+            port: 2222,
+            user: "operator".into(),
+            parse_config: true,
+            ..SshProfile::default()
+        };
+        let before = model.read_with(cx, |model, _| model.profiles.clone());
+        model.update(cx, |model, _| {
+            model.form_feedback = Some("obsolete result".into())
+        });
         form.update(cx, |form, cx| {
-            form.key_picker_open = true;
-            cx.notify();
+            form.set_ssh_configuration(profile.clone(), cx)
         });
         cx.run_until_parked();
-        let agent = cx.debug_bounds("ssh-use-agent").unwrap();
-        cx.simulate_mouse_down(
-            agent.center(),
-            gpui::MouseButton::Left,
-            Modifiers::default(),
-        );
-        cx.simulate_mouse_up(
-            agent.center(),
-            gpui::MouseButton::Left,
-            Modifiers::default(),
-        );
-        cx.run_until_parked();
+        let draft = cx.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(draft.transport, profile.transport());
+        assert_eq!(draft.ssh_configuration_id, Some(profile.id));
+        assert!(model.read_with(cx, |model, _| model.form_feedback.is_none()));
         assert_eq!(
-            form.read_with(cx, |form, app| form.inputs["source-tunnel-key"]
-                .read(app)
-                .value()),
-            ""
+            model.read_with(cx, |model, _| model.profiles.clone()),
+            before
         );
-        assert_input_focus(&form, cx, "source-tunnel-key");
-    }
-    #[gpui::test]
-    fn checkbox_is_inline_clickable_and_keyboard_operable(cx: &mut TestAppContext) {
-        let (form, model, cx) = fixture(cx);
-        let password = cx.debug_bounds("source-password").unwrap();
-        let checkbox = cx.debug_bounds("source-save-password").unwrap();
-        assert!(checkbox.origin.x >= password.origin.x + password.size.width);
-        assert!((f32::from(checkbox.origin.y) - f32::from(password.origin.y)).abs() <= 2.0);
-        assert_eq!(
-            cx.debug_bounds("keychain-checkbox-indicator").unwrap().size,
-            gpui::size(px(18.0), px(18.0))
-        );
-        assert!(cx.debug_bounds("keychain-checkbox-label").is_some());
-        assert!(!form.read_with(cx, |form, _| form.save_password));
-        click(cx, "keychain-checkbox-label");
-        assert!(form.read_with(cx, |form, _| form.save_password));
-        assert!(cx.update(|_, app| form.read(app).profile(app).unwrap().save_password));
-        cx.simulate_keystrokes("space");
-        assert!(!form.read_with(cx, |form, _| form.save_password));
-        cx.simulate_keystrokes("enter");
-        assert!(form.read_with(cx, |form, _| form.save_password));
-        model.update(cx, |model, cx| {
-            model.saving = true;
-            cx.notify();
-        });
-        click(cx, "source-save-password");
-        cx.simulate_keystrokes("space");
-        assert!(form.read_with(cx, |form, _| form.save_password));
+        assert_eq!(form.read_with(cx, |form, _| form.ssh_profiles.len()), 1);
     }
 
     #[gpui::test]
-    fn ca_picked_path_stays_editable_and_cancel_preserves_manual_path(cx: &mut TestAppContext) {
+    fn ssh_profile_dropdown_selects_exact_metadata_and_custom_retains_transport(
+        cx: &mut TestAppContext,
+    ) {
         let (form, _, cx) = fixture(cx);
-        let options = SourceForm::ca_picker_options();
-        assert!(options.files && !options.directories && !options.multiple);
-        assert!(cx.debug_bounds("source-ca-browse").is_some());
-        let old = "/tmp/manual root.pem";
-        let picked = "/tmp/selected root.pem";
-        set(&form, cx, "source-ca", old);
-        form.update(cx, |form, _| form.ca_picker_open = true);
-        cx.update(|window, app| {
-            form.update(app, |form, cx| {
-                form.finish_ca_pick(Ok(Some(vec![picked.into()])), old.into(), window, cx)
-            })
+        let profile = SshProfile {
+            name: "Fixture SSH".into(),
+            host: "jump.example".into(),
+            user: "operator".into(),
+            port: 2200,
+            parse_config: true,
+            ..SshProfile::default()
+        };
+        form.update(cx, |form, cx| {
+            form.ssh_profiles = vec![profile.clone()];
+            cx.notify();
         });
-        assert_eq!(
-            form.read_with(cx, |form, app| form.inputs["source-ca"].read(app).value()),
-            picked
-        );
-        assert_input_focus(&form, cx, "source-ca");
-        cx.simulate_keystrokes("cmd-a");
-        cx.simulate_input(old);
-        assert_eq!(
-            form.read_with(cx, |form, app| form.inputs["source-ca"].read(app).value()),
-            old
-        );
-        cx.update(|window, app| {
-            form.update(app, |form, cx| {
-                form.finish_ca_pick(Ok(None), old.into(), window, cx)
-            })
-        });
-        assert_eq!(
-            form.read_with(cx, |form, app| form.inputs["source-ca"].read(app).value()),
-            old
-        );
-        assert!(!form.read_with(cx, |form, _| form.ca_picker_open));
+        click(cx, "source-tab-ssh");
+        click(cx, "source-ssh");
+        click(cx, "source-ssh-profile");
+        click(cx, "source-ssh-profile-0");
+        let draft = cx.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(draft.transport, profile.transport());
+        assert_eq!(draft.ssh_configuration_id, Some(profile.id.clone()));
+        assert!(form.read_with(cx, |form, _| form.ssh_selected.is_some()));
+        click(cx, "source-ssh-profile");
+        click(cx, "source-ssh-custom");
+        let custom = cx.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(custom.ssh_configuration_id, None);
+        assert_eq!(custom.transport, profile.transport());
+        assert!(cx.debug_bounds("source-tunnel-host").is_some());
     }
 
     #[gpui::test]
-    fn ca_picker_rejects_stale_selection_and_reports_dialog_errors(cx: &mut TestAppContext) {
+    fn cached_schema_checkboxes_preserve_comma_names_search_and_empty_selection(
+        cx: &mut TestAppContext,
+    ) {
         let (form, model, cx) = fixture(cx);
-        set(&form, cx, "source-ca", "/tmp/newer.pem");
-        cx.update(|window, app| {
-            form.update(app, |form, cx| {
-                form.finish_ca_pick(
-                    Ok(Some(vec!["/tmp/picked.pem".into()])),
-                    "/tmp/old.pem".into(),
-                    window,
-                    cx,
-                )
-            })
-        });
-        assert_eq!(
-            form.read_with(cx, |form, app| form.inputs["source-ca"].read(app).value()),
-            "/tmp/newer.pem"
-        );
-        assert!(model.read_with(cx, |model, _| {
-            model.form_feedback.as_ref().unwrap().contains("edited")
-        }));
-        cx.update(|window, app| {
-            form.update(app, |form, cx| {
-                form.finish_ca_pick(
-                    Err(anyhow::anyhow!("fixture")),
-                    "/tmp/newer.pem".into(),
-                    window,
-                    cx,
-                )
-            })
-        });
-        assert!(model.read_with(cx, |model, _| {
+        let id = form.read_with(cx, |form, _| form.original.id.clone());
+        model.update(cx, |model, cx| {
             model
-                .form_feedback
-                .as_ref()
-                .unwrap()
-                .contains("enter its path manually")
-        }));
+                .tree
+                .databases
+                .insert(id, vec!["analytics".into(), "name,with,commas".into()]);
+            cx.notify();
+        });
+        click(cx, "source-tab-schemas");
+        set(&form, cx, "source-schema-search", "NAME,WITH");
         assert_eq!(
-            form.read_with(cx, |form, app| form.inputs["source-ca"].read(app).value()),
-            "/tmp/newer.pem"
+            cx.update(|_, app| form.read(app).filtered_schemas(app)),
+            vec!["name,with,commas"]
         );
+        click(cx, "source-schemas-selected");
+        click(cx, "source-schema-0");
+        assert_eq!(
+            cx.update(|_, app| form.read(app).profile(app).unwrap().schemas),
+            SchemaSelection::Selected(vec!["name,with,commas".into()])
+        );
+        // The row is tab-focusable and shares the same Enter/Space callback.
+        click(cx, "source-schema-0");
+        assert_eq!(
+            cx.update(|_, app| form.read(app).profile(app).unwrap().schemas),
+            SchemaSelection::Selected(vec![])
+        );
+        click(cx, "source-schemas-all");
+        assert_eq!(
+            cx.update(|_, app| form.read(app).profile(app).unwrap().schemas),
+            SchemaSelection::All
+        );
+    }
+    #[test]
+    fn tls_mode_warnings_explain_verification_boundaries() {
+        assert!(
+            tls_warning(TlsMode::Required)
+                .unwrap()
+                .contains("does not verify")
+        );
+        assert!(
+            tls_warning(TlsMode::VerifyCa)
+                .unwrap()
+                .contains("hostname is not verified")
+        );
+        assert!(tls_warning(TlsMode::Disabled).unwrap().contains("disabled"));
+        assert!(tls_warning(TlsMode::VerifyIdentity).is_none());
     }
 }

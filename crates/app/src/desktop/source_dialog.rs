@@ -96,8 +96,9 @@ pub(super) fn show(model: Entity<SourceModel>, cx: &mut App) {
             window_min_size: Some(size(px(780.0), px(560.0))),
             window_background: gpui::WindowBackgroundAppearance::Opaque,
             titlebar: Some(TitlebarOptions {
-                title: Some("Data Sources · Dalan".into()),
-                ..Default::default()
+                title: Some("".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(gpui::point(px(12.0), px(12.0))),
             }),
             ..Default::default()
         },
@@ -115,7 +116,7 @@ pub(super) fn show(model: Entity<SourceModel>, cx: &mut App) {
 mod tests {
     use super::*;
     use dalan_drivers::sources::{DbEngine, SourceProfile, TlsMode};
-    use gpui::{TestAppContext, VisualTestContext, WindowHandle};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, WindowHandle};
 
     fn open(
         model: &Entity<SourceModel>,
@@ -149,6 +150,174 @@ mod tests {
             assert!(model.form_profile.is_none());
             assert!(!model.form_busy);
         });
+    }
+
+    fn click(visual: &mut VisualTestContext, id: &'static str) {
+        visual.run_until_parked();
+        let bounds = visual
+            .debug_bounds(id)
+            .unwrap_or_else(|| panic!("missing {id}"));
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    fn edit(visual: &mut VisualTestContext, id: &'static str, value: &str) {
+        click(visual, id);
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input(value);
+        visual.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn tab_strip_occupies_transparent_titlebar_and_reserves_traffic_lights(
+        cx: &mut TestAppContext,
+    ) {
+        // GPUI's test window does not expose native titlebar metadata. Check only
+        // the production show() definition, never the assertion's own literals.
+        let source = include_str!("source_dialog.rs");
+        let show = source
+            .split("pub(super) fn show(")
+            .nth(1)
+            .unwrap()
+            .split("#[cfg(all(test,")
+            .next()
+            .unwrap();
+        assert!(show.contains("title: Some(\"\".into())"));
+        assert!(show.contains("appears_transparent: true"));
+        assert!(show.contains("window_min_size: Some(size(px(780.0), px(560.0)))"));
+        assert!(show.contains("window_background: gpui::WindowBackgroundAppearance::Opaque"));
+        assert!(!show.contains("Data Sources"));
+        assert!(!show.contains("Dalan"));
+
+        let model = new_model(cx);
+        let (_, mut visual) = open(&model, cx);
+        visual.update(|window, _| {
+            assert_eq!(window.bounds().size, size(px(1040.), px(760.)));
+        });
+        for viewport in [size(px(1040.), px(760.)), size(px(780.), px(560.))] {
+            visual.simulate_resize(viewport);
+            visual.run_until_parked();
+            let bar = visual.debug_bounds("source-tab-bar").unwrap();
+            assert_eq!(bar.origin, gpui::point(px(0.), px(0.)));
+            assert_eq!(bar.size, size(viewport.width, px(34.)));
+            let mut right = px(84.);
+            for id in [
+                "source-tab-general",
+                "source-tab-options",
+                "source-tab-ssh",
+                "source-tab-schemas",
+            ] {
+                let tab = visual.debug_bounds(id).unwrap();
+                assert!(
+                    tab.left() >= right,
+                    "overlap or traffic-light intrusion: {id}"
+                );
+                assert_eq!(tab.top(), px(0.));
+                assert_eq!(tab.size.height, px(34.));
+                assert!(tab.right() <= bar.right());
+                right = tab.right();
+            }
+        }
+        visual.simulate_keystrokes("cmd-w");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn native_tab_clicks_preserve_one_draft_and_page_edits(cx: &mut TestAppContext) {
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        let form_id = handle
+            .update(cx, |dialog, _, _| dialog.form.entity_id())
+            .unwrap();
+        // No click: creation must still prefer Name even if Driver renders first.
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("Tab draft");
+        visual.run_until_parked();
+        edit(&mut visual, "source-color", "#123456");
+        click(&mut visual, "source-tab-options");
+        edit(&mut visual, "source-connect-timeout", "31");
+        for (tab, page_field) in [
+            ("source-tab-ssh", "source-direct"),
+            ("source-tab-schemas", "source-schemas-all"),
+            ("source-tab-general", "source-host"),
+            ("source-tab-options", "source-query-timeout"),
+        ] {
+            click(&mut visual, tab);
+            assert!(
+                visual.debug_bounds(page_field).is_some(),
+                "missing page control {page_field}"
+            );
+            model.read_with(cx, |model, _| {
+                assert!(model.form_open);
+                assert!(!model.form_busy);
+            });
+            handle
+                .update(cx, |dialog, _, app| {
+                    assert_eq!(dialog.form.entity_id(), form_id);
+                    let profile = dialog.form.read(app).profile(app).unwrap();
+                    assert_eq!(profile.name, "Tab draft");
+                    assert_eq!(profile.color.as_deref(), Some("#123456"));
+                    assert_eq!(profile.options.connect_timeout_seconds, 31);
+                })
+                .unwrap();
+        }
+        visual.simulate_keystrokes("cmd-w");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn minimum_dialog_keeps_aligned_editors_footer_and_local_validation(cx: &mut TestAppContext) {
+        let model = new_model(cx);
+        let (_, mut visual) = open(&model, cx);
+        visual.simulate_resize(size(px(780.), px(560.)));
+        visual.run_until_parked();
+        edit(&mut visual, "source-port", "not-a-port");
+        for tab in [
+            "source-tab-options",
+            "source-tab-ssh",
+            "source-tab-schemas",
+            "source-tab-general",
+        ] {
+            click(&mut visual, tab);
+            let body = visual.debug_bounds("source-form-body").unwrap();
+            assert!(body.size.width <= px(720.));
+            assert!(body.left() >= px(16.));
+            assert!(body.right() <= px(764.));
+            let footer = visual.debug_bounds("source-form-footer").unwrap();
+            assert!(footer.bottom() <= px(560.));
+            assert!(footer.top() >= px(34.));
+            for id in ["source-test", "source-save", "source-cancel"] {
+                let button = visual.debug_bounds(id).unwrap();
+                assert!(button.top() >= footer.top());
+                assert!(button.bottom() <= footer.bottom());
+            }
+            if tab == "source-tab-options" {
+                let mut left = None;
+                for id in [
+                    "source-connect-timeout",
+                    "source-query-timeout",
+                    "source-page-size",
+                ] {
+                    let field = visual.debug_bounds(id).unwrap();
+                    assert_eq!(field.size.height, px(28.));
+                    assert_eq!(*left.get_or_insert(field.left()), field.left());
+                }
+            }
+        }
+        // Invalid input stops before SourceModel::test, so no network task is spawned.
+        click(&mut visual, "source-test");
+        model.read_with(cx, |model, _| {
+            assert!(model.form_open);
+            assert!(!model.form_busy);
+            assert!(
+                model
+                    .form_feedback
+                    .as_deref()
+                    .is_some_and(|feedback| feedback.contains("port"))
+            );
+        });
+        visual.simulate_keystrokes("cmd-w");
+        assert_closed(&model, cx);
     }
 
     #[gpui::test]

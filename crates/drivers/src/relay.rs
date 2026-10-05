@@ -135,15 +135,17 @@ pub(crate) async fn start(profile: &SourceProfile) -> Result<Option<Relay>> {
             user,
             identity_file,
             known_hosts_file,
+            parse_config,
         } => {
             let mut cmd = Command::new("/usr/bin/ssh");
             cmd.kill_on_drop(true)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
+            if !parse_config {
+                cmd.args(["-F", "/dev/null"]);
+            }
             cmd.args([
-                "-F",
-                "/dev/null",
                 "-T",
                 "-o",
                 "BatchMode=yes",
@@ -152,7 +154,7 @@ pub(crate) async fn start(profile: &SourceProfile) -> Result<Option<Relay>> {
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-o",
-                "ConnectTimeout=10",
+                &format!("ConnectTimeout={}", profile.options.connect_timeout_seconds),
                 "-o",
                 "PasswordAuthentication=no",
                 "-o",

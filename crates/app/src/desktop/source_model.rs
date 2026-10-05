@@ -8,10 +8,11 @@ use anyhow::{Result, anyhow};
 use dalan_app::explorer_tree::{ExplorerTree, TreeKey};
 use dalan_app::schema_cache::{CachedSchema, SchemaCache, connection_identity};
 use dalan_app::source_store::{NativeSecretStore, SecretStore, SourceRepository};
+use dalan_app::ssh_config_store::resolve_ssh_profile;
 use dalan_app::workspace_tabs::WorkspaceOpen;
 use dalan_drivers::{
-    BrowseRequest, CatalogSnapshot, DatabaseCatalog, SortDirection, SourceProfile, TableFilter,
-    TableInfo, TablePage, TableSort, discover_catalog,
+    Authentication, BrowseRequest, CatalogSnapshot, DatabaseCatalog, SortDirection, SourceProfile,
+    TableFilter, TableInfo, TablePage, TableSort, discover_catalog,
 };
 use gpui::Context;
 use tokio::{runtime::Runtime, sync::Mutex, task::AbortHandle};
@@ -52,9 +53,22 @@ fn load_profiles_and_cache(
     repo: &SourceRepository,
     cache: Option<&SchemaCache>,
 ) -> Result<StartupCatalog> {
-    let profiles = repo.load()?;
+    let mut profiles = repo.load()?;
     let mut snapshots = Vec::new();
     let mut warning = None;
+    // Materialize references before registering metadata identities. Preserve
+    // unavailable sources for offline browsing; connection workers still fail closed.
+    for profile in &mut profiles {
+        match resolve_ssh_profile(profile) {
+            Ok(resolved) => *profile = resolved,
+            Err(_) => {
+                warning = Some(
+                    "Some SSH configurations are unavailable; cached metadata remains available."
+                        .into(),
+                )
+            }
+        }
+    }
     if let Some(cache) = cache {
         if cache.prune(&profiles).is_err() {
             warning = Some("Some local metadata could not be restored.".into());
@@ -106,6 +120,7 @@ pub(super) struct SourceModel {
     pub form_profile: Option<SourceProfile>,
     pub form_generation: u64,
     pub form_feedback: Option<String>,
+    pub form_databases: Vec<String>,
     pub form_busy: bool,
     pub saving: bool,
     pub error: Option<String>,
@@ -179,13 +194,22 @@ impl SourceModel {
             cx.notify();
             return;
         };
+        let default_database = match self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == source)
+            .map(SourceProfile::resolved)
+            .transpose()
+        {
+            Ok(profile) => profile.and_then(|profile| profile.database),
+            Err(error) => {
+                self.metadata_notice = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
         let database = if self.explorer_source.as_deref() == Some(&source) {
-            self.explorer_database.clone().or_else(|| {
-                self.profiles
-                    .iter()
-                    .find(|profile| profile.id == source)
-                    .and_then(|profile| profile.database.clone())
-            })
+            self.explorer_database.clone().or(default_database)
         } else if self.selected_source.as_deref() == Some(&source) {
             self.selected_database.clone()
         } else {
@@ -205,13 +229,21 @@ impl SourceModel {
         let Some(profile) = self.profiles.iter().find(|p| p.id == source) else {
             return;
         };
+        let effective = match profile.resolved() {
+            Ok(profile) => profile,
+            Err(error) => {
+                self.metadata_notice = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
         if let Some(db) = &database
             && !self
                 .tree
                 .databases
                 .get(&source)
                 .is_some_and(|dbs| dbs.contains(db))
-            && profile.database.as_ref() != Some(db)
+            && effective.database.as_ref() != Some(db)
         {
             return;
         }
@@ -236,13 +268,14 @@ impl SourceModel {
             .iter()
             .find(|p| &p.id == source)
             .ok_or_else(|| anyhow!("Source is no longer available."))?;
+        let effective = profile.resolved()?;
         if let Some(db) = &database
             && !self
                 .tree
                 .databases
                 .get(source)
                 .is_some_and(|dbs| dbs.contains(db))
-            && profile.database.as_ref() != Some(db)
+            && effective.database.as_ref() != Some(db)
         {
             return Err(anyhow!("Database is no longer available."));
         }
@@ -287,6 +320,7 @@ impl SourceModel {
             (Some(old), Some(new)) => {
                 connection_identity(old).ok() != connection_identity(new).ok()
                     || old.save_password != new.save_password
+                    || old.options != new.options
             }
             (Some(_), None) => true,
             _ => false,
@@ -366,11 +400,20 @@ impl SourceModel {
             cx.notify();
             return;
         }
-        let Some(mut profile) = self.selected_profile() else {
+        let Some(profile) = self.selected_profile() else {
             self.error = Some("Select a datasource to run a query.".into());
             cx.notify();
             return;
         };
+        let mut profile = match profile.resolved() {
+            Ok(profile) => profile,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        // Resolve URL defaults before applying the explicit console context.
         // Explicit None permits SELECT 1 / fully-qualified names without silently
         // inheriting the source profile's default database.
         profile.database = self.selected_database.clone();
@@ -384,10 +427,11 @@ impl SourceModel {
         self.query_dirty = self.query_submitted_sql.as_ref() != Some(&self.query_sql);
         let request = dalan_drivers::QueryRequest {
             sql: sql.clone(),
-            limit: 100,
+            limit: profile.options.page_size,
         };
         self.run(
             async move {
+                let profile = Self::resolve_connection_profile(profile).await?;
                 let password = Self::resolve_password(&profile, session, secret_store).await?;
                 let result = dalan_drivers::execute_read_only(&profile, &password, &request).await;
                 Ok((password, result))
@@ -527,6 +571,7 @@ impl SourceModel {
         self.run_catalog(
             TreeKey::Source(id.clone()),
             async move {
+                let profile = Self::resolve_connection_profile(profile).await?;
                 let mut warning = None;
                 let ticket = if let Some(cache) = cache.clone() {
                     let profile = profile.clone();
@@ -736,6 +781,7 @@ impl SourceModel {
         self.run_catalog(
             key,
             async move {
+                let profile = Self::resolve_connection_profile(profile).await?;
                 let password = Self::resolve_password(&profile, session, secret_store).await?;
                 let tables = dalan_drivers::tables(&profile, &password, &database).await?;
                 Ok((tables, password))
@@ -937,6 +983,7 @@ impl SourceModel {
             form_profile: None,
             form_generation: 0,
             form_feedback: None,
+            form_databases: Vec::new(),
             form_busy: false,
             saving: false,
             error: None,
@@ -1071,6 +1118,7 @@ impl SourceModel {
         self.form_generation += 1;
         self.form_open = true;
         self.form_profile = Some(SourceProfile::default());
+        self.form_databases.clear();
         self.form_feedback = None;
         cx.notify();
     }
@@ -1111,8 +1159,17 @@ impl SourceModel {
         self.form_generation += 1;
         self.form_open = true;
         self.form_profile = Some(profile.clone());
+        self.form_databases = self
+            .tree
+            .databases
+            .get(&profile.id)
+            .cloned()
+            .unwrap_or_default();
         self.form_feedback = None;
-        if profile.save_password && self.session_password(&profile.id).is_none() {
+        if profile.authentication != Authentication::NoAuth
+            && profile.save_password
+            && self.session_password(&profile.id).is_none()
+        {
             let id = profile.id.clone();
             self.form_busy = true;
             let store = self.secret_store.clone();
@@ -1157,6 +1214,7 @@ impl SourceModel {
         self.invalidate();
         self.form_open = false;
         self.form_profile = None;
+        self.form_databases.clear();
         self.form_feedback = None;
         self.form_generation += 1;
         cx.notify();
@@ -1170,17 +1228,31 @@ impl SourceModel {
         self.form_busy = true;
         self.form_feedback = Some("Testing connection…".into());
         self.run(
-            async move { dalan_drivers::test_connection(&profile, &password).await },
+            async move {
+                let profile = Self::resolve_connection_profile(profile).await?;
+                let password = if profile.authentication == Authentication::NoAuth {
+                    String::new()
+                } else {
+                    password
+                };
+                dalan_drivers::test_connection(&profile, &password).await
+            },
             cx,
             |this, result, cx| {
                 this.form_busy = false;
                 this.form_feedback = Some(match result {
-                    Ok(report) => format!(
-                        "Connected: {}. {} visible database(s).",
-                        report.server_version,
-                        report.databases.len()
-                    ),
-                    Err(error) => format!("Connection failed: {error}"),
+                    Ok(report) => {
+                        this.form_databases = report.databases.clone();
+                        format!(
+                            "Connected: {}. {} visible database(s).",
+                            report.server_version,
+                            report.databases.len()
+                        )
+                    }
+                    Err(error) => {
+                        this.form_databases.clear();
+                        format!("Connection failed: {error}")
+                    }
                 });
                 cx.notify();
             },
@@ -1188,10 +1260,17 @@ impl SourceModel {
         cx.notify();
     }
 
-    pub fn save(&mut self, profile: SourceProfile, password: String, cx: &mut Context<Self>) {
+    pub fn save(&mut self, mut profile: SourceProfile, password: String, cx: &mut Context<Self>) {
         if self.saving {
             return;
         }
+        // NoAuth must never persist or reuse a hidden form credential.
+        let password = if profile.authentication == Authentication::NoAuth {
+            profile.save_password = false;
+            String::new()
+        } else {
+            password
+        };
         if let Err(error) = profile.validate() {
             self.form_feedback = Some(error.to_string());
             cx.notify();
@@ -1202,11 +1281,6 @@ impl SourceModel {
             cx.notify();
             return;
         };
-        let identity_changed = self
-            .profiles
-            .iter()
-            .find(|old| old.id == profile.id)
-            .is_none_or(|old| connection_identity(old).ok() != connection_identity(&profile).ok());
         self.cancel_catalogs(|key| key.source() == profile.id);
         let cache = self.schema_cache.clone();
         self.invalidate();
@@ -1223,9 +1297,10 @@ impl SourceModel {
         } else {
             profiles.push(profile.clone());
         }
-        let saved_profile = profile.clone();
         let saved_password = password.clone();
         self.run(async move { tokio::task::spawn_blocking(move || {
+            let profile = resolve_ssh_profile(&profile)?;
+            if let Some(saved) = profiles.iter_mut().find(|item| item.id == profile.id) { *saved = profile.clone(); }
             let store = NativeSecretStore;
             // Validate settings without mutating disk before touching credentials.
             for item in &profiles { item.validate()?; }
@@ -1239,24 +1314,30 @@ impl SourceModel {
             }
             let warning = cache.as_ref().and_then(|cache| cache.register(&profile).err())
                 .map(|_| "Profile saved, but local metadata registration failed.".to_string());
-            Ok((profiles, warning))
+            Ok((profiles, profile, warning))
         }).await? }, cx, move |this, result, cx| {
             this.saving = false; this.form_busy = false;
             match result {
-                Ok((profiles, warning)) => {
+                Ok((profiles, saved_profile, warning)) => {
+                    let identity_changed = this.profiles.iter().find(|old| old.id == saved_profile.id)
+                        .is_none_or(|old| connection_identity(old).ok() != connection_identity(&saved_profile).ok());
                     if identity_changed {
                         this.remove_tree_source(&saved_profile.id);
                         this.cached_at.remove(&saved_profile.id);
                         this.cached_offline.remove(&saved_profile.id);
                     }
                     this.profiles = profiles;
-                    this.remember_password(saved_profile.id.clone(), saved_password);
+                    if saved_profile.authentication == Authentication::NoAuth {
+                        this.forget_password(&saved_profile.id);
+                    } else {
+                        this.remember_password(saved_profile.id.clone(), saved_password);
+                    }
                     this.metadata_notice = warning;
                     if this.selected_source.as_ref() == Some(&saved_profile.id) || this.selected_source.is_none() {
                         this.selected_source = Some(saved_profile.id.clone());
                         if identity_changed { this.clear_data(); }
                     }
-                    this.form_open = false; this.form_profile = None;
+                    this.form_open = false; this.form_profile = None; this.form_databases.clear();
                     this.form_generation += 1; this.form_feedback = None; this.error = None;
                     if this.automatic_discovery { this.refresh_schema(saved_profile.id, cx); }
                 },
@@ -1283,11 +1364,18 @@ impl SourceModel {
         self.previous_offsets.clear();
     }
 
+    async fn resolve_connection_profile(profile: SourceProfile) -> Result<SourceProfile> {
+        tokio::task::spawn_blocking(move || resolve_ssh_profile(&profile)).await?
+    }
+
     async fn resolve_password(
         profile: &SourceProfile,
         session: Option<String>,
         store: Arc<dyn SecretStore>,
     ) -> Result<String> {
+        if profile.authentication == Authentication::NoAuth {
+            return Ok(String::new());
+        }
         if let Some(password) = session {
             return Ok(password);
         }
@@ -1338,10 +1426,11 @@ impl SourceModel {
             filter: self.filter.clone(),
             sort: self.sort.clone(),
             offset,
-            limit: 100,
+            limit: profile.options.page_size,
         };
         self.run(
             async move {
+                let profile = Self::resolve_connection_profile(profile).await?;
                 let password = Self::resolve_password(&profile, session, secret_store).await?;
                 let page = dalan_drivers::browse(&profile, &password, &request).await;
                 // Once macOS authorizes retrieval, keep it for this session even
@@ -2920,6 +3009,39 @@ mod tests {
             );
         });
         assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn no_auth_ignores_session_and_keychain_even_with_legacy_remember_flag() {
+        let store = Arc::new(TestPasswordStore {
+            value: None,
+            deny: true,
+            reads: Default::default(),
+        });
+        let profile = SourceProfile {
+            authentication: Authentication::NoAuth,
+            save_password: true,
+            ..Default::default()
+        };
+        runtime().block_on(async {
+            assert_eq!(
+                SourceModel::resolve_password(
+                    &profile,
+                    Some("must-not-be-used".into()),
+                    store.clone()
+                )
+                .await
+                .unwrap(),
+                ""
+            );
+            assert_eq!(
+                SourceModel::resolve_password(&profile, None, store.clone())
+                    .await
+                    .unwrap(),
+                ""
+            );
+        });
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[gpui::test]

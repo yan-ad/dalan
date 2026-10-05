@@ -1,10 +1,10 @@
 //! Restricted MySQL/MariaDB reader. No arbitrary SQL or write API is exposed.
 use crate::{
     relay::{self, Relay},
-    sources::{SourceProfile, TlsMode, identifier},
+    sources::{Authentication, ConnectionMode, SourceProfile, TlsMode, identifier},
 };
 use anyhow::{Result, anyhow, ensure};
-use mysql_async::{Conn, OptsBuilder, SslOpts, Value, prelude::Queryable};
+use mysql_async::{ClientIdentity, Conn, OptsBuilder, SslOpts, Value, prelude::Queryable};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -178,10 +178,13 @@ pub(crate) fn driver_error(e: mysql_async::Error) -> anyhow::Error {
         ),
     }
 }
-pub(crate) async fn bounded<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
-    tokio::time::timeout(Duration::from_secs(20), future)
+pub(crate) async fn bounded_with<T>(
+    seconds: u64,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(Duration::from_secs(seconds), future)
         .await
-        .map_err(|_| anyhow!("Database operation timed out after 20 seconds"))?
+        .map_err(|_| anyhow!("Database operation timed out after {seconds} seconds"))?
 }
 pub(crate) struct Session {
     conn: Option<Conn>,
@@ -189,23 +192,53 @@ pub(crate) struct Session {
 }
 impl Session {
     pub(crate) async fn connect(profile: &SourceProfile, password: &str) -> Result<Self> {
-        profile.validate()?;
-        let relay = relay::start(profile).await?;
+        let profile = profile.resolved()?;
+        bounded_with(
+            profile.options.connect_timeout_seconds,
+            Self::connect_resolved(&profile, password),
+        )
+        .await
+    }
+    async fn connect_resolved(profile: &SourceProfile, password: &str) -> Result<Self> {
+        let relay = if matches!(profile.endpoint, ConnectionMode::UnixSocket { .. }) {
+            None
+        } else {
+            relay::start(profile).await?
+        };
         let mut opts = OptsBuilder::default()
             .ip_or_hostname(&profile.host)
             .tcp_port(profile.port)
-            .user(Some(&profile.username))
-            .pass(Some(password))
+            .user(if profile.authentication == Authentication::NoAuth {
+                None
+            } else {
+                Some(profile.username.clone())
+            })
+            .pass(if profile.authentication == Authentication::NoAuth {
+                None
+            } else {
+                Some(password.to_owned())
+            })
             .db_name(profile.database.clone())
             .prefer_socket(false)
             .max_allowed_packet(Some(PACKET_CAP))
             // Disabled means no TLS request, independent of dependency defaults.
             .ssl_opts(None);
+        if let ConnectionMode::UnixSocket { path } = &profile.endpoint {
+            opts = opts.socket(Some(path.clone()));
+        }
         if let Some(r) = &relay {
             opts = opts.tcp_port(r.port).resolved_ips(Some(r.ips()));
         }
-        if profile.tls == TlsMode::VerifyIdentity {
-            let mut ssl = SslOpts::default();
+        if profile.tls != TlsMode::Disabled {
+            let mut ssl = SslOpts::default()
+                .with_danger_accept_invalid_certs(profile.tls == TlsMode::Required)
+                .with_danger_skip_domain_validation(profile.tls != TlsMode::VerifyIdentity);
+            if let (Some(cert), Some(key)) = (&profile.ssl_client_cert, &profile.ssl_client_key) {
+                ssl = ssl.with_client_identity(Some(ClientIdentity::new(
+                    std::path::PathBuf::from(cert).into(),
+                    std::path::PathBuf::from(key).into(),
+                )));
+            }
             if let Some(path) = &profile.ca_path {
                 ssl = ssl.with_root_certs(vec![std::path::PathBuf::from(path).into()]);
             }
@@ -259,7 +292,8 @@ impl Drop for Session {
     }
 }
 pub async fn test_connection(profile: &SourceProfile, password: &str) -> Result<ConnectionReport> {
-    bounded(async {
+    let profile = &profile.resolved()?;
+    bounded_with(profile.options.query_timeout_seconds, async {
         let mut s = Session::connect(profile, password).await?;
         let version_row: mysql_async::Row = s
             .conn()
@@ -283,7 +317,8 @@ pub async fn tables(
     password: &str,
     database: &str,
 ) -> Result<Vec<TableInfo>> {
-    bounded(async {
+    let profile = &profile.resolved()?;
+    bounded_with(profile.options.query_timeout_seconds, async {
         identifier(database)?;
         let mut s = Session::connect(profile, password).await?;
         let tables = table_names(s.conn(), database).await?;
@@ -357,16 +392,25 @@ fn add_object_count(total: &mut usize, count: usize) -> Result<()> {
 /// Discovers all visible schemas, or only the explicitly configured database.
 /// Uses one owned native-protocol session serially; never reads table/view data.
 /// Caps: 1000 schemas, 1000 objects/schema, 50000 objects total, 8 MiB packets.
-/// Each query/connect is limited to 20 seconds; the entire snapshot to 120 seconds.
+/// Each query/connect uses the configured deadline; the entire snapshot to 120 seconds.
 /// Any error or cancellation discards the whole snapshot and closes the session.
 pub async fn discover_catalog(profile: &SourceProfile, password: &str) -> Result<CatalogSnapshot> {
+    let profile = &profile.resolved()?;
     tokio::time::timeout(Duration::from_secs(120), async {
-        let mut session = bounded(Session::connect(profile, password)).await?;
-        let names = bounded(database_names(session.conn(), profile.database.as_deref())).await?;
+        let mut session = Session::connect(profile, password).await?;
+        let names = bounded_with(
+            profile.options.query_timeout_seconds,
+            database_names(session.conn(), profile.database.as_deref()),
+        )
+        .await?;
         let mut databases = Vec::with_capacity(names.len());
         let mut total = 0;
         for name in names {
-            let tables = bounded(table_names(session.conn(), &name)).await?;
+            let tables = bounded_with(
+                profile.options.query_timeout_seconds,
+                table_names(session.conn(), &name),
+            )
+            .await?;
             add_object_count(&mut total, tables.len())?;
             databases.push(DatabaseCatalog { name, tables });
         }
@@ -415,7 +459,8 @@ pub async fn columns(
     database: &str,
     table: &str,
 ) -> Result<Vec<ColumnInfo>> {
-    bounded(async {
+    let profile = &profile.resolved()?;
+    bounded_with(profile.options.query_timeout_seconds, async {
         identifier(database)?;
         identifier(table)?;
         let mut s = Session::connect(profile, password).await?;
@@ -638,7 +683,8 @@ pub async fn browse(
     password: &str,
     request: &BrowseRequest,
 ) -> Result<TablePage> {
-    bounded(async {
+    let profile = &profile.resolved()?;
+    bounded_with(profile.options.query_timeout_seconds, async {
         identifier(&request.database)?;
         identifier(&request.table)?;
         ensure!(

@@ -4,7 +4,7 @@
 //! account. Views and server-defined objects can execute code outside this AST;
 //! use trusted schemas. Every run owns a fresh read-only transaction and session.
 //! Dropping the future cancels local work and disposes the connection/relay;
-//! server execution is additionally limited to 20 seconds (not an immediate KILL).
+//! server execution is additionally limited by the configured query timeout (not an immediate KILL).
 use crate::{
     DbEngine, SourceProfile, TablePage,
     mysql::{self, ColumnInfo, Preview, Session},
@@ -401,7 +401,8 @@ pub async fn execute_read_only(
     );
     validate_read_only(&request.sql)?;
     let start = Instant::now();
-    mysql::bounded(async {
+    let profile = &profile.resolved()?;
+    mysql::bounded_with(profile.options.query_timeout_seconds, async {
         let mut session = Session::connect(profile, password).await?;
         // Pin lexer semantics: no ANSI_QUOTES or NO_BACKSLASH_ESCAPES ambiguity.
         session
@@ -410,8 +411,14 @@ pub async fn execute_read_only(
             .await
             .map_err(mysql::driver_error)?;
         let deadline = match profile.engine {
-            DbEngine::MySql => "SET SESSION MAX_EXECUTION_TIME = 20000",
-            DbEngine::MariaDb => "SET SESSION max_statement_time = 20",
+            DbEngine::MySql => format!(
+                "SET SESSION MAX_EXECUTION_TIME = {}",
+                profile.options.query_timeout_seconds * 1000
+            ),
+            DbEngine::MariaDb => format!(
+                "SET SESSION max_statement_time = {}",
+                profile.options.query_timeout_seconds
+            ),
         };
         session
             .conn()

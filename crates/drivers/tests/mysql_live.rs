@@ -201,6 +201,7 @@ async fn smoke(prefix: &str, mut profile: SourceProfile, password: String) -> an
     assert!(beyond.rows.is_empty());
     assert!(!beyond.has_more);
     assert_eq!(beyond.next_offset, None);
+    profile = profile.resolved()?;
     profile.database = Some(database.clone());
     assert_eq!(
         test_connection(&profile, &password).await?.databases,
@@ -387,4 +388,88 @@ async fn mysql_uncached_sha2_without_tls() -> anyhow::Result<()> {
     // The second handshake exercises the now-cached fast authentication path.
     test_connection(&profile, &password).await?;
     Ok(())
+}
+
+async fn url_mode_smoke(prefix: &str, engine: DbEngine) -> anyhow::Result<()> {
+    let (mut profile, password) = configured(prefix, engine)?;
+    let url = profile.canonical_url()?;
+    profile.endpoint = dalan_drivers::ConnectionMode::UrlOnly {
+        url: format!("jdbc:{url}"),
+    };
+    // URL mode must not accidentally use stale form fields.
+    profile.host = "invalid://ignored".into();
+    profile.port = 0;
+    smoke(prefix, profile, password).await
+}
+#[tokio::test]
+#[ignore = "requires disposable DALAN_TEST_MYSQL_* fixture"]
+async fn mysql_url_mode() -> anyhow::Result<()> {
+    url_mode_smoke("DALAN_TEST_MYSQL", DbEngine::MySql).await
+}
+#[tokio::test]
+#[ignore = "requires disposable DALAN_TEST_MARIADB_* fixture"]
+async fn mariadb_url_mode() -> anyhow::Result<()> {
+    url_mode_smoke("DALAN_TEST_MARIADB", DbEngine::MariaDb).await
+}
+
+#[cfg(unix)]
+async fn unix_mode_smoke(prefix: &str, engine: DbEngine) -> anyhow::Result<()> {
+    let (mut profile, password) = configured(prefix, engine)?;
+    anyhow::ensure!(
+        profile.tls == TlsMode::Disabled,
+        "requires explicit TLS_DISABLED=1"
+    );
+    // Warm caching_sha2 over TCP: a Unix-to-TCP fixture bridge is not a real
+    // local server socket, and the server cannot accept local plaintext auth.
+    test_connection(&profile, &password).await?;
+    // Forward an actual Unix-domain socket to the disposable TCP fixture. This
+    // tests the native socket connector without needing container socket mounts.
+    let dir = std::env::temp_dir().join(format!("dln-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir)?;
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(dir.clone());
+    let path = dir.join("mysql socket");
+    let listener = tokio::net::UnixListener::bind(&path)?;
+    let target = (profile.host.clone(), profile.port);
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await?;
+            let mut remote = tokio::net::TcpStream::connect((target.0.as_str(), target.1)).await?;
+            tokio::spawn(async move {
+                let _ = tokio::io::copy_bidirectional(&mut socket, &mut remote).await;
+            });
+        }
+        #[allow(unreachable_code)]
+        Ok::<(), std::io::Error>(())
+    });
+    struct Abort(tokio::task::JoinHandle<Result<(), std::io::Error>>);
+    impl Drop for Abort {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _abort = Abort(task);
+    profile.endpoint = dalan_drivers::ConnectionMode::UnixSocket {
+        path: path.to_string_lossy().into_owned(),
+    };
+    profile.host = "invalid://ignored".into();
+    profile.port = 0;
+    smoke(prefix, profile, password).await
+}
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires disposable plaintext DALAN_TEST_MYSQL_* fixture"]
+async fn mysql_unix_socket() -> anyhow::Result<()> {
+    unix_mode_smoke("DALAN_TEST_MYSQL", DbEngine::MySql).await
+}
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires disposable plaintext DALAN_TEST_MARIADB_* fixture"]
+async fn mariadb_unix_socket() -> anyhow::Result<()> {
+    unix_mode_smoke("DALAN_TEST_MARIADB", DbEngine::MariaDb).await
 }

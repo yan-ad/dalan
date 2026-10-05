@@ -59,6 +59,15 @@ fn label(value: &str) -> String {
         value.into()
     }
 }
+/// Schema selection affects display only. Keep the complete discovered catalog cached.
+fn visible_database(profile: &SourceProfile, database: &str) -> bool {
+    match &profile.schemas {
+        dalan_drivers::SchemaSelection::All => true,
+        dalan_drivers::SchemaSelection::Selected(names) => {
+            names.iter().any(|name| name == database)
+        }
+    }
+}
 impl ExplorerTree {
     pub fn collapse_all(&mut self) {
         self.expanded_sources.clear();
@@ -136,7 +145,12 @@ impl ExplorerTree {
                 depth: 0,
                 expandable: true,
                 expanded,
-                count: self.databases.get(source).map(Vec::len),
+                count: self.databases.get(source).map(|databases| {
+                    databases
+                        .iter()
+                        .filter(|database| visible_database(profile, database))
+                        .count()
+                }),
             });
             if !expanded {
                 continue;
@@ -144,7 +158,11 @@ impl ExplorerTree {
             let Some(databases) = self.databases.get(source) else {
                 continue;
             };
-            for database in databases.iter().take(1000) {
+            for database in databases
+                .iter()
+                .filter(|database| visible_database(profile, database))
+                .take(1000)
+            {
                 let pair = (source.clone(), database.clone());
                 let key = TreeKey::Database {
                     source: source.clone(),
@@ -236,6 +254,24 @@ mod tests {
             name: name.into(),
             kind: kind.into(),
         }
+    }
+    #[test]
+    fn schema_selection_filters_projection_without_discarding_metadata() {
+        let mut profile = profile("a");
+        let mut tree = ExplorerTree::default();
+        tree.expanded_sources.insert("a".into());
+        tree.databases
+            .insert("a".into(), vec!["visible".into(), "hidden".into()]);
+        profile.schemas = dalan_drivers::SchemaSelection::Selected(vec!["visible".into()]);
+        let rows = tree.flatten(std::slice::from_ref(&profile));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].count, Some(1));
+        assert_eq!(rows[1].label, "visible");
+        assert_eq!(tree.databases["a"].len(), 2);
+        profile.schemas = dalan_drivers::SchemaSelection::Selected(vec![]);
+        assert_eq!(tree.flatten(std::slice::from_ref(&profile)).len(), 1);
+        profile.schemas = dalan_drivers::SchemaSelection::All;
+        assert_eq!(tree.flatten(&[profile]).len(), 3);
     }
     #[test]
     fn compact_lazy_projection_preserves_cache() {

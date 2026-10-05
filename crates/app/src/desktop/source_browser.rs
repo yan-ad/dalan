@@ -1031,20 +1031,7 @@ impl Render for SourceBrowser {
                     )),
             );
             body = body.child(self.grid.clone());
-            let count = page.rows.len().min(100);
-            let summary = if count == 0 {
-                "0 rows".into()
-            } else {
-                format!("{}–{}", page.offset + 1, page.offset + count as u64)
-            };
-            let summary_tooltip = format!(
-                "{count} loaded rows; {}",
-                if page.has_more {
-                    "more rows available"
-                } else {
-                    "no more rows"
-                }
-            );
+            let (summary, summary_tooltip) = page_summary(&page);
             body = body.child(
                 div()
                     .px(px(10.))
@@ -1168,6 +1155,26 @@ fn toolbar_button<T: 'static>(
         .justify_center()
         .child(icon(glyph, if disabled { MUTED } else { TEXT }))
         .tooltip(move |_, cx| cx.new(|_| super::ControlTooltip(tooltip)).into())
+}
+
+fn page_summary(page: &dalan_drivers::TablePage) -> (String, String) {
+    let count = page.rows.len();
+    let range = if count == 0 {
+        "0 rows".into()
+    } else {
+        format!("{}–{}", page.offset + 1, page.offset + count as u64)
+    };
+    (
+        range,
+        format!(
+            "{count} loaded rows; {}",
+            if page.has_more {
+                "more rows available"
+            } else {
+                "no more rows"
+            }
+        ),
+    )
 }
 
 /// GPUI creates a focus handle for tab-indexed elements; IDs keep it stable across renders.
@@ -2220,5 +2227,14 @@ mod tests {
             assert_eq!(browser.operator, 0);
             assert_eq!(browser.value.read(app).value(), "");
         });
+    }
+    #[test]
+    fn page_summary_reports_configured_two_hundred_rows() {
+        let mut snapshot = page();
+        snapshot.rows = vec![snapshot.rows[0].clone(); 200];
+        snapshot.offset = 200;
+        let (range, tooltip) = page_summary(&snapshot);
+        assert_eq!(range, "201–400");
+        assert!(tooltip.starts_with("200 loaded rows"));
     }
 }

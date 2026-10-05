@@ -1497,11 +1497,13 @@ dependencies = [
  "dalan-core",
  "mysql_async",
  "native-tls",
+ "percent-encoding",
  "serde",
  "serde_json",
  "sqlparser",
  "tokio",
  "tokio-native-tls",
+ "url",
  "uuid",
 ]
 

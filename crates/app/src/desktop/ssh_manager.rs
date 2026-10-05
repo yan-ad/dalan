@@ -1,0 +1,1293 @@
+//! Independent SSH settings editor. Drafts never mutate the datasource form until Use.
+use std::{
+    collections::HashMap,
+    process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context as _, Result, ensure};
+use dalan_app::{
+    source_store::SourceRepository,
+    ssh_config_store::{SshAuthentication, SshProfile, SshRepository},
+};
+use gpui::{
+    App, Bounds, Context, Div, Entity, KeyBinding, Stateful, Subscription, TitlebarOptions,
+    WeakEntity, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+};
+
+use super::{
+    CloseWindow, Dismiss, NextFocus, PreviousFocus,
+    icons::{Icon, icon},
+    input::TextInput,
+    source_form::SourceForm,
+    theme::*,
+};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AuthChoice {
+    Agent,
+    KeyPair,
+}
+
+pub(super) struct SshManager {
+    profiles: Vec<SshProfile>,
+    inputs: HashMap<&'static str, Entity<TextInput>>,
+    last_values: HashMap<&'static str, String>,
+    auth: AuthChoice,
+    parse_config: bool,
+    selected: Option<String>,
+    error: Option<String>,
+    feedback: Option<String>,
+    busy: bool,
+    saving: bool,
+    loaded: bool,
+    repo: Option<SshRepository>,
+    source_repository: Option<SourceRepository>,
+    test_cancel: Option<Arc<AtomicBool>>,
+    owner: WeakEntity<SourceForm>,
+    auth_open: bool,
+    delete_confirmation: bool,
+    picker_open: bool,
+    revision: u64,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl SshManager {
+    fn new(
+        owner: Entity<SourceForm>,
+        selected: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let repository = SshRepository::default_path().map(SshRepository::new);
+        let mut this = Self::with_repository(owner, selected, repository, window, cx);
+        match SourceRepository::default_path() {
+            Ok(path) => this.source_repository = Some(SourceRepository::new(path)),
+            Err(error) => this.error = Some(error.to_string()),
+        }
+        this
+    }
+
+    fn with_repository(
+        owner: Entity<SourceForm>,
+        selected: Option<String>,
+        repository: Result<SshRepository>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self {
+            profiles: Vec::new(),
+            inputs: HashMap::new(),
+            last_values: HashMap::new(),
+            auth: AuthChoice::Agent,
+            parse_config: false,
+            selected,
+            error: repository.as_ref().err().map(ToString::to_string),
+            feedback: None,
+            busy: false,
+            saving: false,
+            loaded: false,
+            repo: repository.ok(),
+            source_repository: None,
+            test_cancel: None,
+            owner: owner.downgrade(),
+            auth_open: false,
+            delete_confirmation: false,
+            picker_open: false,
+            revision: 0,
+            _subscriptions: Vec::new(),
+        };
+        for (id, placeholder) in [
+            ("ssh-name", "Configuration name"),
+            ("ssh-host", "localhost"),
+            ("ssh-port", "22"),
+            ("ssh-user", "SSH user"),
+            ("ssh-key", "Absolute path to private key"),
+            ("ssh-known-hosts", "Default OpenSSH known_hosts"),
+        ] {
+            let input = cx.new(|cx| TextInput::new(String::new(), placeholder, false, cx));
+            this.last_values.insert(id, String::new());
+            this._subscriptions
+                .push(cx.observe(&input, move |this, input, cx| {
+                    let value = input.read(cx).value();
+                    if this.last_values.get(id) == Some(&value) {
+                        return;
+                    }
+                    if this.saving {
+                        let previous = this.last_values.get(id).cloned().unwrap_or_default();
+                        input.update(cx, |input, cx| input.set_value(previous, cx));
+                        return;
+                    }
+                    this.last_values.insert(id, value);
+                    this.revision += 1;
+                    this.cancel_test();
+                    this.feedback = None;
+                    cx.notify();
+                }));
+            this.inputs.insert(id, input);
+        }
+        let weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            weak.upgrade().is_none_or(|entity| {
+                let manager = entity.read(cx);
+                if manager.saving {
+                    return false;
+                }
+                manager.cancel_test();
+                true
+            })
+        });
+        this.load(window, cx);
+        this
+    }
+
+    fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.busy = true;
+        let task = cx.background_executor().spawn(async move { repo.load() });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match result {
+                    Ok(profiles) => {
+                        this.profiles = profiles;
+                        this.loaded = true;
+                        let id = this
+                            .selected
+                            .clone()
+                            .filter(|id| this.profiles.iter().any(|p| &p.id == id))
+                            .or_else(|| this.profiles.first().map(|p| p.id.clone()));
+                        if let Some(id) = id {
+                            this.select(id, cx);
+                        } else {
+                            this.add(false, cx);
+                        }
+                        this.inputs["ssh-name"]
+                            .read(cx)
+                            .focus_handle()
+                            .focus(window);
+                    }
+                    Err(error) => this.error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn editable(&self) -> bool {
+        self.loaded && !self.saving && !self.busy && !self.picker_open
+    }
+
+    fn collect_current(&self, cx: &App) -> Result<SshProfile> {
+        let id = self
+            .selected
+            .clone()
+            .context("Select an SSH configuration first")?;
+        let value = |key| self.inputs[key].read(cx).value().trim().to_string();
+        let optional = |key| {
+            let v = value(key);
+            (!v.is_empty()).then_some(v)
+        };
+        let profile = SshProfile {
+            id,
+            name: value("ssh-name"),
+            host: value("ssh-host"),
+            port: value("ssh-port")
+                .parse::<u16>()
+                .context("SSH port must be a number from 1 to 65535")?,
+            user: value("ssh-user"),
+            auth: if self.auth == AuthChoice::Agent {
+                SshAuthentication::Agent
+            } else {
+                SshAuthentication::KeyPair
+            },
+            identity_file: if self.auth == AuthChoice::KeyPair {
+                optional("ssh-key")
+            } else {
+                None
+            },
+            known_hosts_file: optional("ssh-known-hosts"),
+            parse_config: self.parse_config,
+        };
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    fn commit_current(&mut self, cx: &App) -> bool {
+        if self.selected.is_none() {
+            return true;
+        }
+        match self.collect_current(cx) {
+            Ok(profile) => {
+                if let Some(current) = self.profiles.iter_mut().find(|p| p.id == profile.id) {
+                    *current = profile;
+                }
+                self.error = None;
+                true
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                false
+            }
+        }
+    }
+
+    fn select(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(profile) = self.profiles.iter().find(|p| p.id == id).cloned() else {
+            return;
+        };
+        self.selected = Some(id);
+        self.auth = if profile.auth == SshAuthentication::Agent {
+            AuthChoice::Agent
+        } else {
+            AuthChoice::KeyPair
+        };
+        self.parse_config = profile.parse_config;
+        for (key, value) in [
+            ("ssh-name", profile.name),
+            ("ssh-host", profile.host),
+            ("ssh-port", profile.port.to_string()),
+            ("ssh-user", profile.user),
+            ("ssh-key", profile.identity_file.unwrap_or_default()),
+            (
+                "ssh-known-hosts",
+                profile.known_hosts_file.unwrap_or_default(),
+            ),
+        ] {
+            self.last_values.insert(key, value.clone());
+            self.inputs[key].update(cx, |input, cx| input.set_value(value, cx));
+        }
+        self.revision += 1;
+        self.error = None;
+        self.feedback = None;
+        self.auth_open = false;
+        self.delete_confirmation = false;
+        cx.notify();
+    }
+
+    fn add(&mut self, duplicate: bool, cx: &mut Context<Self>) {
+        if !self.editable() || !self.commit_current(cx) {
+            cx.notify();
+            return;
+        }
+        if self.profiles.len() >= 100 {
+            self.error = Some("At most 100 SSH configurations are supported.".into());
+            cx.notify();
+            return;
+        }
+        let mut profile = SshProfile::default();
+        if duplicate
+            && let Some(source) = self
+                .profiles
+                .iter()
+                .find(|p| Some(&p.id) == self.selected.as_ref())
+        {
+            let id = profile.id;
+            profile = source.clone();
+            profile.id = id;
+            profile.name = format!("{} copy", source.name.chars().take(250).collect::<String>());
+        }
+        let id = profile.id.clone();
+        self.profiles.push(profile);
+        self.select(id, cx);
+    }
+
+    fn remove(&mut self, cx: &mut Context<Self>) {
+        if !self.editable() {
+            return;
+        }
+        if !self.delete_confirmation {
+            self.delete_confirmation = true;
+            cx.notify();
+            return;
+        }
+        // Reference protection happens again on the background save worker. Nothing is
+        // deleted from disk here, so Cancel also undoes a confirmed draft deletion.
+        self.profiles
+            .retain(|p| Some(&p.id) != self.selected.as_ref());
+        self.selected = None;
+        self.delete_confirmation = false;
+        if let Some(id) = self.profiles.first().map(|p| p.id.clone()) {
+            self.select(id, cx);
+        }
+        cx.notify();
+    }
+
+    fn browse(&mut self, key: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.editable() {
+            return;
+        }
+        self.picker_open = true;
+        let id = self.selected.clone();
+        let original = self.inputs[key].read(cx).value();
+        let picker = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose SSH file".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = picker.await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.picker_open = false;
+                if this.selected != id || this.inputs[key].read(cx).value() != original {
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Ok(Ok(Some(paths))) if paths.len() == 1 => {
+                        if let Some(path) = paths[0].to_str() {
+                            this.inputs[key]
+                                .update(cx, |input, cx| input.set_value(path.to_string(), cx));
+                        } else {
+                            this.error = Some("The file path must be valid UTF-8.".into());
+                        }
+                    }
+                    Ok(Ok(None)) => {}
+                    _ => {
+                        this.error = Some(
+                            "Could not choose a file. Enter its absolute path manually.".into(),
+                        )
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn save(&mut self, use_profile: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.editable() || !self.commit_current(cx) {
+            cx.notify();
+            return;
+        }
+        let chosen = if use_profile {
+            let Some(profile) = self
+                .profiles
+                .iter()
+                .find(|p| Some(&p.id) == self.selected.as_ref())
+                .cloned()
+            else {
+                self.error = Some("Select a configuration to use.".into());
+                cx.notify();
+                return;
+            };
+            if self.owner.upgrade().is_none() {
+                self.error = Some(
+                    "The datasource form has closed. You can still Apply settings or Cancel."
+                        .into(),
+                );
+                cx.notify();
+                return;
+            }
+            Some(profile)
+        } else {
+            None
+        };
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let Some(source_repository) = self.source_repository.clone() else {
+            self.error = Some("Cannot verify saved datasource references.".into());
+            cx.notify();
+            return;
+        };
+        let profiles = self.profiles.clone();
+        self.saving = true;
+        self.error = None;
+        self.feedback = None;
+        let task = cx
+            .background_executor()
+            .spawn(async move { save_profiles(&repo, &source_repository, &profiles) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.saving = false;
+                match result {
+                    Ok(()) => {
+                        this.feedback = Some("SSH configurations saved.".into());
+                        if let Some(profile) = chosen {
+                            if let Some(owner) = this.owner.upgrade() {
+                                owner.update(cx, |owner, cx| {
+                                    owner.set_ssh_configuration(profile, cx)
+                                });
+                                window.remove_window();
+                            } else {
+                                this.error = Some(
+                                    "Settings saved, but the datasource form has closed.".into(),
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => this.error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.editable() {
+            return;
+        }
+        let profile = match self.collect_current(cx) {
+            Ok(p) => p,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        self.busy = true;
+        self.error = None;
+        self.feedback = Some("Testing SSH authentication…".into());
+        let revision = self.revision;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.test_cancel = Some(cancel.clone());
+        let task = cx
+            .background_executor()
+            .spawn(async move { test_connection(&profile, &cancel) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.busy = false;
+                this.test_cancel = None;
+                if this.revision == revision {
+                    match result {
+                        Ok(()) => this.feedback = Some("SSH authentication and remote command succeeded (database not tested).".into()),
+                        Err(error) => { this.feedback = None; this.error = Some(error.to_string()); }
+                    }
+                }
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
+    fn cancel_test(&self) {
+        if let Some(cancel) = &self.test_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+    }
+
+    fn close(&mut self, window: &mut Window) {
+        if !self.saving {
+            self.cancel_test();
+            window.remove_window();
+        }
+    }
+
+    fn button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        symbol: Icon,
+        enabled: bool,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let action = std::rc::Rc::new(action);
+        let keyboard_action = action.clone();
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .tab_index(0)
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(30.))
+            .px(px(9.))
+            .border_1()
+            .border_color(rgb(INPUT_BORDER))
+            .rounded(px(CONTROL_RADIUS))
+            .bg(rgb(PANEL))
+            .text_color(rgb(if enabled { TEXT } else { MUTED }))
+            .when(enabled, |style| {
+                style.cursor_pointer().hover(|s| s.bg(rgb(HOVER)))
+            })
+            .focus(|style| style.border_color(rgb(FOCUS)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if enabled {
+                    action(this, window, cx);
+                }
+            }))
+            .on_key_down(
+                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if enabled && matches!(event.keystroke.key.as_str(), "space" | "enter") {
+                        cx.stop_propagation();
+                        keyboard_action(this, window, cx);
+                    }
+                }),
+            )
+            .child(icon(symbol, if enabled { TEXT } else { MUTED }))
+            .child(label)
+    }
+
+    fn field(&self, id: &'static str, label: &'static str) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .w_full()
+            .child(div().text_color(rgb(MUTED)).child(label))
+            .child(
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .w_full()
+                    .child(self.inputs[id].clone()),
+            )
+    }
+}
+
+/// Never remove configurations referenced by persisted sources. Fail closed if the
+/// source repository cannot be read; no source JSON or credentials are modified.
+fn save_profiles(
+    repo: &SshRepository,
+    source_repository: &SourceRepository,
+    profiles: &[SshProfile],
+) -> Result<()> {
+    let sources = source_repository.load()?;
+    for source in sources {
+        if let Some(id) = source.ssh_configuration_id {
+            ensure!(
+                profiles.iter().any(|p| p.id == id),
+                "Configuration is in use by a saved datasource. Restore it before applying settings."
+            );
+        }
+    }
+    repo.save(profiles)
+}
+
+/// The explicit Test action executes only `true` remotely. No shell interpolation,
+/// passwords, key contents, automatic host-key acceptance, or server output logging.
+fn test_connection(profile: &SshProfile, cancel: &AtomicBool) -> Result<()> {
+    ensure!(!cancel.load(Ordering::Acquire), "SSH test cancelled.");
+    profile.validate()?;
+    let mut command = Command::new("ssh");
+    command.args([
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ConnectionAttempts=1",
+        "-o",
+        "ClearAllForwardings=yes",
+        "-o",
+        "PermitLocalCommand=no",
+        "-o",
+        "RemoteCommand=none",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
+        "-o",
+        "PreferredAuthentications=publickey",
+    ]);
+    if !profile.parse_config {
+        command
+            .arg("-F")
+            .arg(if cfg!(windows) { "NUL" } else { "/dev/null" });
+    }
+    command
+        .arg("-p")
+        .arg(profile.port.to_string())
+        .arg("-l")
+        .arg(&profile.user);
+    if let Some(path) = &profile.identity_file {
+        command.args(["-o", "IdentitiesOnly=yes", "-i"]).arg(path);
+    }
+    if let Some(path) = &profile.known_hosts_file {
+        command.arg("-o").arg(format!("UserKnownHostsFile={path}"));
+    }
+    command
+        .arg("--")
+        .arg(&profile.host)
+        .arg("true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = command
+        .spawn()
+        .context("Could not start OpenSSH. Install ssh and ensure it is on PATH.")?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("SSH test cancelled.");
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                ensure!(
+                    status.success(),
+                    "SSH test failed. Check host, user, trusted known_hosts and ssh-agent. Unlock encrypted keys with ssh-add. Servers that prohibit remote commands cannot pass this test."
+                );
+                return Ok(());
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            outcome => {
+                let _ = child.kill();
+                let _ = child.wait();
+                if let Err(error) = outcome {
+                    return Err(error).context("Could not wait for SSH test");
+                }
+                anyhow::bail!("SSH test timed out after 15 seconds.");
+            }
+        }
+    }
+}
+
+impl Render for SshManager {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let enabled = self.editable();
+        let mut list = div()
+            .id("ssh-profile-list")
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll();
+        for profile in &self.profiles {
+            let id = profile.id.clone();
+            let keyboard_id = id.clone();
+            let selected = self.selected.as_ref() == Some(&id);
+            list = list.child(
+                div()
+                    .id(gpui::SharedString::from(format!("ssh-profile-{id}")))
+                    .tab_index(0)
+                    .flex()
+                    .flex_col()
+                    .p(px(10.))
+                    .gap(px(3.))
+                    .border_b_1()
+                    .border_color(rgb(BORDER))
+                    .bg(rgb(if selected { SELECTION } else { PANEL }))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .focus(|s| s.bg(rgb(SELECTION)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.editable()
+                            && this.selected.as_ref() != Some(&id)
+                            && this.commit_current(cx)
+                        {
+                            this.select(id.clone(), cx);
+                        }
+                        cx.notify();
+                    }))
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            && this.editable()
+                        {
+                            cx.stop_propagation();
+                            if this.selected.as_ref() != Some(&keyboard_id)
+                                && this.commit_current(cx)
+                            {
+                                this.select(keyboard_id.clone(), cx);
+                            }
+                            cx.notify();
+                        }
+                    }))
+                    .child(profile.name.clone())
+                    .child(div().text_xs().text_color(rgb(MUTED)).child(format!(
+                        "{}@{}:{}",
+                        profile.user, profile.host, profile.port
+                    ))),
+            );
+        }
+        let mut editor = div()
+            .id("ssh-manager-editor")
+            .flex_1()
+            .min_w(px(0.))
+            .overflow_y_scroll()
+            .p(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(12.));
+        if self.selected.is_some() {
+            editor = editor
+                .child(self.field("ssh-name", "Name"))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(10.))
+                        .child(self.field("ssh-host", "Host"))
+                        .child(
+                            div()
+                                .w(px(90.))
+                                .flex_shrink_0()
+                                .child(self.field("ssh-port", "Port")),
+                        ),
+                )
+                .child(self.field("ssh-user", "User"));
+            let auth_label = if self.auth == AuthChoice::Agent {
+                "SSH agent"
+            } else {
+                "Key pair (file)"
+            };
+            editor = editor.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(div().text_color(rgb(MUTED)).child("Authentication"))
+                    .child(self.button(
+                        "ssh-auth",
+                        auth_label,
+                        Icon::Chevron,
+                        enabled,
+                        |this, _, cx| {
+                            this.auth_open = !this.auth_open;
+                            cx.notify();
+                        },
+                        cx,
+                    )),
+            );
+            if self.auth_open {
+                editor = editor.child(
+                    div()
+                        .border_1()
+                        .border_color(rgb(INPUT_BORDER))
+                        .p(px(6.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(self.button(
+                            "ssh-auth-agent",
+                            "SSH agent",
+                            Icon::ReadOnly,
+                            enabled,
+                            |this, _, cx| {
+                                this.auth = AuthChoice::Agent;
+                                this.auth_open = false;
+                                this.revision += 1;
+                                this.feedback = None;
+                                cx.notify();
+                            },
+                            cx,
+                        ))
+                        .child(self.button(
+                            "ssh-auth-key",
+                            "Key pair (file)",
+                            Icon::ReadOnly,
+                            enabled,
+                            |this, _, cx| {
+                                this.auth = AuthChoice::KeyPair;
+                                this.auth_open = false;
+                                this.revision += 1;
+                                this.feedback = None;
+                                cx.notify();
+                            },
+                            cx,
+                        )),
+                );
+            }
+            if self.auth == AuthChoice::KeyPair {
+                editor = editor.child(
+                    div()
+                        .flex()
+                        .items_end()
+                        .gap(px(8.))
+                        .child(self.field("ssh-key", "Private key file"))
+                        .child(self.button(
+                            "ssh-key-browse",
+                            "Browse…",
+                            Icon::Folder,
+                            enabled,
+                            |this, window, cx| this.browse("ssh-key", window, cx),
+                            cx,
+                        )),
+                );
+            }
+            editor = editor.child(div().text_xs().text_color(rgb(MUTED))
+                .child("Encrypted keys: unlock with ssh-add first. Password and passphrase storage are not supported."))
+                .child(div().flex().items_end().gap(px(8.))
+                    .child(self.field("ssh-known-hosts", "Known hosts file (optional)"))
+                    .child(self.button("ssh-known-hosts-browse", "Browse…", Icon::Folder, enabled, |this, window, cx| this.browse("ssh-known-hosts", window, cx), cx)))
+                .child(self.button("ssh-parse-config", if self.parse_config { "☑ Parse ~/.ssh/config" } else { "☐ Parse ~/.ssh/config" }, Icon::Manage, enabled, |this, _, cx| {
+                    this.parse_config = !this.parse_config; this.revision += 1; this.feedback = None; cx.notify();
+                }, cx))
+                .child(div().text_xs().text_color(rgb(WARNING))
+                    .child("Opt-in: SSH config can invoke ProxyCommand / Match exec locally. Enable only for trusted configuration files."))
+                .child(div().text_xs().text_color(rgb(MUTED))
+                    .child("Host keys must already be trusted. Test executes the harmless command ‘true’ remotely; it does not test the database or forwarding."));
+        } else {
+            editor =
+                editor.child("No SSH configuration selected. Add a configuration to get started.");
+        }
+        if self.delete_confirmation {
+            editor = editor.child(div().text_color(rgb(WARNING)).child("Remove this configuration from the draft? Click Confirm remove. Saved datasource references are checked on Apply / Use."))
+                .child(self.button("ssh-delete-confirm", "Confirm remove", Icon::Remove, enabled, |this, _, cx| this.remove(cx), cx))
+                .child(self.button("ssh-delete-cancel", "Keep configuration", Icon::Close, enabled, |this, _, cx| { this.delete_confirmation = false; cx.notify(); }, cx));
+        }
+        div()
+            .id("ssh-manager")
+            .debug_selector(|| "ssh-manager".into())
+            .key_context("SshManager")
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(PANEL))
+            .text_color(rgb(TEXT))
+            .text_sm()
+            .on_action(cx.listener(|_, _: &NextFocus, window, cx| {
+                cx.stop_propagation();
+                window.focus_next();
+            }))
+            .on_action(cx.listener(|_, _: &PreviousFocus, window, cx| {
+                cx.stop_propagation();
+                window.focus_prev();
+            }))
+            .on_action(cx.listener(|this, _: &CloseWindow, window, _| this.close(window)))
+            .on_action(cx.listener(|this, _: &Dismiss, window, _| this.close(window)))
+            .child(
+                div()
+                    .p(px(12.))
+                    .border_b_1()
+                    .border_color(rgb(BORDER))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(icon(Icon::Manage, TEXT))
+                    .child("SSH Configurations")
+                    .child(div().flex_1())
+                    .child(self.button(
+                        "ssh-add",
+                        "Add",
+                        Icon::Add,
+                        enabled,
+                        |this, _, cx| this.add(false, cx),
+                        cx,
+                    ))
+                    .child(self.button(
+                        "ssh-duplicate",
+                        "Duplicate",
+                        Icon::Add,
+                        enabled && self.selected.is_some(),
+                        |this, _, cx| this.add(true, cx),
+                        cx,
+                    ))
+                    .child(self.button(
+                        "ssh-remove",
+                        "Remove",
+                        Icon::Remove,
+                        enabled && self.selected.is_some(),
+                        |this, _, cx| this.remove(cx),
+                        cx,
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(
+                        div()
+                            .w(px(240.))
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_col()
+                            .border_r_1()
+                            .border_color(rgb(BORDER))
+                            .child(list),
+                    )
+                    .child(editor),
+            )
+            .child(
+                div()
+                    .px(px(12.))
+                    .py(px(6.))
+                    .min_h(px(32.))
+                    .when_some(self.error.clone(), |s, error| {
+                        s.child(div().text_color(rgb(ERROR)).child(error))
+                    })
+                    .when_some(self.feedback.clone(), |s, feedback| {
+                        s.child(div().text_color(rgb(MUTED)).child(feedback))
+                    })
+                    .when(self.busy && !self.loaded, |s| {
+                        s.child("Loading SSH configurations…")
+                    })
+                    .when(self.saving, |s| s.child("Saving…")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .p(px(12.))
+                    .border_t_1()
+                    .border_color(rgb(BORDER))
+                    .child(self.button(
+                        "ssh-test",
+                        "Test Connection",
+                        Icon::Play,
+                        enabled && self.selected.is_some(),
+                        |this, window, cx| this.test(window, cx),
+                        cx,
+                    ))
+                    .child(div().flex_1())
+                    .child(self.button(
+                        "ssh-cancel",
+                        "Cancel",
+                        Icon::Close,
+                        !self.saving,
+                        |this, window, _| this.close(window),
+                        cx,
+                    ))
+                    .child(self.button(
+                        "ssh-apply",
+                        "Apply",
+                        Icon::Check,
+                        enabled,
+                        |this, window, cx| this.save(false, window, cx),
+                        cx,
+                    ))
+                    .child(self.button(
+                        "ssh-use",
+                        "Use Configuration",
+                        Icon::Check,
+                        enabled && self.selected.is_some(),
+                        |this, window, cx| this.save(true, window, cx),
+                        cx,
+                    )),
+            )
+    }
+}
+
+impl Drop for SshManager {
+    fn drop(&mut self) {
+        self.cancel_test();
+    }
+}
+
+pub(super) fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", NextFocus, Some("SshManager")),
+        KeyBinding::new("shift-tab", PreviousFocus, Some("SshManager")),
+        KeyBinding::new("escape", Dismiss, Some("SshManager")),
+        KeyBinding::new("cmd-w", CloseWindow, Some("SshManager")),
+    ]);
+}
+
+pub(super) fn show(owner: Entity<SourceForm>, selected: Option<String>, cx: &mut App) {
+    if let Some(handle) = cx
+        .windows()
+        .into_iter()
+        .find_map(|handle| handle.downcast::<SshManager>())
+    {
+        let _ = handle.update(cx, |manager, window, cx| {
+            if manager.owner.entity_id() != owner.entity_id() && !manager.saving {
+                manager.owner = owner.downgrade();
+                if let Some(id) = selected
+                    && manager.commit_current(cx)
+                {
+                    manager.select(id, cx);
+                }
+            }
+            cx.notify();
+            window.activate_window();
+        });
+        return;
+    }
+    let bounds = Bounds::centered(None, size(px(900.), px(760.)), cx);
+    // Opening failure leaves the owning form and its draft untouched.
+    let _ = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(760.), px(620.))),
+            window_background: gpui::WindowBackgroundAppearance::Opaque,
+            titlebar: Some(TitlebarOptions {
+                title: Some("SSH Configurations · Dalan".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        |window, cx| cx.new(|cx| SshManager::new(owner, selected, window, cx)),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_configuration_is_valid_and_has_independent_identity() {
+        let first = SshProfile::default();
+        let second = SshProfile::default();
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.auth, SshAuthentication::Agent);
+        assert!(first.identity_file.is_none());
+        assert!(!first.parse_config);
+        first.validate().unwrap();
+    }
+
+    #[test]
+    fn cancelled_test_never_launches_ssh() {
+        let error = test_connection(&SshProfile::default(), &AtomicBool::new(true)).unwrap_err();
+        assert_eq!(error.to_string(), "SSH test cancelled.");
+    }
+
+    #[test]
+    fn test_rejects_invalid_profile_before_launching_ssh() {
+        let profile = SshProfile {
+            port: 0,
+            ..SshProfile::default()
+        };
+        assert!(test_connection(&profile, &AtomicBool::new(false)).is_err());
+        let profile = SshProfile {
+            auth: SshAuthentication::KeyPair,
+            identity_file: None,
+            ..SshProfile::default()
+        };
+        assert!(test_connection(&profile, &AtomicBool::new(false)).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "ui-tests"))]
+mod ui_tests {
+    use super::*;
+    use crate::desktop::source_model::SourceModel;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+    use std::{fs, path::PathBuf};
+
+    struct Files {
+        root: PathBuf,
+        ssh: SshRepository,
+        sources: SourceRepository,
+        profile: SshProfile,
+    }
+
+    impl Files {
+        fn new(key_pair: bool) -> Self {
+            let root = std::env::temp_dir().join(format!("dalan-ssh-ui-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            let key = root.join("fixture-key");
+            let known = root.join("fixture-known-hosts");
+            fs::write(&key, "not a private key").unwrap();
+            fs::write(&known, "not a host key").unwrap();
+            let profile = SshProfile {
+                name: "Fixture bastion".into(),
+                host: "jump.example".into(),
+                user: "operator".into(),
+                port: 2222,
+                auth: if key_pair {
+                    SshAuthentication::KeyPair
+                } else {
+                    SshAuthentication::Agent
+                },
+                identity_file: key_pair.then(|| key.to_str().unwrap().to_owned()),
+                known_hosts_file: Some(known.to_str().unwrap().to_owned()),
+                parse_config: true,
+                ..SshProfile::default()
+            };
+            let ssh = SshRepository::new(root.join("ssh-config.json"));
+            let sources = SourceRepository::new(root.join("sources.json"));
+            ssh.save(std::slice::from_ref(&profile)).unwrap();
+            sources.save(&[]).unwrap();
+            Self {
+                root,
+                ssh,
+                sources,
+                profile,
+            }
+        }
+    }
+
+    impl Drop for Files {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.root).unwrap();
+        }
+    }
+
+    fn fixture<'a>(
+        cx: &'a mut TestAppContext,
+        files: &Files,
+    ) -> (
+        Entity<SshManager>,
+        Entity<SourceForm>,
+        &'a mut VisualTestContext,
+    ) {
+        cx.update(bind_keys);
+        let model = cx.new(|_| SourceModel::for_tests(vec![]));
+        model.update(cx, |model, cx| model.new_source(cx));
+        let profile = model.read_with(cx, |model, _| model.form_profile.clone().unwrap());
+        let owner = cx.new(|cx| SourceForm::new(profile, model, cx));
+        let (manager, visual) = cx.add_window_view(|window, cx| {
+            let owner = owner.clone();
+            {
+                let mut manager = SshManager::with_repository(
+                    owner,
+                    Some(files.profile.id.clone()),
+                    Ok(files.ssh.clone()),
+                    window,
+                    cx,
+                );
+                manager.source_repository = Some(files.sources.clone());
+                manager
+            }
+        });
+        visual.simulate_resize(size(px(900.), px(760.)));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        assert!(manager.read_with(visual, |manager, _| manager.loaded));
+        (manager, owner, visual)
+    }
+
+    fn click(cx: &mut VisualTestContext, id: &'static str) {
+        cx.run_until_parked();
+        let bounds = cx
+            .debug_bounds(id)
+            .unwrap_or_else(|| panic!("missing {id}"));
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.run_until_parked();
+    }
+
+    fn set(
+        manager: &Entity<SshManager>,
+        cx: &mut VisualTestContext,
+        id: &'static str,
+        value: &str,
+    ) {
+        let input = manager.read_with(cx, |manager, _| manager.inputs[id].clone());
+        input.update(cx, |input, cx| input.set_value(value.to_owned(), cx));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn manager_load_add_duplicate_preserves_agent_metadata_and_drafts(cx: &mut TestAppContext) {
+        let files = Files::new(false);
+        let (manager, _, cx) = fixture(cx, &files);
+        assert_eq!(
+            manager.read_with(cx, |manager, app| manager.collect_current(app).unwrap()),
+            files.profile
+        );
+        let name_focus = manager.read_with(cx, |manager, app| {
+            manager.inputs["ssh-name"].read(app).focus_handle()
+        });
+        assert!(cx.update(|window, _| name_focus.is_focused(window)));
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        assert!(!cx.update(|window, _| name_focus.is_focused(window)));
+        cx.simulate_keystrokes("shift-tab");
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| name_focus.is_focused(window)));
+
+        set(&manager, cx, "ssh-name", "Manual draft name");
+        click(cx, "ssh-duplicate");
+        let duplicate = manager.read_with(cx, |manager, app| manager.collect_current(app).unwrap());
+        assert_ne!(duplicate.id, files.profile.id);
+        assert_eq!(duplicate.name, "Manual draft name copy");
+        assert_eq!(duplicate.transport(), files.profile.transport());
+        set(&manager, cx, "ssh-name", "Second manual name");
+        click(cx, "ssh-add");
+        manager.read_with(cx, |manager, _| {
+            assert_eq!(manager.profiles.len(), 3);
+            assert_eq!(manager.profiles[0].name, "Manual draft name");
+            assert_eq!(manager.profiles[1].name, "Second manual name");
+            let ids: std::collections::HashSet<_> =
+                manager.profiles.iter().map(|p| &p.id).collect();
+            assert_eq!(ids.len(), 3);
+            for profile in &manager.profiles {
+                uuid::Uuid::parse_str(&profile.id).unwrap();
+            }
+        });
+        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+    }
+
+    #[gpui::test]
+    fn confirmed_delete_apply_rejects_saved_reference_cancel_leaves_disk_untouched(
+        cx: &mut TestAppContext,
+    ) {
+        let files = Files::new(false);
+        let (manager, owner, cx) = fixture(cx, &files);
+        let mut source = owner.read_with(cx, |form, app| form.profile(app).unwrap());
+        source.ssh_configuration_id = Some(files.profile.id.clone());
+        source.transport = files.profile.transport();
+        files.sources.save(&[source.clone()]).unwrap();
+        click(cx, "ssh-remove");
+        assert_eq!(
+            manager.read_with(cx, |manager, _| manager.profiles.len()),
+            1
+        );
+        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+        click(cx, "ssh-delete-confirm");
+        assert!(manager.read_with(cx, |manager, _| manager.profiles.is_empty()));
+        click(cx, "ssh-apply");
+        assert!(manager.read_with(cx, |manager, _| {
+            manager.error.as_ref().unwrap().contains("in use")
+        }));
+        assert_eq!(files.sources.load().unwrap(), vec![source]);
+        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+        click(cx, "ssh-cancel");
+        assert!(cx.cx.read(|app| app.windows().is_empty()));
+        assert!(owner.read_with(cx, |form, app| {
+            form.profile(app).unwrap().ssh_configuration_id.is_none()
+        }));
+    }
+
+    #[gpui::test]
+    fn apply_stays_open_and_saving_guards_cancel_native_close_and_edits(cx: &mut TestAppContext) {
+        let files = Files::new(false);
+        let (manager, owner, cx) = fixture(cx, &files);
+        set(&manager, cx, "ssh-name", "Applied name");
+        click(cx, "ssh-apply");
+        assert!(!cx.cx.read(|app| app.windows().is_empty()));
+        assert_eq!(files.ssh.load().unwrap()[0].name, "Applied name");
+        assert!(owner.read_with(cx, |form, app| {
+            form.profile(app).unwrap().ssh_configuration_id.is_none()
+        }));
+        manager.update(cx, |manager, cx| {
+            manager.saving = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        set(&manager, cx, "ssh-name", "Forbidden edit");
+        assert_eq!(
+            manager.read_with(cx, |manager, app| manager.inputs["ssh-name"]
+                .read(app)
+                .value()),
+            "Applied name"
+        );
+        click(cx, "ssh-cancel");
+        assert!(!cx.simulate_close());
+        manager.update_in(cx, |manager, window, _| manager.close(window));
+        assert!(!cx.cx.read(|app| app.windows().is_empty()));
+        manager.update(cx, |manager, cx| {
+            manager.saving = false;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click(cx, "ssh-cancel");
+        assert!(cx.cx.read(|app| app.windows().is_empty()));
+    }
+
+    #[gpui::test]
+    fn use_commits_exact_key_metadata_to_owner_without_secrets_and_closes(cx: &mut TestAppContext) {
+        let files = Files::new(true);
+        let (_, owner, cx) = fixture(cx, &files);
+        click(cx, "ssh-use");
+        assert!(cx.cx.read(|app| app.windows().is_empty()));
+        let profile = owner.read_with(cx, |form, app| form.profile(app).unwrap());
+        assert_eq!(profile.ssh_configuration_id, Some(files.profile.id.clone()));
+        assert_eq!(profile.transport, files.profile.transport());
+        let json = serde_json::to_string(&profile).unwrap();
+        assert!(!json.contains("not a private key"));
+        assert!(!json.contains("passphrase"));
+        assert!(!json.contains("private_key"));
+        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+    }
+}

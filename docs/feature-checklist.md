@@ -11,17 +11,17 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 - [x] Experimental MySQL/MariaDB source form, version 1 password-free profile storage and optional database discovery. Test, Save and Connect remain separate actions.
 - [x] Session-only passwords and opt-in native macOS Keychain storage; explicit failure/compensation boundaries.
 - [x] Direct TCP, strict SSH and anonymous HTTP/HTTPS CONNECT transport configuration; database VerifyIdentity TLS with optional CA and no insecure retry. Trusted system-CA HTTPS proxy success remains unverified.
-- [x] BASE TABLE discovery/browse, seven bound-value filters, bounded 100-row UI pages, typed display and honest stale/error/cancel states. Views are listed but cannot be browsed.
+- [x] BASE TABLE discovery/browse, seven bound-value filters, bounded configurable 1–200-row UI pages (default 100), typed display and honest stale/error/cancel states. Views are listed but cannot be browsed.
 - [x] Column header sorting by click or Enter/Space: ascending, descending, none; metadata validation, filter retention, offset reset and available primary-key tie-breakers. Pages are not snapshots and can be unstable without keys.
 - [x] Loaded-page CSV with native save picker, fresh complete rows only, visible success/cancel/error and no overwrite. Default name `Dalan-loaded-page.csv`; no extension enforcement. UTF-8/CRLF/quoted fields, explicit NULL syntax, default spreadsheet-safe text protection and private same-filesystem hard-link publication. No full-query or whole-table export. See [exact export limits](mysql-sources.md#export-loaded-csv).
 - [x] Headless, simulated GPUI, bundle-helper and disposable live transport coverage. Historical icon/sorting/export results: 48 headless, 42 simulated UI, four bundle-helper, one generated Keychain and 22 live checks passed, including sorting on actual routes.
 
-- [x] Compact explorer: no title header; one horizontally scrolling 28 px toolbar with seven 28 px Add/Manage/Refresh/Remove/Expand Loaded/Collapse All/New Query Console icons, tooltips and selection/busy/save guards; bottom-left toggle unchanged; no rail or inactive advanced tools.
+- [x] Compact explorer: no title header; one horizontally scrolling 28 px toolbar with seven 28 px Add/Manage/Refresh/Remove/Expand Loaded/Collapse All/New Query Console icons, tooltips and selection/busy/save guards; titlebar database toggle retained; no rail or inactive advanced tools.
 - [x] Virtual lazy tree for large catalogs: 22 px rows, cached expansion, viewport-only rendering, readable ellipsized names/full-name tooltips, Tables/Views groups and unavailable view leaves.
 - [x] Selection-safe explorer actions independent of the current table page; UUID-pinned removal confirmation, complete-source metadata Refresh with retained old snapshot on failure and per-branch catalog cancellation/errors.
 - [x] Single-focus tree keyboard navigation and guarded toolbar Enter/Space activation; scoped 71-test simulated suite includes 1,000-database visible-range, scroll-to-900 and End regressions. No native smoothness/FPS claim.
 - [x] Compact-explorer local verification: 57 headless, 71 UI and four Python tests passed with formatting, strict lint and bundle verification; current hosted CI and native review remain pending. See [testing](testing.md#compact-lazy-explorer).
-- [x] Bottom-left 28 px panel-left toggle retaining the closed preference; Cmd-B and View/Layout alternatives unchanged. Flush body edges have 0 px outer padding and a 4 px divider hit area/1 px visible line; 320 px preferred sidebar, 200–480 px bounds and 476 px maximum at 720 px retain main 240 px and compact ACP behavior.
+- [x] Titlebar 28 px database toggle beside traffic lights retaining the closed preference; Cmd-B and View/Layout alternatives unchanged. Flush body edges have 0 px outer padding and a 4 px divider hit area/1 px visible line; 320 px preferred sidebar, 200–480 px bounds and 476 px maximum at 720 px retain main 240 px and compact ACP behavior.
 - [x] Source rows with readable names and abstract Lucide database/MySQL and database-zap/MariaDB cues, not vendor logos or duplicate engine badges; engine and known counts in full-name tooltips. Optional marker color, manual hex and labeled Default/Blue/Green/Amber/Red/Purple form presets; no color-only risk meaning or arbitrary-color AA claim.
 - [x] Backward-compatible version 1 color metadata with absent None, case-preserving hex, unchanged password rejection and no automatic rewrite/Keychain migration. Scoped migration and malformed-color no-overwrite tests passed.
 - [x] Working centered no-source Connect to a Source action using the same dedicated source dialog window by mouse/Enter/Space, including with explorer hidden; no demo/trial welcome.
@@ -113,3 +113,20 @@ Database explorer, query consoles, data views, results/sessions and optional ACP
 - [ ] Syntax highlighting, completion, persistent history and deletion policy; saved scripts, cursor/current-statement execution, full-query export and dedicated transaction/write workflows remain separately scoped.
 
 - [x] Multi-table/query-console verification: 93 headless, 132 simulated UI, four bundle tests and 23 live database/transport cases passed; formatting/lint/signed bundle checks passed. Current hosted CI and native visual/accessibility review remain separate gates.
+
+## Source-manager redesign scope
+
+- [x] General/Options/SSH/SSL/Schemas titlebar tabs, real driver/authentication combos, Name/Color, opaque Carbonfox body and traffic-light reservation; independent source window reuse/saving guards.
+- [x] Default, explicit local Unix Socket and credential-free URL-only with generated URL synchronization and static rejected-credential diagnostics; no arbitrary JDBC properties.
+- [x] No Auth supplies no credentials, skips Keychain and clears remembered credentials on Save with compensation; password-free version 1 JSON compatibility.
+- [x] Applied Connect 1–60 seconds, Query 1–120 seconds and Page size 1–200; defaults 10/20/100, unchanged global catalog cap.
+- [x] Independent reusable SSH manager/repository, named selection and Custom fallback; strict host checking, agent/key only, explicit Parse config warning, owned-child Test cancellation and in-use removal guard.
+- [x] Four explicit TLS modes, optional CA picker and paired driver-wired PEM identity paths; no encrypted TLS-key passphrase/Java truststore controls.
+- [x] Searchable exact-name Schemas checkbox visibility filter, complete allowed SQLite snapshots and unchanged full console database choices.
+- [ ] Final owner-run confirmation of expected 105 headless, 141 simulated UI, four Python and expanded 29 unique live cases (11 direct, 12 TLS, 6 SSH); no unverified counts marked passed here.
+- [ ] Positive live mutual TLS, live successful SSH-manager remote `true`, native visual/window/accessibility review and positive system-trusted HTTPS proxy.
+- [ ] Current hosted CI; historical `9ecae4c` passed all five jobs in run 37255792022, not this revision.
+
+See [source management](source-management.md) and [evidence](testing.md#source-manager-redesign). Existing 23-case query-console coverage remains historical. No new icons, packages or licensing choices are part of this slice.
+
+- [x] Source-manager redesign verification: 105 headless unit tests plus one native No Auth wire test, 141 simulated UI, four Python and 29 unique live cases passed with formatting, strict lint and signed bundle checks. Hosted CI and native visual/accessibility remain separate gates.

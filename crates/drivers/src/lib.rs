@@ -8,7 +8,10 @@ pub use mysql::{
     FilterOperator, SortDirection, TableFilter, TableInfo, TablePage, TableSort, browse, columns,
     discover_catalog, tables, test_connection,
 };
-pub use sources::{DbEngine, SourceProfile, TlsMode, Transport};
+pub use sources::{
+    Authentication, ConnectionMode, ConnectionTarget, DbEngine, SchemaSelection, SourceOptions,
+    SourceProfile, TlsMode, Transport,
+};
 
 use dalan_core::Engine;
 

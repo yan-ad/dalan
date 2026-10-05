@@ -254,3 +254,27 @@ Native manual visual/keyboard/IME/VoiceOver review, high-DPI/GPU performance, re
 
 
 The final workspace regressions cover healthy duplicate-table reuse, replacement of a connection-invalidated table model under the same tab ID, isolation of neighboring tabs, and Cmd-W closing the window when the workspace is empty. Failed/canceled queries preserve old successful result SQL/elapsed/warning metadata rather than relabeling old rows. A shell-level Cmd-Shift-N test verifies exactly one console opens under the explicitly selected database, and Keep open supports Space/Enter with safe default focus.
+
+## Source-manager redesign
+
+**Final local verification passed.** These are current executed results; native and hosted gates remain separate:
+
+| Suite | Expected total | Boundary |
+| --- | --- | --- |
+| Headless Rust | 105 unit tests: 4 ACP, 48 app, 5 core, 48 drivers; plus one native-wire test | Passed; No Auth handshake sends empty user/auth response |
+| Simulated GPUI | 141 | Passed; not native visual/accessibility evidence |
+| Python bundle helper | 4 | Run the actual helper tests; failures/lint must not be hidden by expected counts |
+| Expanded live fixtures | 29 unique: 11 direct/URL/socket/CONNECT/authentication, 12 TLS, 6 SSH | Passed; repeated standalone cases are not extra unique tests |
+
+The older console revision's **23 unique cases** remains historical; the current 29-case run is separate. Run the existing headless/UI/Python commands in this guide and `./scripts/test-databases`, `./scripts/test-secure-transports`, `./scripts/test-ssh-transport` against owned disposable fixtures. Formatting, both strict Clippy paths, debug build, plist lint, signature and bundle-helper checks passed.
+
+Repository tests use complete temporary files and cover reusable SSH version 1 persistence, bounds/private permissions, references, missing-reference failures, in-use removal and metadata-only paths. Source tests cover backward defaults, credential-free URL modes/rejection/IPv6, local-socket restrictions, No Auth Keychain bypass/remembered-credential removal and compensation, applied Options, exact schema names/empty selection/full cache generation behavior, and driver TLS identity validation. UI tests cover titlebar geometry/traffic-light reservation and blank native title, actual combos, tab traversal, draft/save guards, named SSH profile selection, manager lifecycle, simulated file selection, TLS warnings and loaded-page footer bounds.
+
+Expanded direct fixtures include Unix socket and URL/option behavior; TLS fixtures exercise Required and VerifyCA behavior alongside trusted/rejected VerifyIdentity paths. Live SSH forwarding remains strict driver testing. **Positive mTLS is not live-tested**: compilation/path validation/driver wiring alone are insufficient. Positive Parse config handshake and manager successful remote `true` are not established: manager tests cover prelaunch/cancellation and simulated GPUI picker paths, not a successful live manager test. A forwarding-only bastion may correctly reject remote `true`. No encrypted-key built-in passphrase support is claimed.
+
+Historical **`9ecae4c` passed all five hosted jobs** in [run 37255792022](https://github.com/yan-ad/dalan/actions/runs/37255792022). This is confirmed historical evidence, not the new revision's CI. The new hosted main run remains pending. Native screenshot/window capture was previously blocked; no exact visual/titlebar match, manual source/manager test, accessibility/IME pass or performance measurement follows from simulation. No new native Keychain round-trip is claimed. Keep endpoint/account/private screenshot values out of documentation. Positive system-trusted HTTPS CONNECT, release signing/notarization and full native review remain open.
+
+See [source-management contracts](source-management.md), [security](security.md) and [driver boundaries](drivers.md). The revision adds no new icons/packages or license selection; a direct `url` declaration uses the existing dependency graph and legitimate root lockfile changes are not evidence of a new package.
+
+
+The MySQL No Auth live rejection can be a server 1045 or an unsupported decoy auth-plugin category: MySQL selects a built-in decoy plugin for unknown accounts and mysql_async does not implement sha256_password. The native mock-wire regression verifies empty username, zero-length authentication response, no supplied-password bytes and no fallback proof. Transport/TLS/timeouts are not accepted as authentication-rejection success. Page summaries report all configured 200 rows rather than cap their count at 100.

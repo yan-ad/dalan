@@ -65,7 +65,7 @@ pub async fn full_catalog(
     database: &str,
 ) -> anyhow::Result<()> {
     use dalan_drivers::{discover_catalog, test_connection};
-    let mut all = profile.clone();
+    let mut all = profile.resolved()?;
     all.database = None;
     let visible = test_connection(&all, password).await?.databases;
     for _ in 0..2 {
@@ -101,7 +101,7 @@ pub async fn full_catalog(
         }
         assert!(!serialized.contains("\"rows\""));
     }
-    let mut scoped = all.clone();
+    let mut scoped = all.resolved()?;
     scoped.database = Some(database.into());
     for _ in 0..2 {
         let snapshot = discover_catalog(&scoped, password).await?;
@@ -145,7 +145,7 @@ pub async fn queries(
     base: &BrowseRequest,
 ) -> anyhow::Result<()> {
     use dalan_drivers::{CellValue, QueryRequest, execute_read_only};
-    let mut scoped = profile.clone();
+    let mut scoped = profile.resolved()?;
     scoped.database = Some(base.database.clone());
     let table = format!("`{}`", base.table.replace('`', "``"));
     let request = QueryRequest {

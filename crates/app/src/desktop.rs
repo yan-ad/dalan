@@ -9,6 +9,7 @@ mod source_form;
 mod source_model;
 mod source_workspace;
 mod sql_editor;
+mod ssh_manager;
 mod theme;
 
 use std::collections::HashMap;
@@ -543,6 +544,7 @@ fn bind_keys(cx: &mut App) {
     sql_editor::bind_keys(cx);
     query_console::bind_keys(cx);
     source_workspace::bind_keys(cx);
+    ssh_manager::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("tab", NextFocus, Some("Shell")),
         KeyBinding::new("shift-tab", PreviousFocus, Some("Shell")),

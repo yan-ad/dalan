@@ -162,3 +162,155 @@ tests!(
     mariadb_untrusted_https,
     DbEngine::MariaDb
 );
+
+async fn additional_modes(engine: DbEngine) -> anyhow::Result<()> {
+    let mut p = profile(engine)?;
+    p.host = "127.0.0.1".into();
+    p.port = port(engine, "WRONG_HOST_PORT")?;
+    p.tls = TlsMode::VerifyCa;
+    // Trusted chain, deliberately mismatched identity is allowed only here.
+    test_connection(&p, PASSWORD).await?;
+    p.ca_path = None;
+    assert!(test_connection(&p, PASSWORD).await.is_err());
+    p.tls = TlsMode::Required;
+    // Required encrypts but deliberately does not verify trust or identity.
+    test_connection(&p, PASSWORD).await?;
+    p.authentication = dalan_drivers::Authentication::NoAuth;
+    p.username = "dalan_reader".into();
+    // Passing a real account/password must not silently override NoAuth.
+    let error = test_connection(&p, PASSWORD).await.unwrap_err();
+    let message = error.to_string();
+    assert!(
+        !message.contains(PASSWORD),
+        "NoAuth error leaked credentials"
+    );
+    // MySQL assigns unknown accounts a random decoy authentication plugin
+    // (sql_authentication.cc: decoy_user), including sha256_password, which
+    // mysql_async 0.37.1 does not implement. That fails closed before 1045.
+    // MariaDB still requires an explicit access-denied response. Do not accept
+    // transport, TLS, timeout, or arbitrary protocol failures as authentication.
+    assert!(
+        message == "Authentication denied; check password and account grants (code 1045)"
+            || (engine == DbEngine::MySql
+                && message == "Database requested an unsupported authentication plugin"),
+        "NoAuth rejection had category {message}"
+    );
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "requires disposable secure fixture"]
+async fn mysql_additional_tls_and_noauth_modes() -> anyhow::Result<()> {
+    additional_modes(DbEngine::MySql).await
+}
+#[tokio::test]
+#[ignore = "requires disposable secure fixture"]
+async fn mariadb_additional_tls_and_noauth_modes() -> anyhow::Result<()> {
+    additional_modes(DbEngine::MariaDb).await
+}
+
+/// Inspect the actual native handshake, not Debug options or a live server's
+/// randomized decoy plugin. Neither a configured username nor the supplied
+/// password may reach the wire, including after an authentication switch.
+#[tokio::test]
+async fn noauth_native_handshake_omits_credentials() -> anyhow::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn send(stream: &mut tokio::net::TcpStream, seq: u8, body: &[u8]) -> anyhow::Result<()> {
+        let len = (body.len() as u32).to_le_bytes();
+        stream.write_all(&[len[0], len[1], len[2], seq]).await?;
+        stream.write_all(body).await?;
+        Ok(())
+    }
+    async fn receive(stream: &mut tokio::net::TcpStream) -> anyhow::Result<Vec<u8>> {
+        let mut header = [0; 4];
+        stream.read_exact(&mut header).await?;
+        let len = u32::from_le_bytes([header[0], header[1], header[2], 0]) as usize;
+        anyhow::ensure!(len <= 4096, "mock handshake packet exceeds test cap");
+        let mut body = vec![0; len];
+        stream.read_exact(&mut body).await?;
+        Ok(body)
+    }
+
+    for switch in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let p = SourceProfile {
+            host: "127.0.0.1".into(),
+            port: listener.local_addr()?.port(),
+            username: "must-not-be-sent".into(),
+            authentication: dalan_drivers::Authentication::NoAuth,
+            tls: TlsMode::Disabled,
+            ..SourceProfile::default()
+        };
+        let server = async {
+            let (mut stream, _) = listener.accept().await?;
+            // Protocol 10, CLIENT_PROTOCOL_41 | SECURE_CONNECTION | PLUGIN_AUTH.
+            let capabilities: u32 = 0x0008_8200;
+            let mut handshake = b"\x0a8.4.11\0\x01\0\0\0abcdefgh\0".to_vec();
+            handshake.extend_from_slice(&(capabilities as u16).to_le_bytes());
+            handshake.extend_from_slice(&[45, 2, 0]);
+            handshake.extend_from_slice(&((capabilities >> 16) as u16).to_le_bytes());
+            handshake.push(21);
+            handshake.extend_from_slice(&[0; 10]);
+            handshake.extend_from_slice(b"ijklmnopqrst\0caching_sha2_password\0");
+            send(&mut stream, 0, &handshake).await?;
+            let response = receive(&mut stream).await?;
+            anyhow::ensure!(response.len() >= 34, "native handshake is truncated");
+            // Fixed protocol-41 header is 32 bytes; username NUL and empty
+            // length-encoded/secure authentication response follow it.
+            assert!(response[32] == 0, "NoAuth sent a username");
+            assert!(response[33] == 0, "NoAuth sent an authentication proof");
+            assert!(
+                !response
+                    .windows(PASSWORD.len())
+                    .any(|w| w == PASSWORD.as_bytes()),
+                "NoAuth sent a password"
+            );
+            if switch {
+                send(
+                    &mut stream,
+                    2,
+                    b"\xfesha256_password\0abcdefghijklmnopqrst\0",
+                )
+                .await?;
+                // The unsupported-plugin branch may drop its buffered empty
+                // packet before flushing. Inspect every byte received through
+                // EOF: either no packet or an empty packet, never a proof.
+                let mut bytes = Vec::new();
+                stream.read_to_end(&mut bytes).await?;
+                assert!(
+                    bytes.is_empty() || bytes == [0, 0, 0, 3],
+                    "NoAuth sent a switched authentication proof"
+                );
+            } else {
+                send(&mut stream, 2, b"\xff\x15\x04#28000denied").await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (server_result, result) = tokio::join!(server, test_connection(&p, PASSWORD));
+            let message = result.expect_err("mock must reject NoAuth").to_string();
+            assert!(
+                !message.contains(PASSWORD),
+                "NoAuth error leaked credentials"
+            );
+            server_result
+                .map_err(|_| anyhow::anyhow!("mock exchange failed; client category {message}"))?;
+            assert!(
+                !message.contains(PASSWORD),
+                "NoAuth error leaked credentials"
+            );
+            let expected = if switch {
+                "Database requested an unsupported authentication plugin"
+            } else {
+                "Authentication denied; check password and account grants (code 1045)"
+            };
+            assert!(
+                message == expected,
+                "NoAuth rejection had category {message}"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+    }
+    Ok(())
+}

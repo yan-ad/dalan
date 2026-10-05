@@ -40,7 +40,7 @@ pub struct CachedSchema {
 /// Stable, explicit allowlist of connection settings, not a credential hash.
 /// Presentation settings and the user's save-password choice are intentionally absent.
 pub fn connection_identity(profile: &SourceProfile) -> Result<String> {
-    profile.validate()?;
+    let profile = profile.resolved()?;
     #[derive(Serialize)]
     struct Identity<'a> {
         engine: &'a dalan_drivers::DbEngine,
@@ -51,6 +51,12 @@ pub fn connection_identity(profile: &SourceProfile) -> Result<String> {
         transport: &'a dalan_drivers::Transport,
         tls: &'a dalan_drivers::TlsMode,
         ca_path: &'a Option<String>,
+        endpoint: &'a dalan_drivers::ConnectionMode,
+        authentication: &'a dalan_drivers::Authentication,
+        ssl_client_cert: &'a Option<String>,
+        ssl_client_key: &'a Option<String>,
+        connect_timeout_seconds: u64,
+        query_timeout_seconds: u64,
     }
     serde_json::to_string(&Identity {
         engine: &profile.engine,
@@ -61,6 +67,12 @@ pub fn connection_identity(profile: &SourceProfile) -> Result<String> {
         transport: &profile.transport,
         tls: &profile.tls,
         ca_path: &profile.ca_path,
+        endpoint: &profile.endpoint,
+        authentication: &profile.authentication,
+        ssl_client_cert: &profile.ssl_client_cert,
+        ssl_client_key: &profile.ssl_client_key,
+        connect_timeout_seconds: profile.options.connect_timeout_seconds,
+        query_timeout_seconds: profile.options.query_timeout_seconds,
     })
     .context("Cannot encode metadata connection identity")
 }
@@ -591,6 +603,29 @@ mod tests {
         assert!(cache.load(&profile).unwrap().is_none());
         cache.register(&profile).unwrap();
         assert!(cache.load(&profile).unwrap().is_none());
+    }
+    #[test]
+    fn effective_url_identity_and_display_selection_are_stable() {
+        let mut profile = SourceProfile {
+            endpoint: dalan_drivers::ConnectionMode::UrlOnly {
+                url: "mysql://localhost:3306/url_database".into(),
+            },
+            ..SourceProfile::default()
+        };
+        let identity = connection_identity(&profile).unwrap();
+        assert_eq!(
+            identity,
+            connection_identity(&profile.resolved().unwrap()).unwrap()
+        );
+        profile.database = Some("ignored_form_database".into());
+        profile.schemas = dalan_drivers::SchemaSelection::Selected(vec!["url_database".into()]);
+        profile.options.page_size = 200;
+        assert_eq!(identity, connection_identity(&profile).unwrap());
+        profile.authentication = dalan_drivers::Authentication::NoAuth;
+        assert_ne!(identity, connection_identity(&profile).unwrap());
+        let no_auth_identity = connection_identity(&profile).unwrap();
+        profile.username = "unused_account".into();
+        assert_eq!(no_auth_identity, connection_identity(&profile).unwrap());
     }
     #[test]
     fn invalid_snapshot_preserves_previous_commit() {

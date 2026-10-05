@@ -89,6 +89,13 @@ impl SourceRepository {
                                 | "tls"
                                 | "ca_path"
                                 | "save_password"
+                                | "endpoint"
+                                | "authentication"
+                                | "schemas"
+                                | "options"
+                                | "ssl_client_cert"
+                                | "ssl_client_key"
+                                | "ssh_configuration_id"
                         )),
                         "Unknown field in Dalan source profile; remove unsupported fields from the settings file"
                     );
@@ -208,7 +215,7 @@ pub fn default_path() -> Result<PathBuf> {
     Ok(base.join("Dalan/sources.json"))
 }
 
-fn parent_of(path: &Path) -> Result<&Path> {
+pub(crate) fn parent_of(path: &Path) -> Result<&Path> {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| {
@@ -216,7 +223,7 @@ fn parent_of(path: &Path) -> Result<&Path> {
         })
 }
 
-fn check_directory(path: &Path) -> Result<()> {
+pub(crate) fn check_directory(path: &Path) -> Result<()> {
     for ancestor in path.ancestors() {
         if let Ok(metadata) = fs::symlink_metadata(ancestor) {
             ensure!(
@@ -236,7 +243,7 @@ fn check_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn check_file(path: &Path) -> Result<bool> {
+pub(crate) fn check_file(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             ensure!(
