@@ -633,12 +633,14 @@ mod tests {
     }
     #[test]
     fn client_identity_validation_is_metadata_only() {
+        let directory =
+            std::env::temp_dir().join(format!("dalan-unread-identity-{}", uuid::Uuid::new_v4()));
         let mut p = SourceProfile {
-            ssl_client_cert: Some("/nonexistent/client.pem".into()),
+            ssl_client_cert: Some(directory.join("client.pem").to_string_lossy().into_owned()),
             ..SourceProfile::default()
         };
         assert!(p.validate().is_err());
-        p.ssl_client_key = Some("/nonexistent/client.key".into());
+        p.ssl_client_key = Some(directory.join("client.key").to_string_lossy().into_owned());
         p.validate().unwrap(); // no reads, not even required to exist yet
         p.ssl_client_key = Some("relative-key".into());
         assert!(p.validate().is_err());

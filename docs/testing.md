@@ -278,3 +278,5 @@ See [source-management contracts](source-management.md), [security](security.md)
 
 
 The MySQL No Auth live rejection can be a server 1045 or an unsupported decoy auth-plugin category: MySQL selects a built-in decoy plugin for unknown accounts and mysql_async does not implement sha256_password. The native mock-wire regression verifies empty username, zero-length authentication response, no supplied-password bytes and no fallback proof. Transport/TLS/timeouts are not accepted as authentication-rejection success. Page summaries report all configured 200 rows rather than cap their count at 100.
+
+Hosted run 37266101943 exposed a Windows-only certificate-path fixture failure: Unix `/nonexistent/...` paths are not absolute Windows paths. The fixture now derives absent certificate/key paths from the platform temporary directory, without creating or reading files. Absolute-path validation and every CI check remain unchanged; the follow-up revision requires its own hosted run.
