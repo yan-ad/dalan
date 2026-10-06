@@ -108,7 +108,8 @@ async fn client_options(profile: &SourceProfile, password: &str) -> Result<Clien
     let mut options = ClientOptions::parse(uri.as_str())
         .await
         .map_err(driver_error)?;
-    options.direct_connection = Some(true);
+    let mongo = profile.mongo_options.clone().unwrap_or_default();
+    options.direct_connection = Some(mongo.direct_connection);
     options.connect_timeout = Some(Duration::from_secs(profile.options.connect_timeout_seconds));
     options.server_selection_timeout = options.connect_timeout;
     options.max_pool_size = Some(2);
@@ -120,7 +121,7 @@ async fn client_options(profile: &SourceProfile, password: &str) -> Result<Clien
             Credential::builder()
                 .username(profile.username.clone())
                 .password(password.to_owned())
-                .source("admin".to_owned())
+                .source(mongo.auth_source)
                 .build(),
         );
     }
@@ -742,6 +743,27 @@ mod tests {
                 .to_string()
                 .contains("combined PEM")
         );
+    }
+    #[tokio::test]
+    async fn uri_options_reach_native_driver_without_uri_credentials() {
+        let p = SourceProfile {
+            engine: DbEngine::MongoDb,
+            endpoint: ConnectionMode::UrlOnly {
+                url: "mongodb://127.0.0.1:27017/fixture?directConnection=false&authSource=accounts"
+                    .into(),
+            },
+            username: "fixture_user".into(),
+            tls: TlsMode::Disabled,
+            ..SourceProfile::default()
+        }
+        .resolved()
+        .unwrap();
+        let options = client_options(&p, "fixture-secret").await.unwrap();
+        assert_eq!(options.direct_connection, Some(false));
+        let credential = options.credential.unwrap();
+        assert_eq!(credential.source.as_deref(), Some("accounts"));
+        assert_eq!(credential.username.as_deref(), Some("fixture_user"));
+        assert_eq!(credential.password.as_deref(), Some("fixture-secret"));
     }
     #[tokio::test]
     async fn credentials_never_enter_uri_and_tls_modes_explicit() {

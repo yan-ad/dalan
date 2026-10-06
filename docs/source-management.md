@@ -162,3 +162,11 @@ Normal search is case-insensitive substring matching against cached metadata. Th
 ## Built-in driver versions
 
 Drivers now show a [bundled-version table and capability matrix](native-drivers.md#bundled-library-versions-and-selection) instead of generic information. Latest bundled and exact pin choices are validated against executable backend inventory and persist in `dalan.config` on Apply/OK, independently of source drafts. One version is currently shipped per engine; alternate native library packages cannot yet be installed/switched. No certified database-server version ranges are invented. Driver/provider artwork keeps its original SVG fills and rows center-align icons and correctly spelled names.
+
+## MongoDB URI autofill and manual TLS default
+
+Pasting a supported `mongodb://` single-host URL into Connection URL selects MongoDB and URL-only mode, fills host/port/database, and extracts percent-decoded user/password into the authentication fields. Userinfo selects User & Password; pasting a new username without a password clears a previous password. The visible/persisted URL is immediately scrubbed and its editor history reset. Credentials remain session-only: paste turns Save Forever off until explicitly re-enabled. Invalid credential-bearing URLs are cleared with a sanitized error; no connection is attempted.
+
+Supported URL options: `directConnection=true|false`, `authSource=<database>`, and `tls=true|false` (or `ssl`, not both). URI authSource defaults to its database or `admin` when no database is present. Unknown/duplicate options, malformed encoding, multi-host/SRV URLs and fragments fail closed. These options reach the native MongoDB driver and participate in cache identity. An explicit TLS=true paste selects VerifyIdentity; false selects Disabled.
+
+New manually created sources now default to **TLS Disabled**—plaintext, not just certificate checks disabled. Existing saved choices and conservative foreign-import mappings are preserved. Enable VerifyIdentity for remote connections when supported, and use a trusted CA/hostname. Secure schemes such as rediss still require TLS; verification failure never triggers plaintext fallback.

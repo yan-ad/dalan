@@ -435,6 +435,7 @@ fn import_xml(
         );
         let mut p = SourceProfile {
             engine: e,
+            tls: TlsMode::VerifyIdentity,
             ..SourceProfile::default()
         };
         if format == ImportFormat::Navicat {

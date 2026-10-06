@@ -99,6 +99,7 @@ impl SourceRepository {
                                 | "ssl_client_key"
                                 | "ssh_configuration_id"
                                 | "jdbc"
+                                | "mongo_options"
                         )),
                         "Unknown field in Dalan source profile; remove unsupported fields from the settings file"
                     );

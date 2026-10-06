@@ -1,5 +1,11 @@
 # Test strategy and release evidence
 
+## MongoDB URI autofill and manual TLS defaults
+
+Reproduced pre-network rejection of credential-bearing MongoDB URLs and all URL query parameters. Explicit form paste now extracts credentials into masked fields, scrubs URL/history, selects User & Password and autofills endpoint fields. Restricted directConnection/authSource/tls options are validated and materialized into native driver options; URI auth source defaults to database/admin. Persisted-profile validation still refuses URL credentials. New manual sources default TLS Disabled, without rewriting saved verified profiles or weakening conservative foreign imports/secure-scheme requirements.
+
+Synthetic tests cover percent-decoded credentials, session-only save choice, password clearing, scrubbed JSON/undo, no native work during paste, sanitized rejected URI errors, duplicate/unsupported/malformed options, driver-option handoff, explicit tls=true and saved TLS round trips. No supplied server/credential was contacted or used in fixtures. Local verification passed **227 headless unit tests + one native-wire integration test, 237 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped. Actual server connectivity/authentication/TLS remains a user-triggered test, not a verified outcome of parsing fixes.
+
 ## First JDBC bridge and installer
 
 Current implementation: isolated Java 17+ source-file-launcher child per operation, bounded credential-bearing stdin JSON and checked 2 MiB responses, cleared environment/output isolation, per-operation verified JAR snapshots and manifest Class-Path rejection; conservative SELECT/read-only/rollback policy; curated discovery/version feeds, mandatory-checksum installer and installed-driver UI/source routing. See [the JDBC contract](jdbc-drivers.md) for exact limits and unsupported features.

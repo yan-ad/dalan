@@ -249,6 +249,9 @@ impl SourceForm {
                     if id != "source-schema-search" {
                         this.model.update(cx, |model, cx| model.edit_form(cx));
                     }
+                    if id == "source-url" {
+                        this.consume_connection_uri(cx);
+                    }
                 }
                 cx.notify();
             }));
@@ -772,6 +775,73 @@ impl SourceForm {
             })
     }
 
+    fn consume_connection_uri(&mut self, cx: &mut Context<Self>) {
+        let raw = self.inputs["source-url"].read(cx).value();
+        if !raw.starts_with("mongodb://") {
+            return;
+        }
+        match dalan_drivers::sources::parse_mongo_uri(&raw) {
+            Ok(parsed) => {
+                self.engine = DbEngine::MongoDb;
+                self.transport = 0;
+                self.ssh_selected = None;
+                if let Ok(dalan_drivers::ConnectionTarget::Tcp {
+                    host,
+                    port,
+                    database,
+                }) = {
+                    let p = SourceProfile {
+                        engine: DbEngine::MongoDb,
+                        endpoint: ConnectionMode::UrlOnly {
+                            url: parsed.url.clone(),
+                        },
+                        ..SourceProfile::default()
+                    };
+                    p.connection_target()
+                } {
+                    for (id, value) in [
+                        ("source-host", host),
+                        ("source-port", port.to_string()),
+                        ("source-database", database.unwrap_or_default()),
+                    ] {
+                        self.last_values.insert(id, value.clone());
+                        self.inputs[id].update(cx, |i, cx| i.set_value(value, cx));
+                    }
+                }
+                self.original.mongo_options = Some(parsed.options.clone());
+                if let Some(user) = parsed.username {
+                    self.authentication = Authentication::UserPassword;
+                    self.authentication_open = false;
+                    self.last_values.insert("source-user", user.clone());
+                    self.inputs["source-user"].update(cx, |i, cx| i.set_value(user, cx));
+                    self.password_edited = true;
+                    let password = parsed.password.unwrap_or_default();
+                    self.last_values.insert("source-password", password.clone());
+                    self.inputs["source-password"].update(cx, |i, cx| i.set_value(password, cx));
+                    // A paste never opts into disk credential persistence.
+                    self.save_password = false;
+                }
+                if let Some(tls) = parsed.tls {
+                    self.tls = if tls {
+                        TlsMode::VerifyIdentity
+                    } else {
+                        TlsMode::Disabled
+                    };
+                }
+                self.last_values.insert("source-url", parsed.url.clone());
+                self.inputs["source-url"].update(cx, |i, cx| i.set_value(parsed.url, cx));
+            }
+            Err(_) => {
+                // Never leave rejected credentials in a plain URL field/history.
+                if raw.split('/').nth(2).is_some_and(|a| a.contains('@')) {
+                    self.last_values.insert("source-url", String::new());
+                    self.inputs["source-url"].update(cx, |i, cx| i.set_value("", cx));
+                }
+                self.model.update(cx,|m,cx|{m.form_feedback=Some("MongoDB URI could not be imported. Use a single mongodb:// host with directConnection, authSource and tls/ssl options only.".into());cx.notify();});
+            }
+        }
+    }
+
     fn value(&self, id: &'static str, cx: &App) -> String {
         self.inputs[id].read(cx).value().trim().to_owned()
     }
@@ -842,6 +912,9 @@ impl SourceForm {
         profile.database = optional(self.value("source-database", cx));
         profile.ca_path = optional(self.value("source-ca", cx));
         profile.engine = self.engine;
+        if self.engine != DbEngine::MongoDb {
+            profile.mongo_options = None;
+        }
         profile.tls = self.tls;
         profile.save_password =
             self.save_password && self.authentication == Authentication::UserPassword;
@@ -2589,6 +2662,89 @@ mod tests {
         assert_eq!(form.read_with(cx, |f, _| f.transport), 0);
     }
 
+    #[gpui::test]
+    fn mongodb_uri_paste_autofills_and_cleans_url_without_persisting_password(
+        cx: &mut TestAppContext,
+    ) {
+        let (form, model, cx) = fixture(cx);
+        form.update(cx, |f, _| {
+            f.authentication = Authentication::NoAuth;
+            f.save_password = true;
+        });
+        set(
+            &form,
+            cx,
+            "source-url",
+            "mongodb://fixture_user:fixture%40password@127.0.0.1:27017/?directConnection=true",
+        );
+        cx.run_until_parked();
+        form.read_with(cx, |f, app| {
+            let profile = f.profile(app).unwrap();
+            assert_eq!(profile.engine, DbEngine::MongoDb);
+            assert_eq!(profile.authentication, Authentication::UserPassword);
+            assert_eq!(profile.username, "fixture_user");
+            assert_eq!(f.password(app), "fixture@password");
+            assert!(!profile.save_password);
+            assert_eq!(profile.tls, TlsMode::Disabled);
+            assert_eq!(f.value("source-host", app), "127.0.0.1");
+            assert_eq!(f.value("source-port", app), "27017");
+            let json = serde_json::to_string(&profile).unwrap();
+            assert!(!json.contains("fixture@password") && !json.contains("fixture%40password"));
+            assert_eq!(
+                f.value("source-url", app),
+                "mongodb://127.0.0.1:27017/?directConnection=true"
+            );
+            assert!(
+                profile
+                    .resolved()
+                    .unwrap()
+                    .mongo_options
+                    .unwrap()
+                    .direct_connection
+            );
+        });
+        assert!(model.read_with(cx, |m, _| !m.busy && !m.form_busy && m.profiles.is_empty()));
+        // Scrubbing flushes through Kit's setter, clearing URL undo history.
+        click(cx, "source-url");
+        cx.simulate_keystrokes("cmd-z");
+        cx.run_until_parked();
+        assert!(
+            !form
+                .read_with(cx, |f, app| f.value("source-url", app))
+                .contains("fixture%40password")
+        );
+        set(
+            &form,
+            cx,
+            "source-url",
+            "mongodb://new_user@127.0.0.1/admin?authSource=accounts&tls=true",
+        );
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |f, app| f.password(app).is_empty()));
+        assert_eq!(
+            form.read_with(cx, |f, app| f.profile(app).unwrap().tls),
+            TlsMode::VerifyIdentity
+        );
+    }
+    #[gpui::test]
+    fn invalid_credential_uri_is_cleared_with_safe_error_and_no_connection(
+        cx: &mut TestAppContext,
+    ) {
+        let (form, model, cx) = fixture(cx);
+        set(
+            &form,
+            cx,
+            "source-url",
+            "mongodb://fixture_user:fixture-secret@127.0.0.1/?unknown=true",
+        );
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |f, app| f.value("source-url", app).is_empty()));
+        model.read_with(cx, |m, _| {
+            assert!(!m.form_busy && !m.busy);
+            let error = m.form_feedback.as_ref().unwrap();
+            assert!(!error.contains("fixture-secret"));
+        });
+    }
     #[gpui::test]
     fn generated_url_and_manual_override_use_backend_canonicalization(cx: &mut TestAppContext) {
         let (form, _, cx) = fixture(cx);

@@ -56,6 +56,7 @@ pub fn connection_identity(profile: &SourceProfile) -> Result<String> {
         ssl_client_cert: &'a Option<String>,
         ssl_client_key: &'a Option<String>,
         jdbc: &'a Option<dalan_drivers::JdbcOptions>,
+        mongo_options: &'a Option<dalan_drivers::sources::MongoOptions>,
         connect_timeout_seconds: u64,
         query_timeout_seconds: u64,
     }
@@ -73,6 +74,7 @@ pub fn connection_identity(profile: &SourceProfile) -> Result<String> {
         ssl_client_cert: &profile.ssl_client_cert,
         ssl_client_key: &profile.ssl_client_key,
         jdbc: &profile.jdbc,
+        mongo_options: &profile.mongo_options,
         connect_timeout_seconds: profile.options.connect_timeout_seconds,
         query_timeout_seconds: profile.options.query_timeout_seconds,
     })

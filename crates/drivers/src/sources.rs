@@ -144,6 +144,142 @@ pub enum ConnectionTarget {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct MongoOptions {
+    pub direct_connection: bool,
+    pub auth_source: String,
+}
+impl Default for MongoOptions {
+    fn default() -> Self {
+        Self {
+            direct_connection: true,
+            auth_source: "admin".into(),
+        }
+    }
+}
+/// Never implement Debug: this temporary paste result can contain credentials.
+pub struct ParsedMongoUri {
+    pub url: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub options: MongoOptions,
+    pub tls: Option<bool>,
+}
+fn decode_uri_field(raw: &str) -> Result<String> {
+    let bytes = raw.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if *b == b'%' {
+            ensure!(
+                bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
+                    && bytes.get(i + 2).is_some_and(u8::is_ascii_hexdigit),
+                "Invalid MongoDB URI encoding"
+            );
+        }
+    }
+    percent_encoding::percent_decode_str(raw)
+        .decode_utf8()
+        .map(|v| v.into_owned())
+        .map_err(|_| anyhow::anyhow!("Invalid MongoDB URI encoding"))
+}
+/// Parse the supported single-host URI subset. Credential extraction is only
+/// for explicit user paste; persisted profiles must remain credential-free.
+pub fn parse_mongo_uri(raw: &str) -> Result<ParsedMongoUri> {
+    ensure!(
+        raw.len() <= 8192 && raw.starts_with("mongodb://") && !raw.chars().any(char::is_control),
+        "Invalid MongoDB URI"
+    );
+    let mut url = url::Url::parse(raw).map_err(|_| anyhow::anyhow!("Invalid MongoDB URI"))?;
+    ensure!(
+        url.host_str().is_some() && url.fragment().is_none(),
+        "MongoDB URI requires one host and no fragment"
+    );
+    let host = url.host_str().unwrap_or("");
+    ensure!(
+        !host.contains(',') && !host.contains('@'),
+        "MongoDB multi-host/SRV URIs are not supported"
+    );
+    let username = if !url.username().is_empty() {
+        Some(decode_uri_field(url.username())?)
+    } else {
+        None
+    };
+    let password = url.password().map(decode_uri_field).transpose()?;
+    ensure!(
+        password.is_none() || username.is_some(),
+        "MongoDB URI password requires a username"
+    );
+    if let Some(user) = &username {
+        field(user, 128, "username")?;
+    }
+    if let Some(password) = &password {
+        ensure!(
+            password.len() <= 65536 && !password.chars().any(char::is_control),
+            "Invalid MongoDB password"
+        );
+    }
+    let path = url.path().strip_prefix('/').unwrap_or(url.path());
+    ensure!(
+        !path.contains('/'),
+        "MongoDB URI accepts one database path segment"
+    );
+    let database = decode_uri_field(path)?;
+    if !database.is_empty() {
+        identifier(&database)?;
+    }
+    let mut options = MongoOptions {
+        auth_source: if database.is_empty() {
+            "admin".into()
+        } else {
+            database
+        },
+        ..MongoOptions::default()
+    };
+    let mut tls = None;
+    let mut seen = std::collections::HashSet::new();
+    for (key, value) in url.query_pairs() {
+        let key = key.to_ascii_lowercase();
+        ensure!(seen.insert(key.clone()), "Duplicate MongoDB URI option");
+        match key.as_str() {
+            "directconnection" => {
+                options.direct_connection = match value.as_ref() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(anyhow::anyhow!("directConnection must be true or false")),
+                }
+            }
+            "authsource" => {
+                identifier(&value)?;
+                options.auth_source = value.into_owned();
+            }
+            "tls" | "ssl" => {
+                ensure!(tls.is_none(), "Duplicate MongoDB TLS option");
+                tls = Some(match value.as_ref() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(anyhow::anyhow!("TLS must be true or false")),
+                });
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Unsupported MongoDB URI option; supported: directConnection, authSource, tls/ssl"
+                ));
+            }
+        }
+    }
+    url.set_username("")
+        .map_err(|_| anyhow::anyhow!("Invalid MongoDB URI credentials"))?;
+    url.set_password(None)
+        .map_err(|_| anyhow::anyhow!("Invalid MongoDB URI credentials"))?;
+    Ok(ParsedMongoUri {
+        url: url.into(),
+        username,
+        password,
+        options,
+        tls,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JdbcJar {
     pub path: String,
     pub sha256: String,
@@ -243,6 +379,8 @@ pub struct SourceProfile {
     pub ssh_configuration_id: Option<String>,
     #[serde(default)]
     pub jdbc: Option<JdbcOptions>,
+    #[serde(default)]
+    pub mongo_options: Option<MongoOptions>,
 }
 impl Default for SourceProfile {
     fn default() -> Self {
@@ -256,7 +394,7 @@ impl Default for SourceProfile {
             username: "root".into(),
             database: None,
             transport: Transport::Direct,
-            tls: TlsMode::VerifyIdentity,
+            tls: TlsMode::Disabled,
             ca_path: None,
             save_password: false,
             endpoint: ConnectionMode::default(),
@@ -267,6 +405,7 @@ impl Default for SourceProfile {
             ssl_client_key: None,
             ssh_configuration_id: None,
             jdbc: None,
+            mongo_options: None,
         }
     }
 }
@@ -368,10 +507,18 @@ impl SourceProfile {
                         && !raw.split('/').nth(2).unwrap_or_default().contains('@'),
                     "Connection URL must not contain credentials; use authentication fields"
                 );
-                ensure!(
-                    u.query().is_none() && u.fragment().is_none(),
-                    "Connection URL options and fragments are unsupported; use source options"
-                );
+                if self.engine == DbEngine::MongoDb {
+                    let parsed = parse_mongo_uri(raw)?;
+                    ensure!(
+                        parsed.username.is_none() && parsed.password.is_none(),
+                        "Connection URL must not contain credentials; paste it into the connection form to extract them"
+                    );
+                } else {
+                    ensure!(
+                        u.query().is_none() && u.fragment().is_none(),
+                        "Connection URL options and fragments are unsupported; use source options"
+                    );
+                }
                 let h = match u.host() {
                     Some(url::Host::Ipv6(ip)) => ip.to_string(),
                     Some(h) => h.to_string(),
@@ -424,6 +571,23 @@ impl SourceProfile {
     pub fn resolved(&self) -> Result<Self> {
         self.validate()?;
         let mut p = self.clone();
+        if self.engine == DbEngine::MongoDb
+            && let ConnectionMode::UrlOnly { url } = &self.endpoint
+        {
+            let parsed = parse_mongo_uri(url)?;
+            p.mongo_options = Some(parsed.options);
+            if let Some(tls) = parsed.tls {
+                p.tls = if tls {
+                    if self.tls == TlsMode::Disabled {
+                        TlsMode::VerifyIdentity
+                    } else {
+                        self.tls
+                    }
+                } else {
+                    TlsMode::Disabled
+                };
+            }
+        }
         match self.connection_target()? {
             ConnectionTarget::Tcp {
                 host,
@@ -550,6 +714,13 @@ impl SourceProfile {
                 "Redis database must be a numeric ID from 0 through 65535"
             );
         }
+        if let Some(options) = &self.mongo_options {
+            ensure!(
+                self.engine == DbEngine::MongoDb,
+                "MongoDB options require MongoDB engine"
+            );
+            identifier(&options.auth_source)?;
+        }
         if self.engine == DbEngine::MongoDb {
             ensure!(
                 self.tls != TlsMode::VerifyCa,
@@ -649,6 +820,69 @@ impl SourceProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mongodb_paste_extracts_credentials_but_persisted_uri_stays_clean() {
+        let parsed = parse_mongo_uri(
+            "mongodb://fixture_user:fixture%40password@127.0.0.1:27017/?directConnection=true",
+        )
+        .unwrap();
+        assert_eq!(parsed.username.as_deref(), Some("fixture_user"));
+        assert_eq!(parsed.password.as_deref(), Some("fixture@password"));
+        assert_eq!(
+            parsed.url,
+            "mongodb://127.0.0.1:27017/?directConnection=true"
+        );
+        let p = SourceProfile {
+            engine: DbEngine::MongoDb,
+            endpoint: ConnectionMode::UrlOnly { url: parsed.url },
+            ..SourceProfile::default()
+        };
+        let effective = p.resolved().unwrap();
+        assert!(effective.mongo_options.unwrap().direct_connection);
+        assert_eq!(effective.tls, TlsMode::Disabled);
+        let p = SourceProfile {
+            engine: DbEngine::MongoDb,
+            endpoint: ConnectionMode::UrlOnly {
+                url:
+                    "mongodb://127.0.0.1/admin?directConnection=false&authSource=accounts&tls=true"
+                        .into(),
+            },
+            ..SourceProfile::default()
+        };
+        let effective = p.resolved().unwrap();
+        let options = effective.mongo_options.unwrap();
+        assert!(!options.direct_connection);
+        assert_eq!(options.auth_source, "accounts");
+        assert_eq!(effective.tls, TlsMode::VerifyIdentity);
+        for uri in [
+            "mongodb://u:p@127.0.0.1/?unsupported=true",
+            "mongodb://u:p@127.0.0.1/?directConnection=true&directConnection=false",
+            "mongodb://u:%xx@127.0.0.1/",
+            "mongodb://127.0.0.1/?tls=true&ssl=false",
+            "mongodb://127.0.0.1/a/b",
+        ] {
+            assert!(parse_mongo_uri(uri).is_err());
+        }
+        let p = SourceProfile {
+            engine: DbEngine::MongoDb,
+            endpoint: ConnectionMode::UrlOnly {
+                url: "mongodb://u:p@127.0.0.1/".into(),
+            },
+            ..SourceProfile::default()
+        };
+        assert!(p.validate().is_err());
+    }
+    #[test]
+    fn new_profile_disables_tls_but_existing_verified_setting_is_retained() {
+        assert_eq!(SourceProfile::default().tls, TlsMode::Disabled);
+        let p = SourceProfile {
+            tls: TlsMode::VerifyIdentity,
+            ..SourceProfile::default()
+        };
+        let copy: SourceProfile =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(copy.tls, TlsMode::VerifyIdentity);
+    }
     #[test]
     fn jdbc_url_policy_rejects_encoded_credentials_or_executable_initialization() {
         for url in [
@@ -885,6 +1119,7 @@ mod tests {
             },
             host: "ignored://host".into(),
             port: 0,
+            tls: TlsMode::VerifyIdentity,
             ..SourceProfile::default()
         };
         assert!(p.validate().is_err());
@@ -990,7 +1225,7 @@ mod tests {
         let mut p = SourceProfile::default();
         assert!(p.validate().is_ok());
         assert_eq!(p.port, 3306);
-        assert_eq!(p.tls, TlsMode::VerifyIdentity);
+        assert_eq!(p.tls, TlsMode::Disabled);
         assert_eq!(p.database, None);
         assert_eq!(p.color, None);
         assert!(!p.save_password);
