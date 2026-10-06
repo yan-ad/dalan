@@ -45,6 +45,7 @@ fn add_source_opens_real_form_and_cancel_returns_browser(cx: &mut TestAppContext
     assert!(create.size.height <= px(TITLEBAR_HEIGHT));
     assert!(create.size.width > px(CONTROL_HEIGHT));
     click(cx, "new-connection");
+    click(cx, "connection-create-manually");
     assert!(
         cx.debug_bounds("source-form").is_none(),
         "Form must not replace the main workspace"
@@ -58,6 +59,7 @@ fn add_source_opens_real_form_and_cancel_returns_browser(cx: &mut TestAppContext
     assert!(cx.debug_bounds("source-browser").is_some());
     assert_eq!(cx.cx.read(|app| app.windows().len()), 1);
     click(cx, "new-connection");
+    click(cx, "connection-create-manually");
     let mut dialog = source_dialog_context(cx);
     click(&mut dialog, "source-cancel");
     cx.run_until_parked();
@@ -69,11 +71,15 @@ fn new_connection_is_keyboard_operable_with_sidebar_hidden(cx: &mut TestAppConte
     let (shell, cx) = fixture(cx);
     click(cx, "database-toggle");
     cx.update(|window, app| {
-        shell.read(app).controls["new-connection"]
-            .clone()
-            .focus(window, app)
+        window.blur(app);
+        window.focus_next(app);
+        window.focus_next(app);
     });
     press(cx, "space");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("connection-create-manually").is_some());
+    cx.simulate_keystrokes("down");
+    press(cx, "enter");
     cx.run_until_parked();
     let mut dialog = source_dialog_context(cx);
     assert!(dialog.debug_bounds("source-name").is_some());
@@ -88,6 +94,87 @@ fn new_connection_is_keyboard_operable_with_sidebar_hidden(cx: &mut TestAppConte
     cx.run_until_parked();
     click(cx, "new-connection");
     assert!(!sources.read_with(cx, |model, _| model.form_open));
+}
+
+#[gpui::test]
+fn connection_dropdown_import_actions_and_native_equivalents_use_file_pickers(
+    cx: &mut TestAppContext,
+) {
+    let (shell, cx) = fixture(cx);
+    click(cx, "new-connection");
+    for id in [
+        "connection-create-manually",
+        "connection-import-dbx",
+        "connection-import-navicat",
+        "connection-import-datagrip",
+    ] {
+        assert!(cx.debug_bounds(id).is_some());
+    }
+    click(cx, "connection-import-dbx");
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(!options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    let model = shell.read_with(cx, |s, _| s.sources.clone());
+    assert!(model.read_with(cx, |m, _| !m.connector_busy
+        && m.profiles.is_empty()
+        && !m.form_open));
+    for action in [
+        Box::new(ImportNavicat) as Box<dyn gpui::Action>,
+        Box::new(ImportDataGrip),
+        Box::new(ImportConnectors),
+    ] {
+        cx.update(|window, app| window.dispatch_action(action, app));
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_paths());
+        cx.simulate_path_prompt_response(|_| None);
+        cx.run_until_parked();
+    }
+    cx.update(|window, app| window.dispatch_action(Box::new(ExportConnectors), app));
+    cx.run_until_parked();
+    assert!(!cx.did_prompt_for_new_path()); // Empty saved list is not exportable.
+    model.update(cx, |m, cx| {
+        m.profiles.push(dalan_drivers::SourceProfile::default());
+        cx.notify();
+    });
+    cx.update(|window, app| window.dispatch_action(Box::new(ExportConnectors), app));
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_new_path());
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    assert!(model.read_with(cx, |m, _| !m.connector_busy));
+    let source = include_str!("../desktop.rs");
+    assert!(source.contains("name: \"File\".into()") || source.contains("name: \"File\""));
+}
+
+#[gpui::test]
+fn importing_from_dropdown_reads_only_selected_fixture_and_opens_review_not_saved_connections(
+    cx: &mut TestAppContext,
+) {
+    let (shell, cx) = fixture(cx);
+    let dir = std::env::temp_dir().join(format!("dalan-import-ui-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let file = std::fs::canonicalize(&dir).unwrap().join("connectors.json");
+    std::fs::write(&file,br#"{"connections":[{"db_type":"mysql","name":"Imported fixture","host":"db.example.invalid","username":"reader","password":"do-not-import"}]}"#).unwrap();
+    click(cx, "new-connection");
+    click(cx, "connection-import-dbx");
+    cx.simulate_path_prompt_response(|_| Some(vec![file.clone()]));
+    cx.run_until_parked();
+    let model = shell.read_with(cx, |s, _| s.sources.clone());
+    model.read_with(cx, |m, _| {
+        assert!(!m.connector_busy);
+        assert!(m.form_open, "{:?}", m.connector_feedback);
+        assert!(m.profiles.is_empty());
+        assert!(m.connector_feedback.as_ref().unwrap().contains("unsaved"));
+    });
+    let mut dialog = source_dialog_context(cx);
+    assert!(dialog.debug_bounds("settings-source-0").is_some());
+    assert!(dialog.debug_bounds("settings-source-1").is_none());
+    click(&mut dialog, "source-cancel");
+    click(&mut dialog, "settings-discard-close");
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 fn source_dialog_context(cx: &VisualTestContext) -> VisualTestContext {
@@ -221,7 +308,7 @@ fn tab_order_reaches_every_visible_control_in_both_directions(cx: &mut TestAppCo
     for id in order {
         cx.simulate_keystrokes("tab");
         handles.push(cx.update(|window, app| window.focused(app).expect("tab focus")));
-        if id != "layout-menu" {
+        if !matches!(id, "layout-menu" | "new-connection") {
             assert!(
                 cx.update(|window, app| view.read(app).controls[id].is_focused(window)),
                 "{id}"

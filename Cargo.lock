@@ -1503,6 +1503,7 @@ dependencies = [
  "dalan-drivers",
  "gpui-kit",
  "keyring",
+ "roxmltree 0.21.1",
  "rusqlite",
  "serde",
  "serde_json",

@@ -1,3 +1,4 @@
+pub mod connector_transfer;
 pub mod explorer_tree;
 pub mod grid_viewport;
 pub mod result_budget;

@@ -150,6 +150,9 @@ pub(super) struct SourceModel {
     automatic_discovery: bool,
     pub profiles: Vec<SourceProfile>,
     pub tree: ExplorerTree,
+    pub connector_busy: bool,
+    pub connector_feedback: Option<String>,
+    pub imported_profiles: Vec<SourceProfile>,
     pub form_open: bool,
     pub form_keep_open: bool,
     pub form_saved_generation: u64,
@@ -1046,6 +1049,9 @@ impl SourceModel {
             automatic_discovery: false,
             profiles: vec![],
             tree: ExplorerTree::default(),
+            connector_busy: false,
+            connector_feedback: None,
+            imported_profiles: vec![],
             form_open: false,
             form_keep_open: false,
             form_saved_generation: 0,
@@ -1177,6 +1183,71 @@ impl SourceModel {
 
     pub fn password(&self, id: &str) -> String {
         self.session_password(id).unwrap_or_default()
+    }
+
+    pub fn import_connectors(
+        &mut self,
+        format: dalan_app::connector_transfer::ImportFormat,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving || self.connector_busy || !self.storage_ready {
+            return;
+        }
+        self.connector_busy = true;
+        self.connector_feedback = Some(format!(
+            "Choose a {} connector file. Passwords are not imported.",
+            format.label()
+        ));
+        let picker = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(format!("Import {}", format.label()).into()),
+        });
+        cx.spawn(async move |this,cx| {
+            let selection=picker.await;
+            let path=match selection {Ok(Ok(Some(mut paths))) if paths.len()==1=>paths.pop(),_=>None};
+            let Some(path)=path else {let _=this.update(cx,|m,cx|{m.connector_busy=false;m.connector_feedback=Some("Import cancelled; no sources changed.".into());cx.notify();});return;};
+            let task=cx.background_executor().spawn(async move {dalan_app::connector_transfer::read_import(&path,format)});
+            let result=task.await;
+            let _=this.update(cx,|m,cx|{m.connector_busy=false;match result {
+                Ok(report)=> {
+                    if m.saving || m.profiles.len()+report.profiles.len()>100 {m.connector_feedback=Some("Import not applied: a save is running or the 100-source limit would be exceeded.".into());}
+                    else {
+                        m.connector_feedback=Some(format!("Imported {} unsaved source draft(s). {}",report.profiles.len(),report.warnings.join(" ")));
+                        m.imported_profiles=report.profiles;
+                        if !m.form_open { m.form_open=true; m.form_profile=m.imported_profiles.first().cloned(); m.form_generation+=1; m.form_databases.clear(); m.form_feedback=None; }
+                    }
+                },Err(error)=>m.connector_feedback=Some(format!("Import failed: {error}")),
+            }cx.notify();});
+        }).detach();
+        cx.notify();
+    }
+    pub fn export_connectors(&mut self, cx: &mut Context<Self>) {
+        if self.saving || self.connector_busy {
+            return;
+        }
+        let profiles = self.profiles.clone();
+        if profiles.is_empty() {
+            self.connector_feedback =
+                Some("No saved connectors to export. Apply source drafts first.".into());
+            cx.notify();
+            return;
+        }
+        self.connector_busy = true;
+        self.connector_feedback=Some("Exporting saved connectors only; passwords are excluded and existing files are not overwritten.".into());
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| ".".into());
+        let picker = cx.prompt_for_new_path(&home, Some("Dalan-connectors.json"));
+        cx.spawn(async move |this,cx| {
+            let path=match picker.await {Ok(Ok(Some(path)))=>Some(path),_=>None};
+            let Some(path)=path else {let _=this.update(cx,|m,cx|{m.connector_busy=false;m.connector_feedback=Some("Export cancelled; no file written.".into());cx.notify();});return;};
+            let task=cx.background_executor().spawn(async move {dalan_app::connector_transfer::write_export(&path,&profiles)});
+            let result=task.await;
+            let _=this.update(cx,|m,cx|{m.connector_busy=false;m.connector_feedback=Some(match result {Ok(())=>"Exported saved connectors without passwords. SSH sessions are not included; imported SSH sources require separate session setup.".into(),Err(e)=>format!("Export failed: {e}")});cx.notify();});
+        }).detach();
+        cx.notify();
     }
 
     pub fn new_source(&mut self, cx: &mut Context<Self>) {

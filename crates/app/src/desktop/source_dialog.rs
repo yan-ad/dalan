@@ -134,6 +134,10 @@ impl SourceDialog {
         this.attach_form(&form, window, cx);
         model.update(cx, |m, _| m.form_keep_open = true);
         form.read(cx).preferred_first_focus(cx).focus(window, cx);
+        if !model.read(cx).imported_profiles.is_empty() {
+            let profiles = model.update(cx, |m, _| std::mem::take(&mut m.imported_profiles));
+            this.receive_import(profiles, window, cx);
+        }
         this._subscriptions
             .push(cx.observe_in(&model, window, |this, _, window, cx| {
                 if !this.model.read(cx).form_open {
@@ -151,6 +155,12 @@ impl SourceDialog {
                         this.removing = None;
                         this.notice = this.model.read(cx).error.clone();
                     }
+                }
+                if !this.model.read(cx).imported_profiles.is_empty() && !this.blocked(cx) {
+                    let profiles = this
+                        .model
+                        .update(cx, |m, _| std::mem::take(&mut m.imported_profiles));
+                    this.receive_import(profiles, window, cx);
                 }
                 let generation = this.model.read(cx).form_generation;
                 if generation != this.generation {
@@ -200,8 +210,69 @@ impl SourceDialog {
         });
         this
     }
+    fn request_import(
+        &mut self,
+        format: dalan_app::connector_transfer::ImportFormat,
+        cx: &mut Context<Self>,
+    ) {
+        if self.blocked(cx) {
+            return;
+        }
+        self.model
+            .update(cx, |m, cx| m.import_connectors(format, cx));
+    }
+    fn receive_import(
+        &mut self,
+        profiles: Vec<SourceProfile>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let saved = self.model.read(cx).profiles.len();
+        let pending = self
+            .drafts
+            .keys()
+            .filter(|id| !self.model.read(cx).profiles.iter().any(|p| &p.id == *id))
+            .count();
+        let added = profiles
+            .iter()
+            .filter(|p| !self.drafts.contains_key(&p.id))
+            .count();
+        if saved + pending + added > 100 {
+            self.notice = Some(
+                "Import not added: retained drafts plus saved sources would exceed 100.".into(),
+            );
+            cx.notify();
+            return;
+        }
+        self.snapshot_active(cx);
+        let first = profiles.first().map(|p| p.id.clone());
+        for profile in profiles {
+            if let Some(draft) = self.drafts.get(&profile.id) {
+                draft.form.update(cx, |f, _| f.mark_new());
+                continue;
+            }
+
+            let form = Self::make_form(profile.clone(), self.model.clone(), cx);
+            form.update(cx, |f, _| f.mark_new());
+            self.attach_form(&form, window, cx);
+            self.order.push(profile.id.clone());
+            self.drafts.insert(
+                profile.id,
+                SourceDraft {
+                    form,
+                    feedback: None,
+                    databases: vec![],
+                },
+            );
+        }
+        if let Some(first) = first {
+            self.select(first, window, cx);
+        }
+        cx.notify();
+    }
     fn blocked(&self, cx: &App) -> bool {
         self.model.read(cx).saving
+            || self.model.read(cx).connector_busy
             || self
                 .ssh
                 .as_ref()
@@ -634,63 +705,87 @@ impl Render for SourceDialog {
             SettingsPage::Ssh => self.ssh.as_ref().unwrap().clone().into_any_element(),
             SettingsPage::Drivers => self.drivers(cx).into_any_element(),
         };
-        let mut root = div()
-            .id("source-dialog")
-            .debug_selector(|| "source-dialog".into())
-            .key_context("SourceDialog")
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .on_action(cx.listener(|this, _: &CloseWindow, window, cx| this.close(window, cx)))
-            .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.close(window, cx)))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.modifiers.platform && !event.is_held {
-                    match event.keystroke.key.as_str() {
-                        "n" => {
-                            this.add(false, window, cx);
-                            cx.stop_propagation();
-                        }
-                        "d" => {
-                            this.add(true, window, cx);
-                            cx.stop_propagation();
-                        }
-                        "s" => {
-                            if this.page == SettingsPage::Sources && !this.blocked(cx) {
-                                this.form.update(cx, |f, cx| f.save_draft(cx));
-                            }
-                            cx.stop_propagation();
-                        }
-                        _ => {}
+        let mut root =
+            div()
+                .id("source-dialog")
+                .debug_selector(|| "source-dialog".into())
+                .key_context("SourceDialog")
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(cx.theme().background)
+                .text_color(cx.theme().foreground)
+                .on_action(cx.listener(|this, _: &super::NewConnection, window, cx| {
+                    this.add(false, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &super::ImportDbx, _, cx| {
+                    this.request_import(dalan_app::connector_transfer::ImportFormat::Dbx, cx)
+                }))
+                .on_action(cx.listener(|this, _: &super::ImportNavicat, _, cx| {
+                    this.request_import(dalan_app::connector_transfer::ImportFormat::Navicat, cx)
+                }))
+                .on_action(cx.listener(|this, _: &super::ImportDataGrip, _, cx| {
+                    this.request_import(dalan_app::connector_transfer::ImportFormat::DataGrip, cx)
+                }))
+                .on_action(cx.listener(|this, _: &super::ImportConnectors, _, cx| {
+                    this.request_import(
+                        dalan_app::connector_transfer::ImportFormat::ConnectorsList,
+                        cx,
+                    )
+                }))
+                .on_action(cx.listener(|this, _: &super::ExportConnectors, _, cx| {
+                    if !this.blocked(cx) {
+                        this.model.update(cx, |m, cx| m.export_connectors(cx));
                     }
-                }
-            }))
-            .child(
-                div()
-                    .id("source-titlebar")
-                    .debug_selector(|| "source-titlebar".into())
-                    .h(px(34.))
-                    .flex_shrink_0()
-                    .pl(px(96.))
-                    .flex()
-                    .items_center()
-                    .child("Data Sources and Drivers")
-                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
-                        window.start_window_move()
-                    }),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(rail)
-                    .when(self.page == SettingsPage::Sources, |body| {
-                        body.child(sidebar)
-                    })
-                    .child(div().flex_1().min_w_0().min_h_0().child(content)),
-            );
+                }))
+                .on_action(cx.listener(|this, _: &CloseWindow, window, cx| this.close(window, cx)))
+                .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.close(window, cx)))
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.modifiers.platform && !event.is_held {
+                        match event.keystroke.key.as_str() {
+                            "n" => {
+                                this.add(false, window, cx);
+                                cx.stop_propagation();
+                            }
+                            "d" => {
+                                this.add(true, window, cx);
+                                cx.stop_propagation();
+                            }
+                            "s" => {
+                                if this.page == SettingsPage::Sources && !this.blocked(cx) {
+                                    this.form.update(cx, |f, cx| f.save_draft(cx));
+                                }
+                                cx.stop_propagation();
+                            }
+                            _ => {}
+                        }
+                    }
+                }))
+                .child(
+                    div()
+                        .id("source-titlebar")
+                        .debug_selector(|| "source-titlebar".into())
+                        .h(px(34.))
+                        .flex_shrink_0()
+                        .pl(px(96.))
+                        .flex()
+                        .items_center()
+                        .child("Data Sources and Drivers")
+                        .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                            window.start_window_move()
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .child(rail)
+                        .when(self.page == SettingsPage::Sources, |body| {
+                            body.child(sidebar)
+                        })
+                        .child(div().flex_1().min_w_0().min_h_0().child(content)),
+                );
         root = root.child(
             div()
                 .id("settings-footer")
@@ -753,6 +848,15 @@ impl Render for SourceDialog {
                         })),
                 ),
         );
+        if let Some(feedback) = &self.model.read(cx).connector_feedback {
+            root = root.child(
+                div()
+                    .id("connector-feedback")
+                    .debug_selector(|| "connector-feedback".into())
+                    .p_2()
+                    .child(feedback.clone()),
+            );
+        }
         if let Some(notice) = &self.notice {
             root = root.child(div().p_2().child(notice.clone()));
         }
@@ -1108,6 +1212,84 @@ mod tests {
             .unwrap();
         assert_eq!(cx.update(|app| app.windows().len()), 1);
         click(&mut visual, "settings-ok");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn file_menu_actions_work_in_settings_and_cancellation_preserves_active_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        edit(&mut visual, "source-name", "Retained fixture");
+        visual.update(|window, app| {
+            window.dispatch_action(Box::new(super::super::ImportConnectors), app)
+        });
+        visual.run_until_parked();
+        assert!(visual.did_prompt_for_paths());
+        visual.simulate_path_prompt_response(|_| None);
+        visual.run_until_parked();
+        handle
+            .update(cx, |d, _, app| {
+                assert_eq!(d.form.read(app).draft_identity(app).0, "Retained fixture")
+            })
+            .unwrap();
+        visual.update(|window, app| {
+            window.dispatch_action(Box::new(super::super::NewConnection), app)
+        });
+        visual.run_until_parked();
+        handle
+            .update(cx, |d, _, _| assert_eq!(d.drafts.len(), 2))
+            .unwrap();
+        model.update(cx, |m, cx| {
+            m.profiles.push(SourceProfile::default());
+            cx.notify();
+        });
+        visual.update(|window, app| {
+            window.dispatch_action(Box::new(super::super::ExportConnectors), app)
+        });
+        visual.run_until_parked();
+        assert!(visual.did_prompt_for_new_path());
+        visual.simulate_new_path_selection(|_| None);
+        visual.run_until_parked();
+        click(&mut visual, "source-cancel");
+        click(&mut visual, "settings-discard-close");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn imported_connectors_are_unsaved_retained_drafts_with_independent_ids_and_no_password(
+        cx: &mut TestAppContext,
+    ) {
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        edit(&mut visual, "source-name", "Unrelated retained draft");
+        let report=dalan_app::connector_transfer::import_bytes(dalan_app::connector_transfer::ImportFormat::Dbx,br#"{"connections":[{"db_type":"mysql","name":"Imported A","host":"db.example.invalid","password":"must-not-import"},{"db_type":"mariadb","name":"Imported B","host":"db.example.invalid"}]}"#).unwrap();
+        model.update(cx, |m, cx| {
+            m.imported_profiles = report.profiles;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        handle
+            .update(cx, |d, _, app| {
+                assert_eq!(d.drafts.len(), 3);
+                assert_eq!(d.form.read(app).draft_identity(app).0, "Imported A");
+                assert!(d.form.read(app).password(app).is_empty());
+                assert!(d.form.read(app).is_dirty());
+                assert!(d.model.read(app).profiles.is_empty());
+            })
+            .unwrap();
+        click(&mut visual, "settings-source-0");
+        handle
+            .update(cx, |d, _, app| {
+                assert_eq!(
+                    d.form.read(app).draft_identity(app).0,
+                    "Unrelated retained draft"
+                )
+            })
+            .unwrap();
+        click(&mut visual, "source-cancel");
+        click(&mut visual, "settings-discard-close");
         assert_closed(&model, cx);
     }
 

@@ -31,6 +31,12 @@ use theme::*;
 actions!(
     shell,
     [
+        NewConnection,
+        ImportDbx,
+        ImportNavicat,
+        ImportDataGrip,
+        ImportConnectors,
+        ExportConnectors,
         NextFocus,
         PreviousFocus,
         Dismiss,
@@ -103,6 +109,68 @@ impl RenderOnce for ShellButton {
             }
         });
         self.button.render(window, cx)
+    }
+}
+
+#[derive(IntoElement)]
+struct NewConnectionButton {
+    owner: gpui::WeakEntity<Shell>,
+    disabled: bool,
+}
+impl RenderOnce for NewConnectionButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let handle = window
+            .use_keyed_state("new-connection", cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        let _ = self.owner.update(cx, |shell, _| {
+            shell.controls.insert("new-connection", handle);
+        });
+        KitButton::new("new-connection")
+            .debug_selector(|| "new-connection".into())
+            .small()
+            .ghost()
+            .label("New Connection")
+            .icon(KitIcon::empty().path("icons/plus.svg"))
+            .disabled(self.disabled)
+            .tooltip("Create or import database connections")
+            .dropdown_caret(true)
+            .dropdown_menu(|menu, _, _| {
+                menu.item(
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .debug_selector(|| "connection-create-manually".into())
+                            .child("Create Manually")
+                    })
+                    .action(Box::new(NewConnection)),
+                )
+                .separator()
+                .label("Import")
+                .item(
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .debug_selector(|| "connection-import-dbx".into())
+                            .child("Import from DBX")
+                    })
+                    .action(Box::new(ImportDbx)),
+                )
+                .item(
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .debug_selector(|| "connection-import-navicat".into())
+                            .child("Import from Navicat NCX")
+                    })
+                    .action(Box::new(ImportNavicat)),
+                )
+                .item(
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .debug_selector(|| "connection-import-datagrip".into())
+                            .child("Import from DataGrip")
+                    })
+                    .action(Box::new(ImportDataGrip)),
+                )
+            })
     }
 }
 
@@ -229,6 +297,7 @@ impl Shell {
 
     fn titlebar(&self, database_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let disabled = self.sources.read(cx).saving
+            || self.sources.read(cx).connector_busy
             || (self.sources.read(cx).busy && self.sources.read(cx).profiles.is_empty());
         div()
             .id("titlebar")
@@ -246,20 +315,10 @@ impl Shell {
                 "icons/database.svg",
                 cx,
             ))
-            .child(
-                self.tracked_button(
-                    "new-connection",
-                    self.kit_button("new-connection")
-                        .label("New Connection")
-                        .icon(KitIcon::empty().path("icons/plus.svg"))
-                        .disabled(disabled)
-                        .tooltip("Create a new database connection")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.sources.update(cx, |model, cx| model.new_source(cx));
-                        })),
-                    cx,
-                ),
-            )
+            .child(NewConnectionButton {
+                owner: cx.entity().downgrade(),
+                disabled,
+            })
             .child(
                 div()
                     .flex_1()
@@ -448,6 +507,35 @@ impl Render for Shell {
                 }),
             )
             .on_action(cx.listener(Self::dismiss))
+            .on_action(cx.listener(|this, _: &NewConnection, _, cx| {
+                this.sources.update(cx, |m, cx| m.new_source(cx))
+            }))
+            .on_action(cx.listener(|this, _: &ImportDbx, _, cx| {
+                this.sources.update(cx, |m, cx| {
+                    m.import_connectors(dalan_app::connector_transfer::ImportFormat::Dbx, cx)
+                })
+            }))
+            .on_action(cx.listener(|this, _: &ImportNavicat, _, cx| {
+                this.sources.update(cx, |m, cx| {
+                    m.import_connectors(dalan_app::connector_transfer::ImportFormat::Navicat, cx)
+                })
+            }))
+            .on_action(cx.listener(|this, _: &ImportDataGrip, _, cx| {
+                this.sources.update(cx, |m, cx| {
+                    m.import_connectors(dalan_app::connector_transfer::ImportFormat::DataGrip, cx)
+                })
+            }))
+            .on_action(cx.listener(|this, _: &ImportConnectors, _, cx| {
+                this.sources.update(cx, |m, cx| {
+                    m.import_connectors(
+                        dalan_app::connector_transfer::ImportFormat::ConnectorsList,
+                        cx,
+                    )
+                })
+            }))
+            .on_action(cx.listener(|this, _: &ExportConnectors, _, cx| {
+                this.sources.update(cx, |m, cx| m.export_connectors(cx))
+            }))
             .on_action(cx.listener(|this, _: &ToggleDatabase, window, cx| {
                 this.apply(Control::ToggleDatabase, window, cx)
             }))
@@ -542,6 +630,26 @@ impl Render for Shell {
                     .text_size(px(11.0))
                     .text_color(colors(cx).muted)
                     .gap(px(8.0))
+                    .when_some(
+                        self.sources.read(cx).connector_feedback.clone(),
+                        |status, feedback| {
+                            status.child(
+                                div()
+                                    .id("connector-feedback")
+                                    .debug_selector(|| "connector-feedback".into())
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_ellipsis()
+                                    .tooltip(move |window, cx| {
+                                        gpui::component::tooltip::Tooltip::new(feedback.clone())
+                                            .build(window, cx)
+                                    })
+                                    .child(
+                                        self.sources.read(cx).connector_feedback.clone().unwrap(),
+                                    ),
+                            )
+                        },
+                    )
                     .child(
                         div()
                             .id("status-theme-hint")
@@ -574,6 +682,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-0", ResetLayout, Some("Shell")),
         KeyBinding::new("cmd-w", CloseWindow, Some("Shell")),
         KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-n", NewConnection, Some("Shell")),
         KeyBinding::new("tab", NextFocus, Some("About")),
         KeyBinding::new("shift-tab", PreviousFocus, Some("About")),
         KeyBinding::new("escape", Dismiss, Some("About")),
@@ -607,6 +716,25 @@ pub fn run() {
                         MenuItem::action("About Dalan", ShowAbout),
                         MenuItem::separator(),
                         MenuItem::action("Quit Dalan", Quit),
+                    ],
+                },
+                Menu {
+                    name: "File".into(),
+                    disabled: false,
+                    items: vec![
+                        MenuItem::action("New", NewConnection),
+                        MenuItem::submenu(Menu {
+                            name: "Import".into(),
+                            disabled: false,
+                            items: vec![
+                                MenuItem::action("Connectors List", ImportConnectors),
+                                MenuItem::separator(),
+                                MenuItem::action("Import from DBX", ImportDbx),
+                                MenuItem::action("Import from Navicat NCX", ImportNavicat),
+                                MenuItem::action("Import from DataGrip", ImportDataGrip),
+                            ],
+                        }),
+                        MenuItem::action("Export", ExportConnectors),
                     ],
                 },
                 Menu {

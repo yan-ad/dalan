@@ -8,7 +8,7 @@ Status: implemented experimental MySQL/MariaDB configuration subset, not an exac
 
 ## Source window and actions
 
-Titlebar **New Connection**, row **Manage / Copy** and **Connect to a Source** use one retained independent, resizable source window without replacing an unsaved draft. Creation works with the sidebar hidden because the root retains the source-model subscription and dialog lifecycle. New Connection combines the existing plus glyph and explicit label at 28 px high immediately right of the Database collapse toggle at x = 84 px. Pointer, Enter and Space activation, tooltip and loading/saving guards apply; no explorer plus button remains.
+Titlebar **New Connection** opens a Kit dropdown with **Create Manually** and an **Import** section offering **Import from DBX**, **Import from Navicat NCX** and **Import from DataGrip**. Manual creation, row **Manage / Copy** and **Connect to a Source** use one retained independent, resizable source window without replacing an unsaved draft. Creation works with the sidebar hidden because the root retains the source-model subscription and dialog lifecycle. New Connection combines the existing plus glyph and explicit label at 28 px high immediately right of the Database collapse toggle at x = 84 px. Pointer, Enter and Space activation, tooltip and loading/saving guards apply; no explorer plus button remains.
 
 The unified **Data Sources and Drivers** SourceDialog starts at **1160 × 760**, minimum **1040 × 560**, reserving width for its new sidebar. It is not a modal sheet or a main-window focus trap. A 34 px native drag strip protects traffic lights. A **48 px icon rail** switches between **Sources**, **SSH** and **Drivers**; Sources has a **228 px source list** and a right-hand editor. The right-hand Name/Color identity header and General / Options / SSH/SSL / Schemas tabs remain persistent above the scrolling body, with a persistent Test Connection/status strip and a global **Cancel / Apply / OK** footer. Kit open_window/Base Root owns overlays; Kit default styling is not a pixel-identical reproduction of a supplied screenshot. No unimplemented Add comment, templates or Advanced buttons are offered.
 
@@ -29,6 +29,25 @@ The shared header owns Name and optional marker Color; General owns MySQL/MariaD
 The **Drivers** page provides built-in MySQL/MariaDB information only. It does not install JDBC drivers or host plugins.
 
 The Password row retains the labeled **Save in Keychain** checkbox on its right; compact layouts can wrap it rather than overflow. Passwords are never profile JSON fields.
+
+## Connector import and export
+
+The native **File** menu offers **New**, **Import > Connectors List**, the foreign **Import from DBX / Import from Navicat NCX / Import from DataGrip** choices, and **Export**. These File actions work from both the main window and the unified SourceDialog. New creates a manual draft; imports use a native picker for **one explicitly selected file**, not directory scanning or automatic vendor-profile discovery.
+
+Imports are bounded to **1 MiB and 100 entries**, support only MySQL/MariaDB, and create **unsaved review drafts with fresh UUIDs**. Existing drafts are retained and the source-list capacity still applies. Passwords are never imported, `save_password` is false, and import does not recover credentials from local Keychain or connect to a database. Review warnings and local paths, enter credentials yourself, then explicitly Test or Apply the selected source; import itself is not persistence or a successful connection test.
+
+| Import choice | Supported file subset |
+| --- | --- |
+| DBX | Plaintext JSON with a `connections` array, or a bare array of connections. Encrypted DBX exports are rejected. |
+| Navicat NCX | XML `Connections` / `Connection` attributes, decoded as UTF-8 or UTF-16. DTDs are forbidden. |
+| DataGrip | One selected `dataSources.xml` file containing supported data-source settings. No companion local credential files or Keychain recovery. XML DTDs are forbidden. |
+| Connectors List | Native JSON envelope with `format: "dalan-connectors"`, `version: 1` and a `profiles` array. This is an interchange file, not a replacement `sources.json` repository. |
+
+Foreign SSH, proxy/HTTP-tunnel settings and read-only policies that cannot be represented are **skipped fail closed**, never silently converted to Direct or treated as an enforceable read-only guarantee. Unsupported drivers and unsafe entries are skipped with warnings; a file with no safe supported entries fails. Security settings not represented by the importer default to **VerifyIdentity** with review warnings, not an inferred vendor-equivalent policy. Credential-bearing URLs and unsupported URL options/properties are rejected. These parsers implement bounded format subsets, not full compatibility with every vendor/version.
+
+Native lists retain supported proxy settings on round trip. Native SSH references are retained only when they contain an already-valid saved-session UUID reference and materialized transport; SSH session definitions are **not** included in the export. Import rejects inline SSH. A missing local saved reference fails closed and must be repaired by selecting a saved SSH session before Apply/Test; an exported snapshot is not a substitute for that session.
+
+**Export** includes saved profiles only and ignores all unsaved drafts. It includes no passwords or local private-key contents and does not read Keychain; certificate/key **paths remain**, so the file still contains sensitive endpoint/account/path metadata. Output uses the native version 1 envelope above. Choose a **new file**: publication is atomic without overwriting an existing destination, and symlink destinations or ancestors are rejected. These checks do not guarantee protection against hostile concurrent directory replacement. See [security boundaries](security.md#connector-interchange-boundaries) and [verification status](testing.md#connector-import-and-export).
 
 ## Persistent source identity
 
