@@ -1,5 +1,9 @@
 # Test strategy and release evidence
 
+## Settings footer notification cleanup
+
+Removed connector-feedback labels appended below the fixed Cancel/Apply/OK row. Import/export picker cancellation is silent and clears transfer feedback. Newly opened settings discard stale completed notices except warnings accompanying incoming imported drafts. Import/export errors and remaining settings notices use a dismissible upper-right overlay without changing footer/editor bounds; important failures are not suppressed. Tests cover silent native-picker cancellation, stale-message removal and error overlay/dismissal geometry. Local verification passed **186 headless unit tests + one native-wire integration test, 216 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped.
+
 ## Native PostgreSQL, MongoDB and Redis adapters
 
 Native engine routing now exposes experimental PostgreSQL, MongoDB and Redis alongside MySQL/MariaDB; this is not JDBC support. New tests cover PostgreSQL quoted identifiers, typed cells/NUMERIC, startup framing and cancellation; MongoDB JSON read-command allowlist/BSON previews and actual official-driver handshake framing; Redis RESP2 frame bounds, authentication/SELECT/SCAN/read-value fixtures and cancellation. PostgreSQL syntax/function/write rejection and normalized `jdbc:rediss://` TLS enforcement have additional regressions. UI checks exercise driver/port selection, direct-only guards, collection/key routing, JSON console preservation and rejecting SQL before credentials/network access.

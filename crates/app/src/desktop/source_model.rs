@@ -1308,7 +1308,7 @@ impl SourceModel {
         cx.spawn(async move |this,cx| {
             let selection=picker.await;
             let path=match selection {Ok(Ok(Some(mut paths))) if paths.len()==1=>paths.pop(),_=>None};
-            let Some(path)=path else {let _=this.update(cx,|m,cx|{m.connector_busy=false;m.connector_feedback=Some("Import cancelled; no sources changed.".into());cx.notify();});return;};
+            let Some(path)=path else {let _=this.update(cx,|m,cx|{m.connector_busy=false;m.connector_feedback=None;cx.notify();});return;};
             let task=cx.background_executor().spawn(async move {dalan_app::connector_transfer::read_import(&path,format)});
             let result=task.await;
             let _=this.update(cx,|m,cx|{m.connector_busy=false;match result {
@@ -1343,7 +1343,7 @@ impl SourceModel {
         let picker = cx.prompt_for_new_path(&home, Some("Dalan-connectors.json"));
         cx.spawn(async move |this,cx| {
             let path=match picker.await {Ok(Ok(Some(path)))=>Some(path),_=>None};
-            let Some(path)=path else {let _=this.update(cx,|m,cx|{m.connector_busy=false;m.connector_feedback=Some("Export cancelled; no file written.".into());cx.notify();});return;};
+            let Some(path)=path else {let _=this.update(cx,|m,cx|{m.connector_busy=false;m.connector_feedback=None;cx.notify();});return;};
             let task=cx.background_executor().spawn(async move {dalan_app::connector_transfer::write_export(&path,&profiles)});
             let result=task.await;
             let _=this.update(cx,|m,cx|{m.connector_busy=false;m.connector_feedback=Some(match result {Ok(())=>"Exported saved connectors without passwords. SSH sessions are not included; imported SSH sources require separate session setup.".into(),Err(e)=>format!("Export failed: {e}")});cx.notify();});

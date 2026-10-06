@@ -98,6 +98,12 @@ impl SourceDialog {
         })
     }
     fn new(model: Entity<SourceModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Do not carry completed transfer notices into a newly opened settings window.
+        model.update(cx, |m, _| {
+            if !m.connector_busy && m.imported_profiles.is_empty() {
+                m.connector_feedback = None;
+            }
+        });
         let profile = model
             .read(cx)
             .form_profile
@@ -721,6 +727,7 @@ impl Render for SourceDialog {
                 .id("source-dialog")
                 .debug_selector(|| "source-dialog".into())
                 .key_context("SourceDialog")
+                .relative()
                 .size_full()
                 .flex()
                 .flex_col()
@@ -859,17 +866,47 @@ impl Render for SourceDialog {
                         })),
                 ),
         );
-        if let Some(feedback) = &self.model.read(cx).connector_feedback {
+        if let Some(message) = self
+            .notice
+            .clone()
+            .or_else(|| self.model.read(cx).connector_feedback.clone())
+        {
+            // Notifications do not add a row beneath the fixed action footer.
             root = root.child(
                 div()
-                    .id("connector-feedback")
-                    .debug_selector(|| "connector-feedback".into())
-                    .p_2()
-                    .child(feedback.clone()),
+                    .id("settings-notice")
+                    .debug_selector(|| "settings-notice".into())
+                    .absolute()
+                    .top(px(40.))
+                    .right(px(12.))
+                    .max_w(px(620.))
+                    .p_3()
+                    .bg(cx.theme().popover)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius)
+                    .shadow_md()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(div().flex_1().min_w_0().child(message))
+                    .child(
+                        Button::new("settings-dismiss-notice")
+                            .debug_selector(|| "settings-dismiss-notice".into())
+                            .icon(gpui::assets::IconName::X)
+                            .small()
+                            .ghost()
+                            .tooltip("Dismiss notification")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.notice = None;
+                                this.model.update(cx, |m, cx| {
+                                    m.connector_feedback = None;
+                                    cx.notify();
+                                });
+                                cx.notify();
+                            })),
+                    ),
             );
-        }
-        if let Some(notice) = &self.notice {
-            root = root.child(div().p_2().child(notice.clone()));
         }
         if self.confirm_remove {
             root=root.child(div().p_2().flex().gap_2().child("Remove this source and its saved credentials? Database objects are not changed.").child(Button::new("settings-confirm-remove").debug_selector(||"settings-confirm-remove".into()).label("Remove").disabled(blocked).on_click(cx.listener(|this,_,window,cx|this.remove(window,cx)))).child(Button::new("settings-keep-source").label("Keep").on_click(cx.listener(|this,_,_,cx|{this.confirm_remove=false;cx.notify();}))));
@@ -1240,6 +1277,12 @@ mod tests {
         assert!(visual.did_prompt_for_paths());
         visual.simulate_path_prompt_response(|_| None);
         visual.run_until_parked();
+        assert!(model.read_with(cx, |m, _| m.connector_feedback.is_none()));
+        assert!(visual.debug_bounds("settings-notice").is_none());
+        assert_eq!(
+            visual.debug_bounds("settings-footer").unwrap().bottom(),
+            px(760.)
+        );
         handle
             .update(cx, |d, _, app| {
                 assert_eq!(d.form.read(app).draft_identity(app).0, "Retained fixture")
@@ -1265,6 +1308,32 @@ mod tests {
         visual.run_until_parked();
         click(&mut visual, "source-cancel");
         click(&mut visual, "settings-discard-close");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn transfer_notice_never_adds_bottom_labels_or_changes_footer_bounds(cx: &mut TestAppContext) {
+        let model = new_model(cx);
+        model.update(cx, |m, _| {
+            m.connector_feedback = Some("Import cancelled; no sources changed.".into())
+        });
+        let (_, mut visual) = open(&model, cx);
+        let footer = visual.debug_bounds("settings-footer").unwrap();
+        assert!(visual.debug_bounds("connector-feedback").is_none());
+        assert!(visual.debug_bounds("settings-notice").is_none());
+        assert_eq!(footer.bottom(), px(760.));
+        model.update(cx, |m, cx| {
+            m.connector_feedback = Some("Import failed: invalid connector file.".into());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("settings-notice").is_some());
+        assert_eq!(visual.debug_bounds("settings-footer").unwrap(), footer);
+        click(&mut visual, "settings-dismiss-notice");
+        assert!(visual.debug_bounds("settings-notice").is_none());
+        assert!(model.read_with(cx, |m, _| m.connector_feedback.is_none()));
+        assert_eq!(visual.debug_bounds("settings-footer").unwrap(), footer);
+        click(&mut visual, "source-cancel");
         assert_closed(&model, cx);
     }
 
