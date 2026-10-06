@@ -131,8 +131,8 @@ impl QueryConsole {
     }
 
     pub(super) fn focus(&self, window: &mut Window, cx: &mut App) {
-        let handle = self.editor.read(cx).focus_handle();
-        handle.focus(window, cx);
+        self.editor
+            .update(cx, |editor, cx| editor.focus(window, cx));
     }
 
     fn refresh_databases(&mut self, cx: &mut Context<Self>) {
@@ -254,7 +254,7 @@ impl QueryConsole {
             return;
         }
         let sql = editor.selected_text().unwrap_or_else(|| editor.value());
-        // Keep validation in the model: rejected SQL must never access Keychain
+        // Keep validation in the model: rejected SQL must never access saved auth
         // or the network, including runs issued through keyboard actions.
         self.model.update(cx, |model, cx| model.run_query(sql, cx));
     }
@@ -432,6 +432,13 @@ impl Render for QueryConsole {
             .bg(theme.background)
             .text_color(theme.foreground)
             .text_size(px(12.))
+            .capture_action(cx.listener(|this,action:&gpui::component::input::Enter,window,cx|{
+                if action.secondary && !action.shift && this.editor.read(cx).focus_handle().is_focused(window) {
+                    cx.stop_propagation();
+                    this.run(cx);
+                    this.focus(window,cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &RunQuery, window, cx| { this.run(cx); this.focus(window, cx); }))
             .on_action(cx.listener(|this, _: &CancelQuery, _, cx| this.cancel(cx)))
             .child(toolbar)
@@ -528,6 +535,51 @@ mod tests {
         let model = cx.new(|_| model);
         let view = cx.new(|cx| QueryConsole::new(model.clone(), root, cx));
         (view, model)
+    }
+
+    #[gpui::test]
+    fn cmd_enter_in_native_editor_runs_validation_without_inserting_a_newline(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, model) = fixture(cx);
+        let editor = view.read_with(cx, |v, _| v.editor.clone());
+        editor.update(cx, |e, cx| e.set_value("UPDATE items SET x = 1".into(), cx));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| ConsoleTestRoot(view.clone()));
+            gpui::base::Root::new(content, window, cx)
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        cx.update(|window, app| view.update(app, |v, cx| v.focus(window, cx)));
+        let sql = editor.read_with(cx, |e, _| e.value());
+        cx.simulate_keystrokes("cmd-enter");
+        cx.run_until_parked();
+        assert!(
+            model.read_with(cx, |m, _| m.error.is_some()),
+            "Cmd-Enter was consumed by the native editor instead of RunQuery"
+        );
+        assert_eq!(
+            editor.read_with(cx, |e, _| e.value()),
+            sql,
+            "Run must not insert a newline"
+        );
+        assert!(!model.read_with(cx, |m, _| m.busy));
+        cx.simulate_keystrokes("cmd-a");
+        cx.run_until_parked();
+        assert_eq!(
+            editor.read_with(cx, |e, _| e.selected_text()),
+            Some(sql.clone())
+        );
+        cx.simulate_keystrokes("cmd-enter");
+        cx.run_until_parked();
+        assert_eq!(
+            editor.read_with(cx, |e, _| e.selected_text()),
+            Some(sql.clone())
+        );
+        cx.simulate_keystrokes("right");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(editor.read_with(cx, |e, _| e.value()), format!("{sql}\n"));
     }
 
     #[gpui::test]

@@ -120,3 +120,7 @@ SQL syntax highlighting is implemented. Completion, history retention/deletion, 
 
 
 Changing a source’s connection settings invalidates its affected tabs and cancels their work. Reopening an invalidated table rebuilds it from the updated source while keeping its tab ID; healthy duplicate opens retain their filters/results/scroll state. An invalidated console keeps its SQL draft but refuses execution until the draft is copied into a new console with the new source context. Removing a source invalidates its tabs without changing another source’s tabs.
+
+### Caret and Run dispatch
+
+Focus restoration uses Kit’s `EditorState::focus` so lazy editor initialization starts the caret blink lifecycle. `Cmd-Enter` captures Kit’s secondary Enter action within the focused SQL editor before the inner input consumes it, then calls the same safe Run path as the toolbar. Ordinary Enter still inserts a newline; selection and undo are retained. Completion notifications never steal focus from results. See [caret/shortcut evidence](testing.md#sql-caret-initialization-and-cmd-enter-regression) for test scope and the separate long-line horizontal-scroll limitation.

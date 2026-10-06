@@ -41,6 +41,16 @@ impl SqlEditor {
         self.focus_handle.clone()
     }
 
+    /// Focus through Kit's state API so a lazy/mounted editor starts its caret
+    /// lifecycle even when the native focus event was queued before mounting.
+    pub(super) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(state) = &self.state {
+            state.update(cx, |state, cx| state.focus(window, cx));
+        } else {
+            self.focus_handle.focus(window, cx);
+        }
+    }
+
     pub(super) fn selected_text(&self) -> Option<String> {
         self.selection.clone()
     }
@@ -79,7 +89,7 @@ impl Render for SqlEditor {
             });
             self.focus_handle = state.read(cx).focus_handle(cx);
             if was_focused {
-                self.focus_handle.focus(window, cx);
+                state.update(cx, |state, cx| state.focus(window, cx));
             }
             self.subscription = Some(cx.observe(&state, |this, state, cx| {
                 // A pending console load takes precedence over stale editor state.
@@ -323,6 +333,119 @@ mod tests {
             window.input(" -- caret", cx);
             assert_eq!(state.read(cx).value(), "SELECT 1; -- caret");
         });
+    }
+
+    #[gpui::test]
+    fn caret_geometry_stays_inside_editor_after_lazy_focus_notifications_and_refocus(
+        cx: &mut TestAppContext,
+    ) {
+        let (editor, visual) = fixture(cx, "SELECT '文';");
+        visual.simulate_resize(gpui::size(gpui::px(800.), gpui::px(250.)));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        let state = editor.read_with(visual, |e, _| e.state.as_ref().unwrap().clone());
+        visual.simulate_keystrokes("cmd-end");
+        visual.run_until_parked();
+        for _ in 0..3 {
+            visual.update(|window, app| {
+                window.blur(app);
+            });
+            visual.run_until_parked();
+            visual.update(|window, app| editor.update(app, |editor, cx| editor.focus(window, cx)));
+            visual.run_until_parked();
+            editor.update(visual, |_, cx| cx.notify());
+            visual.refresh().unwrap();
+            visual.run_until_parked();
+            let (caret, viewport) = state.read_with(visual, |s, _| {
+                let mut caret = s.cursor_layout().expect("caret geometry").0;
+                caret.origin.y += s.scroll_offset().y;
+                (caret, s.input_bounds())
+            });
+            assert!(
+                caret.size.width > gpui::px(0.)
+                    && caret.left() >= viewport.left()
+                    && caret.right() <= viewport.right(),
+                "horizontal caret {caret:?} viewport {viewport:?}"
+            );
+            assert!(
+                caret.size.height > gpui::px(0.)
+                    && caret.top() >= viewport.top()
+                    && caret.bottom() <= viewport.bottom(),
+                "caret {caret:?} viewport {viewport:?}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn caret_follows_many_sql_lines_and_vertical_scroll_without_resetting_selection(
+        cx: &mut TestAppContext,
+    ) {
+        let sql = (0..80)
+            .map(|i| format!("-- {i} {}", "SQL column ".repeat(3)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (editor, visual) = fixture(cx, &sql);
+        visual.simulate_resize(gpui::size(gpui::px(700.), gpui::px(180.)));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        let state = editor.read_with(visual, |e, _| e.state.as_ref().unwrap().clone());
+        visual.update(|_, app| {
+            state.update(app, |s, cx| s.set_selected_range(sql.len()..sql.len(), cx))
+        });
+        visual.run_until_parked();
+        visual.update(|window, app| editor.update(app, |e, cx| e.focus(window, cx)));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        let (mut caret, viewport, offset) = state.read_with(visual, |s, _| {
+            (
+                s.cursor_layout().unwrap().0,
+                s.input_bounds(),
+                s.scroll_offset(),
+            )
+        });
+        caret.origin.y += offset.y;
+        assert!(
+            caret.top() >= viewport.top() - gpui::px(1.)
+                && caret.bottom() <= viewport.bottom() + gpui::px(1.),
+            "caret {caret:?} viewport {viewport:?}"
+        );
+        assert!(
+            caret.left() >= viewport.left() - gpui::px(1.)
+                && caret.right() <= viewport.right() + gpui::px(1.),
+            "caret {caret:?} viewport {viewport:?}"
+        );
+        assert_eq!(
+            state.read_with(visual, |s, _| s.selected_range()),
+            sql.len()..sql.len()
+        );
+    }
+
+    #[gpui::test]
+    fn lazy_focused_editor_starts_caret_blink_lifecycle(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let editor = cx.new(|cx| SqlEditor::new("SELECT 1;", cx));
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            editor.read(cx).focus_handle().focus(window, cx);
+            gpui::base::Root::new(editor.clone(), window, cx)
+        });
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        let state = editor.read_with(visual, |e, _| e.state.as_ref().unwrap().clone());
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let _observe = visual.update(|_, app| {
+            let count = count.clone();
+            app.observe(&state, move |_, _| {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        });
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        visual.run_until_parked();
+        assert!(
+            count.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "focused editor never started caret blink lifecycle"
+        );
     }
 
     #[gpui::test]

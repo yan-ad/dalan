@@ -1,5 +1,13 @@
 # Test strategy and release evidence
 
+## SQL caret initialization and Cmd-Enter regression
+
+A failing-before/passing-after regression reproduced an editor focused before lazy Kit state creation accepting input without starting its caret blink notifications. The adapter now transfers and restores focus through `EditorState::focus`, not only its `FocusHandle`. It preserves the retained text/selection/history; Run, cached database selection and console activation use the same state-aware focus path. Routine result notifications still do not refocus the editor.
+
+A second failing-before/passing-after regression sends actual `cmd-enter` through the native editor: Kit’s deeper `Input` binding selected its `Enter { secondary: true }` instead of the outer `RunQuery`. The console captures that native action only for its focused SQL editor and unchanged modifier mode, then uses normal guarded Run. Plain Enter remains editing, selected SQL remains selected, and unsafe SQL rejects before auth/network access. This is not a global editor-keybinding override.
+
+Four regressions cover actual shortcut dispatch/plain newline/retained selection, lazy focus blink scheduling, horizontal/vertical short-query caret geometry across blur/refocus/repaints, and many-line vertical scroll without cursor reset. Simulated geometry/notifications are not pixel-rendered or native OS certification: the test context has no HeadlessRenderer. A separate long-unwrapped-line stress case revealed an unresolved upstream horizontal-scroll limitation (caret outside the viewport); the current initialization fix does not claim to solve that distinct case. Local validation passed: **151 headless unit tests + one native-wire integration test, 202 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Before-fix logs `/tmp/dalan-cmd-enter-before.log` and `/tmp/dalan-caret-lazy-before.log` recorded the two failing targeted reproductions on this development machine; temporary logs are not committed. Hosted CI remains skipped.
+
 ## Current appearance and local auth validation
 
 Current behavior supersedes historical Keychain and light/dark-only evidence below. The appearance control cycles **System → Light → Dark → System**. System is the default and follows the current OS appearance automatically; it is not an alias for Light. A global window-appearance callback updates Kit only while System is selected; explicit Light/Dark ignores OS changes. The preference is persisted as JSON version 1 `appearance` (`system`, `light` or `dark`) in `dalan.config` beside `sources.json`. All modes use Kit defaults, with no custom palette.
