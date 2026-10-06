@@ -114,6 +114,10 @@ pub fn materialize_ssh_profile(
     configurations: &[SshProfile],
 ) -> Result<SourceProfile> {
     let Some(id) = &profile.ssh_configuration_id else {
+        ensure!(
+            !matches!(profile.transport, Transport::Ssh { .. }),
+            "SSH requires a saved session; select one in Manage SSH Sessions"
+        );
         return Ok(profile.clone());
     };
     ensure!(
@@ -134,7 +138,7 @@ pub fn materialize_ssh_profile(
 /// Read local metadata only: this function never opens a connection or keychain.
 pub fn resolve_ssh_profile(profile: &SourceProfile) -> Result<SourceProfile> {
     if profile.ssh_configuration_id.is_none() {
-        return Ok(profile.clone());
+        return materialize_ssh_profile(profile, &[]);
     }
     let repository = SshRepository::new(SshRepository::default_path()?);
     materialize_ssh_profile(profile, &repository.load()?)
@@ -324,6 +328,23 @@ mod tests {
             ..SourceProfile::default()
         };
         assert!(materialize_ssh_profile(&direct, &[configuration]).is_err());
+    }
+
+    #[test]
+    fn inline_only_ssh_is_rejected_without_reading_local_repository() {
+        let profile = SourceProfile {
+            transport: SshProfile::default().transport(),
+            ..SourceProfile::default()
+        };
+        assert!(
+            materialize_ssh_profile(&profile, &[])
+                .unwrap_err()
+                .to_string()
+                .contains("saved session")
+        );
+        assert!(resolve_ssh_profile(&profile).is_err());
+        let direct = SourceProfile::default();
+        assert_eq!(resolve_ssh_profile(&direct).unwrap(), direct);
     }
 
     #[test]

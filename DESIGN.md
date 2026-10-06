@@ -20,7 +20,7 @@ One collapsible/resizable Database Explorer, retained table/query-console tabs, 
 
 App layout metrics remain 34 px titlebar, 28 px headers/status/controls, 22 px tree/grid rows, flush panes and a 4 px divider hit area with a 1 px visible line. Explorer prefers 320 px within 200–480 px, reserving 240 px main content. ACP starts closed and prefers 300 px; compact layouts may temporarily suppress explorer without changing retained preferences. Actual standard-control styling comes from Kit rather than independently copied palette/radius behavior.
 
-Source setup is a normal independent window, initially 1040 × 760 with 780 × 560 minimum, not an OS modal sheet. General, Options, SSH/SSL and Schemas use Kit tabs in the native-titlebar layout with an 84 px traffic-light reservation. Source/SSH menus, password fields, pickers, saving guards and retained drafts preserve their model contracts. Source colors remain marker metadata, not execution-risk or accessibility guarantees.
+Source setup is a normal independent window, initially 1040 × 760 with 780 × 560 minimum, not an OS modal sheet. A 34 px native drag strip protects traffic lights; a persistent Name/Color header sits above General, Options, SSH/SSL and Schemas Kit tabs. Color uses a compact preset/custom-hex dropdown. SSH uses saved reusable sessions only, without inline compatibility or source-side key discovery. Source/SSH menus, password fields, pickers, saving guards and retained drafts preserve their model contracts. Source colors remain marker metadata, not execution-risk or accessibility guarantees.
 
 ## Rich canvas table contract
 

@@ -215,9 +215,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn tab_strip_occupies_transparent_titlebar_and_reserves_traffic_lights(
-        cx: &mut TestAppContext,
-    ) {
+    fn native_titlebar_precedes_persistent_identity_and_tabs(cx: &mut TestAppContext) {
         // GPUI's test window does not expose native titlebar metadata. Check only
         // the production show() definition, never the assertion's own literals.
         let source = include_str!("source_dialog.rs");
@@ -243,10 +241,16 @@ mod tests {
         for viewport in [size(px(1040.), px(760.)), size(px(780.), px(560.))] {
             visual.simulate_resize(viewport);
             visual.run_until_parked();
+            let titlebar = visual.debug_bounds("source-titlebar").unwrap();
+            assert_eq!(titlebar.origin, gpui::point(px(0.), px(0.)));
+            assert_eq!(titlebar.size, size(viewport.width, px(34.)));
+            let identity = visual.debug_bounds("source-identity-header").unwrap();
             let bar = visual.debug_bounds("source-tab-bar").unwrap();
-            assert_eq!(bar.origin, gpui::point(px(0.), px(0.)));
+            assert_eq!(identity.top(), titlebar.bottom());
+            assert_eq!(bar.top(), identity.bottom());
             assert_eq!(bar.size, size(viewport.width, px(34.)));
-            let mut right = px(84.);
+            assert!(visual.debug_bounds("source-name").unwrap().top() >= titlebar.bottom());
+            let mut right = px(16.);
             for id in [
                 "source-tab-general",
                 "source-tab-options",
@@ -280,7 +284,10 @@ mod tests {
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input("Tab draft");
         visual.run_until_parked();
+        click(&mut visual, "source-color-menu");
         edit(&mut visual, "source-color", "#123456");
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
         click(&mut visual, "source-tab-options");
         edit(&mut visual, "source-connect-timeout", "31");
         for (tab, page_field) in [

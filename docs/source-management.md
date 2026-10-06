@@ -10,7 +10,7 @@ Status: implemented experimental MySQL/MariaDB configuration subset, not an exac
 
 Titlebar **New Connection**, row **Manage / Copy** and **Connect to a Source** use one retained independent, resizable source window without replacing an unsaved draft. Creation works with the sidebar hidden because the root retains the source-model subscription and dialog lifecycle. New Connection combines the existing plus glyph and explicit label at 28 px high immediately right of the Database collapse toggle at x = 84 px. Pointer, Enter and Space activation, tooltip and loading/saving guards apply; no explorer plus button remains.
 
-The source window starts at 1040 × 760, minimum 780 × 560; it is not a modal sheet or a main-window focus trap. Kit tabs occupy the 34 px native-titlebar layout, reserve 84 px for traffic lights, and contain **General**, **Options**, **SSH/SSL** and **Schemas**. `TitlebarOptions` has an empty title to suppress duplicate native “Data Sources · Dalan” text. Kit open_window/Base Root owns overlays in source and SSH windows; transparent titlebar integration is not a blur feature or a Carbonfox runtime override.
+The source window starts at 1040 × 760, minimum 780 × 560; it is not a modal sheet or a main-window focus trap. A 34 px native drag strip protects traffic lights, followed by the fixed Name/Color header and a 34 px Kit tab strip containing **General**, **Options**, **SSH/SSL** and **Schemas**. `TitlebarOptions` has an empty title to suppress duplicate native “Data Sources · Dalan” text. Kit open_window/Base Root owns overlays in source and SSH windows; transparent titlebar integration is not a blur feature or a Carbonfox runtime override.
 
 ### Row actions and copy boundaries
 
@@ -24,9 +24,13 @@ The source window starts at 1040 × 760, minimum 780 × 560; it is not a modal s
 
 No new dependencies, branded logo or utility assets are introduced. The 22 px virtual tree, cached projection and viewport-only rendering, including the 300-cell integrated grid fixture, retain their existing contracts; this is not a new native performance measurement. See [UI controls](ui-foundation.md#controls) and [pending verification](testing.md#relocated-source-controls).
 
-General owns Name, optional marker Color, a real MySQL/MariaDB driver combo and a real authentication combo. Tab/Shift-Tab traverses the active form; Escape, Cmd-W and native close discard the draft and cancel Test, except while Save is guarded. **Test Connection** tests the draft without storing it. **Save** commits the profile/credential policy, closes the window and starts metadata-only discovery, never automatic row browsing. **Cancel** discards unsaved changes.
+The shared header owns Name and optional marker Color; General owns a real MySQL/MariaDB driver combo and a real authentication combo. Tab/Shift-Tab traverses the active form; Escape, Cmd-W and native close discard the draft and cancel Test, except while Save is guarded. **Test Connection** tests the draft without storing it. **Save** commits the profile/credential policy, closes the window and starts metadata-only discovery, never automatic row browsing. **Cancel** discards unsaved changes.
 
 The Password row retains the labeled **Save in Keychain** checkbox on its right; compact layouts can wrap it rather than overflow. Passwords are never profile JSON fields.
+
+## Persistent source identity
+
+**Name** and **Color** share a compact, non-scrolling header above General / Options / SSH/SSL / Schemas. They remain at the same position as tabs change or the tab body scrolls. Color is a Kit dropdown with a current-color swatch, Default/five presets and custom `#RRGGBB` input; changes belong to the same unsaved source draft. Native traffic lights have their own 34 px drag strip above this header. Identity settings are no longer General-tab rows.
 
 ## General: endpoints and authentication
 
@@ -60,7 +64,7 @@ This tab contains actual **Transport** settings, not simulated SOCKS controls. E
 
 For SSH, check **Enable SSH**, then select a saved session by readable name and endpoint, not raw UUID. **Manage SSH Sessions** opens a separate, reusable-settings window and is available even before enabling SSH. New SSH drafts show **Select SSH session…**, not editable inline host/key settings or an implicit localhost tunnel. Test and Save reject enabled SSH without a selected session. Disabling SSH uses Direct and omits the saved reference from the submitted source; re-enabling it retains the draft’s previous session choice. SSH and CONNECT are mutually exclusive routes, not nested tunnels.
 
-The local forwarding port is dynamically allocated and read-only; there is no fixed local-port setting. Existing inline connections remain editable through **Custom SSH connection (legacy)**, retaining backward-compatible host/port/user, identity selection, optional known-hosts path and Parse config settings. The normal new-session workflow keeps these settings in the manager. Unix socket connections remain local and cannot enable SSH.
+The local forwarding port is dynamically allocated and read-only; there is no fixed local-port setting. **All SSH connections require a saved session.** Inline SSH host/key fields, Custom fallback and local key-discovery picker have been removed. Host/port/user, authentication, identity and known-hosts paths and Parse config belong exclusively in Manage SSH Sessions. An old experimental inline-only source remains visible but requires session selection before Save/Test/connecting; no automatic migration or private local-file changes are performed. Unix socket connections remain local and cannot enable SSH.
 
 ### Manage SSH Sessions
 
@@ -75,13 +79,13 @@ Removal checks references in saved source JSON and refuses to remove an in-use c
 
 Reusable metadata is stored in version 1 `~/Library/Application Support/Dalan/ssh-configurations.json`: at most 100 profiles and 1 MiB, with Unix file `0600` and directory `0700`. It contains paths and settings, never passwords, passphrases or private-key contents. These permissions are not encryption or protection against another process under the same OS account.
 
-A source stores `ssh_configuration_id` as a UUID reference **plus** a materialized transport snapshot for compatibility. Startup, Test Connection and Save resolve the latest reusable configuration. Connection paths resolve current referenced settings, so editing a reusable profile affects sources that reference it. Missing references fail closed; they never silently use the old inline snapshot. Offline cached trees remain available with a metadata warning. Refresh can update the resolved SSH identity in memory; it does not rewrite source JSON until source Save. Cache registration belongs to startup/Save, not a late worker completion that could resurrect a deleted source.
+A source stores `ssh_configuration_id` as a UUID reference **plus** a materialized transport snapshot for the driver. Startup, Test Connection and Save resolve the latest reusable configuration. Connection paths resolve current referenced settings, so editing a reusable profile affects sources that reference it. Missing references and inline-only SSH transports fail closed; they never silently use the old snapshot. Offline cached trees remain available with a metadata warning. Refresh can update the resolved SSH identity in memory; it does not rewrite source JSON until source Save. Cache registration belongs to startup/Save, not a late worker completion that could resurrect a deleted source.
 
 ### SSH security and Test
 
 OpenSSH `/usr/bin/ssh`, strict `StrictHostKeyChecking=yes`, BatchMode and agent/key authentication remain required. A selected key enables `IdentitiesOnly=yes`. With a selected known-hosts file, that file is authoritative and global trust is disabled; otherwise OpenSSH's user/system known-host files remain in use. Establish trust outside Dalan.
 
-**Parse config is off by default**, including legacy profiles: commands use `-F /dev/null`. Opting in permits local OpenSSH configuration, whose `ProxyCommand` and `Match exec` can execute local commands. Only enable trusted local configuration. This opt-in does not relax strict host verification.
+**Parse config is off by default** for sessions: commands use `-F /dev/null`. Opting in permits local OpenSSH configuration, whose `ProxyCommand` and `Match exec` can execute local commands. Only enable trusted local configuration. This opt-in does not relax strict host verification.
 
 The manager's **Test** invokes strict batch SSH with remote `true`, not a database test. It is bounded to 20 seconds. Cancel, close and input changes kill the owned child; executable arguments are passed separately, with no shell interpolation, including paths containing spaces. No cleartext SSH password is supplied. A bastion restricted to port forwarding can reject remote `true` even when database forwarding works.
 

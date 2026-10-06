@@ -46,21 +46,15 @@ pub(super) struct SourceForm {
     ssh_profiles: Vec<SshProfile>,
     ssh_load_error: Option<String>,
     ssh_selected: Option<String>,
-    ssh_custom: bool,
     ssh_catalog_revision: u64,
     ssh_combo_open: bool,
     selected_schema_names: HashSet<String>,
     schema_scroll: gpui::UniformListScrollHandle,
-    ssh_keys: Vec<dalan_app::ssh_keys::SshKeyCandidate>,
-    key_picker_open: bool,
-    key_picker_busy: bool,
-    key_picker_error: Option<String>,
     ca_picker_open: bool,
     active_tab: u8,
     endpoint_mode: u8,
     authentication: Authentication,
     schemas_all: bool,
-    parse_ssh_config: bool,
     driver_open: bool,
     authentication_open: bool,
     tls_open: bool,
@@ -92,29 +86,9 @@ impl SourceForm {
                 "Optional CA file path",
                 false,
             ),
-            ("source-tunnel-host", "localhost".into(), "localhost", false),
-            ("source-tunnel-port", "22".into(), "22", false),
-            (
-                "source-tunnel-user",
-                std::env::var("USER").unwrap_or_default(),
-                "SSH user",
-                false,
-            ),
-            (
-                "source-tunnel-key",
-                String::new(),
-                "Optional identity file path",
-                false,
-            ),
             ("source-proxy-host", "localhost".into(), "localhost", false),
             ("source-proxy-port", "8080".into(), "8080", false),
             ("source-https-port", "443".into(), "443", false),
-            (
-                "source-known-hosts",
-                String::new(),
-                "Optional known_hosts file",
-                false,
-            ),
             (
                 "source-color",
                 profile.color.clone().unwrap_or_default(),
@@ -124,25 +98,10 @@ impl SourceForm {
         ];
         let transport = match &profile.transport {
             Transport::Direct => 0,
-            Transport::Ssh {
-                host,
-                port,
-                user,
-                identity_file,
-                known_hosts_file,
-                ..
-            } => {
-                fields[7].1 = host.clone();
-                fields[8].1 = port.to_string();
-                fields[9].1 = user.clone();
-                fields[10].1 = identity_file.clone().unwrap_or_default();
-                fields[14].1 = known_hosts_file.clone().unwrap_or_default();
-                1
-            }
-
+            Transport::Ssh { .. } => 1,
             Transport::HttpConnect { host, port, https } => {
-                fields[11].1 = host.clone();
-                fields[if *https { 13 } else { 12 }].1 = port.to_string();
+                fields[7].1 = host.clone();
+                fields[if *https { 9 } else { 8 }].1 = port.to_string();
                 if *https { 3 } else { 2 }
             }
         };
@@ -195,12 +154,6 @@ impl SourceForm {
                 "source-client-key",
                 profile.ssl_client_key.clone().unwrap_or_default(),
                 "Optional client key path",
-                false,
-            ),
-            (
-                "source-ssh-configuration",
-                profile.ssh_configuration_id.clone().unwrap_or_default(),
-                "Optional configuration ID",
                 false,
             ),
             ("source-schemas", schemas, "schema_one, schema_two", false),
@@ -282,7 +235,6 @@ impl SourceForm {
             .detach();
         }
         Self {
-            ssh_custom: transport == 1 && profile.ssh_configuration_id.is_none(),
             ssh_catalog_revision: 0,
             ssh_selected: profile.ssh_configuration_id.clone(),
             ssh_profiles: Vec::new(),
@@ -300,13 +252,6 @@ impl SourceForm {
             endpoint_mode,
             authentication: profile.authentication,
             schemas_all: matches!(profile.schemas, SchemaSelection::All),
-            parse_ssh_config: matches!(
-                profile.transport,
-                Transport::Ssh {
-                    parse_config: true,
-                    ..
-                }
-            ),
             driver_open: false,
             authentication_open: false,
             tls_open: false,
@@ -316,10 +261,6 @@ impl SourceForm {
             last_values,
             root_focus: cx.focus_handle().tab_stop(false),
             transport,
-            ssh_keys: vec![],
-            key_picker_open: false,
-            key_picker_busy: false,
-            key_picker_error: None,
             ca_picker_open: false,
             _subscriptions: subscriptions,
         }
@@ -354,29 +295,9 @@ impl SourceForm {
             return;
         }
         self.ssh_catalog_revision += 1;
-        self.ssh_custom = false;
         self.transport = 1;
         self.ssh_selected = Some(profile.id.clone());
-        self.parse_ssh_config = profile.parse_config;
         self.ssh_combo_open = false;
-        self.key_picker_open = false;
-        for (id, value) in [
-            ("source-ssh-configuration", profile.id.clone()),
-            ("source-tunnel-host", profile.host.clone()),
-            ("source-tunnel-port", profile.port.to_string()),
-            ("source-tunnel-user", profile.user.clone()),
-            (
-                "source-tunnel-key",
-                profile.identity_file.clone().unwrap_or_default(),
-            ),
-            (
-                "source-known-hosts",
-                profile.known_hosts_file.clone().unwrap_or_default(),
-            ),
-        ] {
-            self.last_values.insert(id, value.clone());
-            self.inputs[id].update(cx, |input, cx| input.set_value(value, cx));
-        }
         if let Some(existing) = self
             .ssh_profiles
             .iter_mut()
@@ -405,15 +326,12 @@ impl SourceForm {
             .unwrap_or_else(|| {
                 if self.ssh_selected.is_some() {
                     "Saved SSH session (unavailable)".into()
-                } else if self.ssh_custom {
-                    "Custom SSH connection (legacy)".into()
                 } else {
                     "Select SSH session…".into()
                 }
             });
         let profiles = self.ssh_profiles.clone();
         let selected = self.ssh_selected.clone();
-        let custom = self.ssh_custom;
         let entity = cx.entity().downgrade();
         let disabled = self.model.read(cx).saving || self.transport != 1 || self.endpoint_mode == 1;
         let trigger = Button::new("source-ssh-profile")
@@ -424,20 +342,15 @@ impl SourceForm {
             .disabled(disabled)
             .dropdown_caret(true)
             .dropdown_menu(move |menu, _, _| {
-                let custom_entity = entity.clone();
-                let mut menu = menu.item(
-                    PopupMenuItem::element(|_, _| {
-                        div()
-                            .debug_selector(|| "source-ssh-custom".into())
-                            .child("Custom SSH connection (legacy)")
-                    })
-                    .checked(selected.is_none() && custom)
-                    .disabled(disabled)
-                    .on_click(move |_, _, cx| {
-                        let _ = custom_entity
-                            .update(cx, |this, cx| this.activate("source-ssh-custom", cx));
-                    }),
-                );
+                let mut menu = menu;
+                if profiles.is_empty() {
+                    menu = menu.item(
+                        PopupMenuItem::element(|_, _| {
+                            div().child("No SSH sessions — create one in Manage SSH Sessions")
+                        })
+                        .disabled(true),
+                    );
+                }
                 for (index, profile) in profiles.iter().enumerate() {
                     let profile = profile.clone();
                     let entity = entity.clone();
@@ -653,18 +566,17 @@ impl SourceForm {
         profile.save_password =
             self.save_password && self.authentication == Authentication::UserPassword;
         ensure!(
-            self.transport != 1 || self.ssh_selected.is_some() || self.ssh_custom,
+            self.transport != 1 || self.ssh_selected.is_some(),
             "Select an SSH session or create one in Manage SSH Sessions before testing or saving"
         );
         profile.transport = match self.transport {
-            1 => Transport::Ssh {
-                host: self.value("source-tunnel-host", cx),
-                port: parse_port(&self.value("source-tunnel-port", cx), "SSH")?,
-                user: self.value("source-tunnel-user", cx),
-                identity_file: optional(self.value("source-tunnel-key", cx)),
-                known_hosts_file: optional(self.value("source-known-hosts", cx)),
-                parse_config: self.parse_ssh_config,
-            },
+            1 => {
+                let id = self.ssh_selected.as_ref().expect("selection checked above");
+                let session = self.ssh_profiles.iter().find(|session| &session.id == id)
+                    .context("Selected SSH session is unavailable or still loading; choose one in Manage SSH Sessions")?;
+                session.validate()?;
+                session.transport()
+            }
             2 | 3 => Transport::HttpConnect {
                 host: self.value("source-proxy-host", cx),
                 port: parse_port(
@@ -682,20 +594,6 @@ impl SourceForm {
             },
             _ => Transport::Direct,
         };
-        if self.transport == 1
-            && self.ssh_catalog_revision > 0
-            && let Some(id) = &self.ssh_selected
-        {
-            let session = self
-                .ssh_profiles
-                .iter()
-                .find(|session| &session.id == id)
-                .context(
-                    "Selected SSH session is unavailable; choose another in Manage SSH Sessions",
-                )?;
-            session.validate()?;
-            profile.transport = session.transport();
-        }
         profile.validate()?;
         Ok(profile)
     }
@@ -780,19 +678,6 @@ impl SourceForm {
                 super::ssh_manager::show(cx.entity(), self.ssh_selected.clone(), cx);
                 return;
             }
-            "source-ssh-custom" if self.transport == 1 => {
-                self.ssh_custom = true;
-                self.ssh_selected = None;
-                self.ssh_combo_open = false;
-                self.last_values
-                    .insert("source-ssh-configuration", String::new());
-                self.inputs["source-ssh-configuration"]
-                    .update(cx, |input, cx| input.set_value("", cx));
-            }
-            "source-fetch-schemas" => {
-                self.activate("source-test", cx);
-                return;
-            }
             "source-driver" => {
                 self.driver_open = !self.driver_open;
                 self.authentication_open = false;
@@ -826,32 +711,6 @@ impl SourceForm {
             }
             "source-schemas-all" => self.schemas_all = true,
             "source-schemas-selected" => self.schemas_all = false,
-            "source-parse-ssh-config" => self.parse_ssh_config = !self.parse_ssh_config,
-            "source-keys" => {
-                self.key_picker_open = !self.key_picker_open;
-                if self.key_picker_open && !self.key_picker_busy {
-                    self.key_picker_busy = true;
-                    self.key_picker_error = None;
-                    let task = cx.background_executor().spawn(async move {
-                        let directory = dalan_app::ssh_keys::user_ssh_directory()?;
-                        dalan_app::ssh_keys::discover(&directory)
-                    });
-                    cx.spawn(async move |this, cx| {
-                        let result = task.await;
-                        let _ = this.update(cx, |this, cx| {
-                            this.key_picker_busy = false;
-                            match result {
-                                Ok(keys) => this.ssh_keys = keys,
-                                Err(error) => this.key_picker_error = Some(error.to_string()),
-                            }
-                            cx.notify();
-                        });
-                    })
-                    .detach();
-                }
-                cx.notify();
-                return;
-            }
             "source-cancel" => {
                 self.cancel(cx);
                 return;
@@ -890,7 +749,6 @@ impl SourceForm {
             "source-ssh" if self.endpoint_mode != 1 => {
                 self.transport = if self.transport == 1 { 0 } else { 1 };
                 self.ssh_combo_open = false;
-                self.key_picker_open = false;
             }
             "source-http" if self.endpoint_mode != 1 => self.transport = 2,
             "source-https" if self.endpoint_mode != 1 => self.transport = 3,
@@ -1005,40 +863,90 @@ impl SourceForm {
     fn color_row(&self, cx: &mut Context<Self>) -> Div {
         let palette = colors(cx);
         let value = self.value("source-color", cx);
-        let presets = COLOR_PRESETS.iter().map(|&(id, label, hex, swatch)| {
-            let selected = value.eq_ignore_ascii_case(hex);
-            self.button(id, label, selected, 0, cx).gap(px(5.)).child(
-                div()
-                    .size(px(12.))
-                    .flex_shrink_0()
-                    .rounded(px(CONTROL_RADIUS))
-                    .border_1()
-                    .border_color(
-                        swatch
-                            .map(|color| rgb(color).into())
-                            .unwrap_or(palette.muted),
-                    )
-                    .bg(swatch
-                        .map(|color| rgb(color).into())
-                        .unwrap_or(palette.panel)),
-            )
-        });
-        self.row(
-            "Color (optional)",
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
+        let swatch = value
+            .strip_prefix('#')
+            .filter(|hex| hex.len() == 6)
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok());
+        let entity = cx.entity().downgrade();
+        let input = self.inputs["source-color"].clone();
+        let disabled = self.model.read(cx).saving;
+        div().flex_shrink_0().child(
+            Button::new("source-color-menu")
+                .debug_selector(|| "source-color-menu".into())
+                .label("Color")
+                .tooltip("Source color")
+                .small()
+                .disabled(disabled)
                 .child(
                     div()
-                        .id("source-color")
-                        .debug_selector(|| "source-color".into())
-                        .min_w(px(0.))
-                        .w_full()
-                        .child(self.inputs["source-color"].clone()),
+                        .size(px(12.))
+                        .flex_shrink_0()
+                        .rounded(px(CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(palette.muted)
+                        .bg(swatch
+                            .map(|color| rgb(color).into())
+                            .unwrap_or(palette.panel)),
                 )
-                .child(div().flex().flex_wrap().gap(px(4.)).children(presets)),
-            cx,
+                .dropdown_caret(true)
+                .dropdown_menu(move |mut menu, _, _| {
+                    for &(id, label, hex, swatch) in &COLOR_PRESETS {
+                        let entity = entity.clone();
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, cx| {
+                                let palette = colors(cx);
+                                div()
+                                    .debug_selector(move || id.into())
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .size(px(12.))
+                                            .flex_shrink_0()
+                                            .rounded(px(CONTROL_RADIUS))
+                                            .border_1()
+                                            .border_color(palette.muted)
+                                            .bg(swatch
+                                                .map(|color| rgb(color).into())
+                                                .unwrap_or(palette.panel)),
+                                    )
+                                    .child(label)
+                            })
+                            .checked(value.eq_ignore_ascii_case(hex))
+                            .disabled(disabled)
+                            .on_click(move |_, _, cx| {
+                                let _ = entity.update(cx, |this, cx| this.activate(id, cx));
+                            }),
+                        );
+                    }
+                    let input = input.clone();
+                    menu.min_w(px(220.)).separator().item(
+                        PopupMenuItem::element(move |_, _| {
+                            div()
+                                .id("source-color-custom-editor")
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .w_full()
+                                .child("Custom hex (#RRGGBB)")
+                                .child(
+                                    div()
+                                        .id("source-color")
+                                        .debug_selector(|| "source-color".into())
+                                        .w_full()
+                                        .min_w(px(0.))
+                                        .child(input.clone()),
+                                )
+                                // Editing custom color must not activate/dismiss a menu item.
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                        })
+                        .disabled(disabled),
+                    )
+                }),
         )
     }
 
@@ -1242,42 +1150,6 @@ impl SourceForm {
                 }),
         )
     }
-
-    fn choose_key(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.read(cx).saving {
-            return;
-        }
-        self.inputs["source-tunnel-key"].update(cx, |input, cx| input.set_value(path.clone(), cx));
-        self.last_values.insert("source-tunnel-key", path);
-        self.model.update(cx, |model, cx| model.edit_form(cx));
-        self.key_picker_open = false;
-        self.inputs["source-tunnel-key"]
-            .read(cx)
-            .focus_handle()
-            .focus(window, cx);
-        cx.notify();
-    }
-
-    fn key_row(
-        &self,
-        id: impl Into<gpui::SharedString>,
-        label: String,
-        path: String,
-        cx: &mut Context<Self>,
-    ) -> Button {
-        let id = id.into();
-        let selector = id.clone();
-        Button::new(id)
-            .debug_selector(move || selector.to_string())
-            .label(label.clone())
-            .tooltip(label)
-            .small()
-            .w_full()
-            .disabled(self.model.read(cx).saving)
-            .on_click(
-                cx.listener(move |this, _, window, cx| this.choose_key(path.clone(), window, cx)),
-            )
-    }
 }
 
 impl Render for SourceForm {
@@ -1293,12 +1165,10 @@ impl Render for SourceForm {
             .max_w(px(720.))
             .flex()
             .flex_col()
-            .gap(px(10.))
-            .child(self.field("source-name", "Name", 0, cx));
+            .gap(px(10.));
         match self.active_tab {
             0 => {
                 body = body
-                    .child(self.color_row(cx))
                     .child(self.row(
                         "Driver",
                         self.combo(
@@ -1489,94 +1359,6 @@ impl Render for SourceForm {
                                 cx,
                             ),
                         );
-                        if self.ssh_custom && self.ssh_selected.is_none() {
-                            body = body
-                                .child(self.host_port_row(
-                                    "SSH host",
-                                    "source-tunnel-host",
-                                    "source-tunnel-port",
-                                 cx))
-                                .child(self.field("source-tunnel-user", "SSH user", 0, cx))
-                                .child(self.field("source-tunnel-key", "Identity file", 0, cx))
-                                .child(self.field("source-known-hosts", "Known hosts file", 0, cx))
-                                .when(self.parse_ssh_config, |body| body.child(div().text_color(palette.warning)
-                                    .child("Only enable trusted SSH configuration: ProxyCommand and Match exec can run local commands.")))
-                                .child(self.row(
-                                    "SSH config",
-                                    self.button(
-                                        "source-parse-ssh-config",
-                                        "Parse ~/.ssh/config",
-                                        self.parse_ssh_config,
-                                        0,
-                                        cx,
-                                    ),
-                                 cx))
-                                .child(self.row(
-                                    "",
-                                    self.button(
-                                        "source-keys",
-                                        "SSH keys…",
-                                        self.key_picker_open,
-                                        0,
-                                        cx,
-                                    ),
-                                 cx));
-                            if self.key_picker_open {
-                                let mut picker = div()
-                                    .id("ssh-key-picker")
-                                    .debug_selector(|| "ssh-key-picker".into())
-                                    .w_full()
-                                    .min_w(px(0.))
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .p(px(8.0))
-                                    .bg(palette.header)
-                                    .child(self.key_row(
-                                        "ssh-use-agent",
-                                        "Use SSH agent (no explicit identity file)".into(),
-                                        String::new(),
-                                        cx,
-                                    ));
-                                if self.key_picker_busy {
-                                    picker = picker.child("Listing ~/.ssh identity filenames…");
-                                }
-                                if let Some(error) = &self.key_picker_error {
-                                    picker = picker.child(error.clone());
-                                }
-                                if !self.key_picker_busy && self.ssh_keys.is_empty() {
-                                    picker = picker
-                        .child("No candidate keys found. You can enter an identity path manually.");
-                                }
-                                picker = picker.child(
-                                    div()
-                                        .id("ssh-key-list")
-                                        .debug_selector(|| "ssh-key-list".into())
-                                        .w_full()
-                                        .min_w(px(0.))
-                                        .flex_shrink_0()
-                                        .max_h(px(150.0))
-                                        .overflow_y_scroll()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(4.0))
-                                        .children(self.ssh_keys.iter().enumerate().map(
-                                            |(index, key)| {
-                                                self.key_row(
-                                                    format!("ssh-key-{index}"),
-                                                    key.name.clone(),
-                                                    key.path.to_string_lossy().into_owned(),
-                                                    cx,
-                                                )
-                                            },
-                                        )),
-                                );
-                                picker = picker.child(div().text_size(px(12.0)).text_color(palette.muted)
-                    .child("Candidates are listed by filename only. Unlock encrypted keys with ssh-add; private key contents are not read by this picker."));
-                                body = body.child(self.row("", picker, cx));
-                            }
-                        }
                     } else if self.transport == 2 || self.transport == 3 {
                         body = body.child(self.host_port_row(
                             "Proxy host",
@@ -1776,6 +1558,46 @@ impl Render for SourceForm {
             }))
             .child(
                 div()
+                    .id("source-titlebar")
+                    .debug_selector(|| "source-titlebar".into())
+                    .h(px(34.))
+                    .w_full()
+                    .flex_shrink_0()
+                    .bg(palette.header)
+                    .window_control_area(gpui::WindowControlArea::Drag)
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                        window.start_window_move()
+                    }),
+            )
+            .child(
+                div()
+                    .id("source-identity-header")
+                    .debug_selector(|| "source-identity-header".into())
+                    .w_full()
+                    .flex_shrink_0()
+                    .px(px(16.))
+                    .py(px(12.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(palette.muted)
+                            .child("Name"),
+                    )
+                    .child(
+                        div()
+                            .id("source-name")
+                            .debug_selector(|| "source-name".into())
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(self.inputs["source-name"].clone()),
+                    )
+                    .child(self.color_row(cx)),
+            )
+            .child(
+                div()
                     .id("source-tab-bar")
                     .debug_selector(|| "source-tab-bar".into())
                     .h(px(34.))
@@ -1784,16 +1606,7 @@ impl Render for SourceForm {
                     .flex()
                     .items_center()
                     .bg(palette.header)
-                    .child(
-                        div()
-                            .w(px(84.))
-                            .h_full()
-                            .flex_shrink_0()
-                            .window_control_area(gpui::WindowControlArea::Drag)
-                            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
-                                window.start_window_move()
-                            }),
-                    )
+                    .px(px(16.))
                     .child(
                         TabBar::new("source-form-tabs")
                             .small()
@@ -1978,6 +1791,14 @@ mod tests {
     fn tabs_are_compact_and_keep_drafts_and_footer(cx: &mut TestAppContext) {
         let (form, _, cx) = fixture(cx);
         set(&form, cx, "source-name", "Development");
+        set(&form, cx, "source-color", "#123ABC");
+        let identity = cx.debug_bounds("source-identity-header").unwrap();
+        let name = cx.debug_bounds("source-name").unwrap();
+        let color = cx.debug_bounds("source-color-menu").unwrap();
+        let titlebar = cx.debug_bounds("source-titlebar").unwrap();
+        assert_eq!(titlebar.size.height, px(34.));
+        assert!(identity.top() >= titlebar.bottom());
+        assert!(name.right() < color.left());
         for id in [
             "source-tab-options",
             "source-tab-ssh",
@@ -1994,7 +1815,22 @@ mod tests {
             assert!(tab_label.size.height > px(0.));
             assert!(tab_label.top() >= tab_bar.top());
             assert!(tab_label.bottom() <= tab_bar.bottom());
-            assert!(cx.debug_bounds("source-name").is_some());
+            assert_eq!(cx.debug_bounds("source-identity-header").unwrap(), identity);
+            assert_eq!(cx.debug_bounds("source-name").unwrap(), name);
+            assert_eq!(cx.debug_bounds("source-color-menu").unwrap(), color);
+            assert!(identity.bottom() <= tab_bar.top());
+            let scroll = cx.debug_bounds("source-form-scroll").unwrap();
+            assert!(tab_bar.bottom() <= scroll.top());
+            assert!(name.bottom() <= scroll.top());
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: scroll.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-400.))),
+                ..Default::default()
+            });
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("source-identity-header").unwrap(), identity);
+            assert_eq!(cx.debug_bounds("source-name").unwrap(), name);
+            assert_eq!(cx.debug_bounds("source-color-menu").unwrap(), color);
             let footer = cx.debug_bounds("source-form-footer").unwrap();
             // Small Kit buttons are 24px, plus the footer's 8px vertical padding.
             assert_eq!(footer.size.height, px(24. + 16.));
@@ -2003,9 +1839,44 @@ mod tests {
                 form.read_with(cx, |form, app| form.value("source-name", app)),
                 "Development"
             );
+            assert_eq!(
+                form.read_with(cx, |form, app| form.value("source-color", app)),
+                "#123ABC"
+            );
         }
         assert_eq!(form.read_with(cx, |form, _| form.active_tab), 0);
         assert!(cx.debug_bounds("source-tunnel-host").is_none());
+    }
+
+    #[gpui::test]
+    fn persistent_color_menu_presets_and_custom_hex_share_the_draft(cx: &mut TestAppContext) {
+        let (form, _, cx) = fixture(cx);
+        click(cx, "source-tab-options");
+        assert!(cx.debug_bounds("source-color").is_none());
+        click(cx, "source-color-menu");
+        assert!(cx.debug_bounds("source-color").is_some());
+        click(cx, "source-color-green");
+        assert_eq!(
+            form.read_with(cx, |form, app| form.value("source-color", app)),
+            "#8CD4A4"
+        );
+        click(cx, "source-color-menu");
+        click(cx, "source-color");
+        cx.simulate_keystrokes("cmd-a");
+        cx.simulate_input("#123ABC");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("source-color").is_some());
+        assert_eq!(
+            form.read_with(cx, |form, app| form.value("source-color", app)),
+            "#123ABC"
+        );
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        click(cx, "source-tab-general");
+        assert_eq!(
+            form.read_with(cx, |form, app| form.value("source-color", app)),
+            "#123ABC"
+        );
     }
 
     #[gpui::test]
@@ -2126,7 +1997,7 @@ mod tests {
                 host: "bastion.internal".into(),
                 port: 2222,
                 user: "tunnel".into(),
-                identity_file: Some("/fixture/identity".into()),
+                identity_file: None,
                 known_hosts_file: None,
                 parse_config: true,
             },
@@ -2141,11 +2012,56 @@ mod tests {
         cx.update(gpui::init);
         cx.update(crate::desktop::bind_keys);
         let form = cx.new(|cx| SourceForm::new(profile.clone(), model.clone(), cx));
+        let session = SshProfile {
+            id: profile.ssh_configuration_id.clone().unwrap(),
+            host: "bastion.internal".into(),
+            port: 2222,
+            user: "tunnel".into(),
+            auth: dalan_app::ssh_config_store::SshAuthentication::Agent,
+            identity_file: None,
+            parse_config: true,
+            ..SshProfile::default()
+        };
+        form.update(cx, |form, cx| {
+            form.refresh_ssh_configurations(vec![session], cx)
+        });
         let (_, visual) =
             cx.add_window_view(|window, cx| gpui::base::Root::new(form.clone(), window, cx));
         assert_eq!(
             visual.update(|_, app| form.read(app).profile(app).unwrap()),
             profile
+        );
+    }
+
+    #[gpui::test]
+    fn inline_only_ssh_profile_requires_session_instead_of_fallback(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        cx.update(crate::desktop::bind_keys);
+        let profile = SourceProfile {
+            transport: SshProfile::default().transport(),
+            ..SourceProfile::default()
+        };
+        let model = cx.new(|_| SourceModel::for_tests(vec![profile.clone()]));
+        let form = cx.new(|cx| SourceForm::new(profile, model, cx));
+        let (_, cx) =
+            cx.add_window_view(|window, cx| gpui::base::Root::new(form.clone(), window, cx));
+        click(cx, "source-tab-ssh");
+        assert!(
+            cx.update(|_, app| form.read(app).profile(app))
+                .unwrap_err()
+                .to_string()
+                .contains("Select an SSH session")
+        );
+        assert!(cx.debug_bounds("source-tunnel-host").is_none());
+        click(cx, "source-ssh-profile");
+        assert!(cx.debug_bounds("source-ssh-custom").is_none());
+        cx.simulate_keystrokes("escape");
+        let session = SshProfile::default();
+        form.update(cx, |f, cx| f.set_ssh_configuration(session.clone(), cx));
+        assert_eq!(
+            cx.update(|_, app| form.read(app).profile(app).unwrap())
+                .transport,
+            session.transport()
         );
     }
 
@@ -2187,44 +2103,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn ssh_key_picker_and_native_inline_ports_remain_functional(cx: &mut TestAppContext) {
-        let (form, _, cx) = fixture(cx);
-        click(cx, "source-tab-ssh");
-        click(cx, "source-ssh");
-        click(cx, "source-ssh-profile");
-        click(cx, "source-ssh-custom");
-        form.update(cx, |form, cx| {
-            form.key_picker_open = true;
-            form.ssh_keys = vec![dalan_app::ssh_keys::SshKeyCandidate {
-                name: "fixture-key".into(),
-                path: "/tmp/fixture-key".into(),
-            }];
-            cx.notify();
-        });
-        cx.run_until_parked();
-        click(cx, "ssh-key-0");
-        assert_eq!(
-            form.read_with(cx, |form, app| form.value("source-tunnel-key", app)),
-            "/tmp/fixture-key"
-        );
-        cx.update(|window, app| {
-            form.read(app).inputs["source-tunnel-host"]
-                .read(app)
-                .focus_handle()
-                .focus(window, app)
-        });
-        cx.simulate_keystrokes("tab");
-        assert!(cx.update(|window, app| {
-            form.read(app).inputs["source-tunnel-port"]
-                .read(app)
-                .focus_handle()
-                .is_focused(window)
-        }));
-        set(&form, cx, "source-password", "discard-me");
-        cx.simulate_keystrokes("escape");
-        assert_eq!(cx.update(|_, app| form.read(app).password(app)), "");
-    }
-    #[gpui::test]
     fn ssh_manager_callback_updates_only_draft_and_clears_feedback(cx: &mut TestAppContext) {
         let (form, model, cx) = fixture(cx);
         let profile = SshProfile {
@@ -2255,7 +2133,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn ssh_profile_dropdown_selects_exact_metadata_and_custom_retains_transport(
+    fn ssh_profile_dropdown_selects_exact_session_metadata_without_inline_fallback(
         cx: &mut TestAppContext,
     ) {
         let (form, _, cx) = fixture(cx);
@@ -2279,12 +2157,10 @@ mod tests {
         assert_eq!(draft.transport, profile.transport());
         assert_eq!(draft.ssh_configuration_id, Some(profile.id.clone()));
         assert!(form.read_with(cx, |form, _| form.ssh_selected.is_some()));
+        assert!(cx.debug_bounds("source-tunnel-host").is_none());
+        assert!(cx.debug_bounds("source-tunnel-key").is_none());
         click(cx, "source-ssh-profile");
-        click(cx, "source-ssh-custom");
-        let custom = cx.update(|_, app| form.read(app).profile(app).unwrap());
-        assert_eq!(custom.ssh_configuration_id, None);
-        assert_eq!(custom.transport, profile.transport());
-        assert!(cx.debug_bounds("source-tunnel-host").is_some());
+        assert!(cx.debug_bounds("source-ssh-custom").is_none());
     }
 
     #[gpui::test]
@@ -2372,11 +2248,9 @@ mod tests {
         cx.run_until_parked();
         click(cx, "source-ssh");
         assert_eq!(form.read_with(cx, |f, _| f.transport), 1);
-        // Kit pointer activation preserves focus; Tab order reaches the checkbox
-        // after the three route buttons (the tab strip uses its own roving focus).
         cx.update(|window, app| {
             window.blur(app);
-            for _ in 0..4 {
+            for _ in 0..5 {
                 window.focus_next(app);
             }
         });

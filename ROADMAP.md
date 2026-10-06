@@ -154,4 +154,4 @@ Owner decisions still needed: project/distribution license, minimum macOS and In
 
 [DBX reuse assessment](docs/dbx-reuse.md) · [Architecture](docs/architecture.md) · [Product scope](docs/product-plan.md) · [Feature checklist](docs/feature-checklist.md) · [ACP](docs/acp.md)
 
-Reusable SSH sessions now have an explicit Enable SSH / session picker / Manage SSH Sessions workflow; inline settings remain a compatibility option rather than the new-connection default.
+Reusable SSH sessions now have an explicit Enable SSH / session picker / Manage SSH Sessions workflow; inline SSH compatibility and source-side key discovery are removed. Name and Color remain in a shared fixed header above connection tabs.
