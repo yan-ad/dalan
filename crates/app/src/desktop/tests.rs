@@ -328,6 +328,57 @@ fn close_shortcut_removes_window(cx: &mut TestAppContext) {
     assert!(cx.cx.read(|app| app.windows().is_empty()));
 }
 
+#[gpui::test]
+fn system_appearance_mapping_tracks_changes_and_explicit_mode_is_persisted(
+    cx: &mut TestAppContext,
+) {
+    use dalan_app::app_config::{AppearancePreference, ConfigRepository};
+    let (_, visual) = fixture(cx);
+    visual
+        .cx
+        .update(|app| sync_appearance(gpui::WindowAppearance::Dark, app));
+    visual.run_until_parked();
+    assert!(visual.cx.read(|app| app.theme().mode.is_dark()));
+    visual
+        .cx
+        .update(|app| sync_appearance(gpui::WindowAppearance::Light, app));
+    visual.run_until_parked();
+    assert!(!visual.cx.read(|app| app.theme().mode.is_dark()));
+    let dir = std::env::temp_dir().join(format!("dalan-theme-ui-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = std::fs::canonicalize(&dir).unwrap().join("dalan.config");
+    let repository = ConfigRepository::new(path);
+    visual
+        .cx
+        .update(|app| app.global_mut::<AppearanceSettings>().repository = Some(repository.clone()));
+    click(visual, "theme-toggle");
+    assert_eq!(
+        repository.load().unwrap().appearance,
+        AppearancePreference::Light
+    );
+    visual
+        .cx
+        .update(|app| sync_appearance(gpui::WindowAppearance::Dark, app));
+    visual.run_until_parked();
+    assert!(!visual.cx.read(|app| app.theme().mode.is_dark()));
+    click(visual, "theme-toggle");
+    assert_eq!(
+        repository.load().unwrap().appearance,
+        AppearancePreference::Dark
+    );
+    click(visual, "theme-toggle");
+    assert_eq!(
+        repository.load().unwrap().appearance,
+        AppearancePreference::System
+    );
+    visual
+        .cx
+        .update(|app| sync_appearance(gpui::WindowAppearance::Light, app));
+    visual.run_until_parked();
+    assert!(!visual.cx.read(|app| app.theme().mode.is_dark()));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn fixture(cx: &mut TestAppContext) -> (gpui::Entity<Shell>, &mut VisualTestContext) {
     cx.update(gpui::init);
     cx.update(bind_keys);
@@ -577,15 +628,26 @@ fn select_layout_item(cx: &mut VisualTestContext, control: Control) {
 fn titlebar_theme_control_switches_kit_modes_without_changing_workspace(cx: &mut TestAppContext) {
     let (shell, cx) = fixture(cx);
     let before = state(&shell, cx);
-    let mode = cx.cx.read(|app| app.theme().mode);
+    assert_eq!(
+        cx.cx
+            .read(|app| app.global::<AppearanceSettings>().preference),
+        dalan_app::app_config::AppearancePreference::System
+    );
     let theme = cx.debug_bounds("theme-toggle").unwrap();
     let ai = cx.debug_bounds("acp-toggle").unwrap();
     let layout = cx.debug_bounds("layout-menu").unwrap();
     assert!(ai.origin.y < px(TITLEBAR_HEIGHT));
     assert!(ai.right() <= theme.left() && theme.right() <= layout.left());
     click(cx, "theme-toggle");
-    assert_ne!(cx.cx.read(|app| app.theme().mode), mode);
+    assert!(!cx.cx.read(|app| app.theme().mode.is_dark()));
     assert_eq!(state(&shell, cx), before);
     click(cx, "theme-toggle");
-    assert_eq!(cx.cx.read(|app| app.theme().mode), mode);
+    assert!(cx.cx.read(|app| app.theme().mode.is_dark()));
+    click(cx, "theme-toggle");
+    assert_eq!(
+        cx.cx
+            .read(|app| app.global::<AppearanceSettings>().preference),
+        dalan_app::app_config::AppearancePreference::System
+    );
+    assert_eq!(state(&shell, cx), before);
 }

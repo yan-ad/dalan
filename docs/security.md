@@ -1,6 +1,6 @@
 # Security and privacy design
 
-Status: experimental MySQL/MariaDB reads, versioned source settings and native macOS Keychain integration exist. Broader execution and agent controls remain planned. No telemetry, agent process or ACP transport is implemented. See [MySQL sources](mysql-sources.md) for setup and the scope/evidence matrix.
+Status: experimental MySQL/MariaDB reads, versioned source settings and opt-in local plaintext credential persistence exist; native Keychain saving is removed. Broader execution and agent controls remain planned. No telemetry, agent process or ACP transport is implemented. See [MySQL sources](mysql-sources.md) for setup and the scope/evidence matrix.
 
 ## Trust boundaries
 
@@ -8,9 +8,15 @@ Credentials, metadata, row data and local settings are sensitive. Server values 
 
 ## Credentials and persistence
 
-Source profiles have stable UUIDs in version 1 JSON at `~/Library/Application Support/Dalan/sources.json`, without passwords. Native macOS Keychain password saving is opt-in. Otherwise credentials are session-only; after restart, Edit and re-enter them. Keychain failure is visible, never a plaintext fallback. One generated native Keychain round-trip passed with item cleanup; this is not blanket locked/denied Keychain or OS input privacy validation. Session-only Save is tested without Keychain calls. The source file is limited to 1 MiB and 100 profiles; a failed load blocks saving over unreadable settings.
+Source profiles have stable UUIDs in version 1 password-free `sources.json`. Passwords remain session-only by default, with no credential write. The former **Save in Keychain** option is removed: checking **SaveForever** explicitly opts into local **unencrypted plaintext** password storage, not an OS vault. `dalan.auth` is JSON version 1 with a `credentials` map from source UUID to password, separate from password-free `sources.json`, in the same platform support directory. The backend no longer depends on `keyring` and does not access, migrate or delete old Keychain items. An old remembered-password profile without a local saved credential requires re-entry. No secure memory-erasure guarantee is made.
 
-JSON and Keychain changes are not an atomic cross-resource transaction. Compensation failures are reported and may require reconciliation. Confirmed Delete removes only profile settings and its Keychain entry, not a database. Test does not save; successful Save starts metadata-only discovery after commit, never automatic table browsing. Avoid real credentials in fixtures, logs, crash reports, CLI arguments, exported files or agent context. Memory erasure cannot be guaranteed.
+Storage paths are `~/Library/Application Support/Dalan/` on macOS, `%APPDATA%\Dalan\` on Windows (fallback `%USERPROFILE%\AppData\Roaming\Dalan\`), and `$XDG_CONFIG_HOME/Dalan/` on other platforms (fallback `~/.config/Dalan/`). The Rust persistence implementation is portable; native app/platform certification has not been completed.
+
+New auth directories/files use Unix `0700`/`0600`; permissive auth parent directories/files are rejected rather than silently repaired. Auth paths reject symlinks and nonregular files; Unix auth files also reject hard links. Limits are **1 MiB per auth file, 100 credentials and 64 KiB per password**. On Windows, privacy relies on inherited user-directory ACLs: those ACLs are **not enforced or validated** by this implementation. These checks are neither encryption nor same-account isolation and cannot rule out hostile concurrent path replacement.
+
+Profile JSON and auth writes use compensating rollback, not a cross-resource transaction. Compensation failures are reported and may require reconciliation. Metadata is a separate commit too: a cache failure does not undo a successfully saved profile/auth update. Confirmed Delete removes local profile settings, local saved credentials and cached metadata, never server objects or old Keychain items. Test does not save; successful Apply starts metadata-only discovery, never automatic row browsing. Export excludes credentials and does not read the auth store. Avoid real credentials in fixtures, logs, crash reports, CLI arguments, exported files or agent context.
+
+Historical generated native Keychain round-trip evidence belongs to the earlier backend only; it does not describe current storage or validate local plaintext persistence.
 
 ## Connector interchange boundaries
 
@@ -26,9 +32,9 @@ Export reads saved profiles only, ignores unsaved drafts and never retrieves pas
 
 `metadata.sqlite3` is a separate database/table/view-name and kind cache, not profile/credential/history/row storage. rusqlite 0.40.2 uses embedded bundled SQLite, no external daemon, libSQL/cloud library or remote cache. Passwords never enter SQLite; its allowlisted identity contains endpoint/account/database/transport/TLS/CA-path settings, so it is still sensitive. Unix directory `0700` and database `0600` permissions, synced creation and private DELETE journaling are not encryption or isolation from programs running as the same OS user. Recommend separate OS accounts and OS-encrypted disks for sensitive metadata.
 
-Startup restoration uses no network or Keychain call. Cache registration invalidates connection-setting changes, but passwords and cosmetic settings are excluded from identity. Password changes can alter grants: failed refresh keeps the previous metadata, marked Stale, which may reveal names formerly visible under older permissions. Cached names are not proof of current authorization and do not enable offline access to server rows. The bounded cache holds neither columns/indexes/DDL nor data rows. No metadata is automatically sent to AI context; the ACP panel remains disconnected.
+Startup restoration uses no network or credential-store call. Cache registration invalidates connection-setting changes, but passwords and cosmetic settings are excluded from identity. Password changes can alter grants: failed refresh keeps the previous metadata, marked Stale, which may reveal names formerly visible under older permissions. Cached names are not proof of current authorization and do not enable offline access to server rows. The bounded cache holds neither columns/indexes/DDL nor data rows. No metadata is automatically sent to AI context; the ACP panel remains disconnected.
 
-Full refresh replaces metadata transactionally only on success. Cache version/corruption failures warn without resetting foreign files or blocking valid profile JSON. Remove attempts cache deletion; failed deletion can leave orphaned metadata until startup prune and is reported, not a secure-erasure promise. Cancellation can allow a valid already-blocking write to finish, but ticket/identity guards prevent resurrecting removed profiles. Cache/JSON/Keychain are separate stores, not a shared atomic credential transaction. No production endpoint, account or private logs are evidence for this revision.
+Full refresh replaces metadata transactionally only on success. Cache version/corruption failures warn without resetting foreign files or blocking valid profile JSON. Remove attempts cache deletion; failed deletion can leave orphaned metadata until startup prune and is reported, not a secure-erasure promise. Cancellation can allow a valid already-blocking write to finish, but ticket/identity guards prevent resurrecting removed profiles. Cache/profile JSON/local auth are separate stores, not a shared atomic credential transaction. No production endpoint, account or private logs are evidence for this revision.
 
 ## Connectivity
 
@@ -44,7 +50,7 @@ Connection errors expose typed I/O kinds, safe fixed authentication/TLS/plugin d
 
 SSH identity discovery runs only from the explicit picker button, on a background task, over `$HOME/.ssh` filenames and metadata. It never reads private-key contents. Likely `id_*`, `.pem`, `.key` and companion-public-key candidates exclude public/config/trust files, hidden files, directories and symlinks, with 512-entry and 128-candidate limits. Candidates are not format validation; manual paths remain available and nothing is auto-selected. Use SSH agent is explicit. Encrypted identities must be unlocked externally with `ssh-add`; there is no new passphrase prompt or insecure host-trust change.
 
-Password inputs suppress copy and cut, including after double-click selection; paste remains available. Native surrounding-text/extraction requests do not receive password contents. These implementation protections and simulated tests do not guarantee memory erasure or establish privacy against every OS/IME/accessibility path.
+**Show / Hide** temporarily reveals the password for **three seconds** as presentation only. Copy/cut remain blocked and native surrounding-text extraction remains hidden even while revealed; text, undo history and caret/selection are retained. This is not native OS/IME/accessibility privacy certification. Paste remains available. These implementation protections and simulated tests do not guarantee memory erasure or establish privacy against every OS/IME/accessibility path.
 
 ## Read-only database slice
 

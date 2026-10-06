@@ -15,6 +15,8 @@ Dalan means “ways” in Javanese. It is a native Rust + GPUI Kit database work
 
 MySQL and MariaDB are experimental: source management, offline schema browsing, table tabs, WHERE/ORDER BY, restricted read-only query consoles, and loaded CSV export are implemented. PostgreSQL, Redis, plugins, and live ACP-only AI integration are planned. No application BYOK or general-purpose IDE tools.
 
+Appearance defaults to OS-following **System**, cycling System → Light → Dark with a saved `dalan.config` preference and Kit default colors. Passwords are session-only unless **SaveForever** explicitly saves them as local unencrypted plaintext in `dalan.auth`; Keychain saving is removed. See [security and storage boundaries](docs/security.md#credentials-and-persistence).
+
 ## Installation
 
 Requires macOS, Rust/rustup, Python 3, and Xcode Command Line Tools. Build and open the local debug app:

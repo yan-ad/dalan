@@ -5,14 +5,14 @@
 //! those observers, not cursor movement or focus changes.
 use gpui::component::{
     Sizable,
-    input::{Input, InputEvent, InputState},
+    input::{Copy, Cut, Input, InputEvent, InputState},
 };
 use gpui::{
-    App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity, EntityInputHandler,
-    FocusHandle, Focusable, Pixels, Point, SharedString, TextInputConfiguration, UTF16Selection,
-    Window, canvas, div, prelude::*,
+    AnyWindowHandle, App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
+    EntityInputHandler, FocusHandle, Focusable, Pixels, Point, SharedString,
+    TextInputConfiguration, UTF16Selection, Window, canvas, div, prelude::*,
 };
-use std::ops::Range;
+use std::{ops::Range, time::Duration};
 
 pub(super) struct TextInput {
     fallback_focus: FocusHandle,
@@ -23,6 +23,10 @@ pub(super) struct TextInput {
     pending_value: Option<SharedString>,
     placeholder: &'static str,
     secret: bool,
+    revealed: bool,
+    reveal_generation: u64,
+    reveal_task: Option<gpui::Task<()>>,
+    window: Option<AnyWindowHandle>,
     tab_order: isize,
 }
 
@@ -44,7 +48,64 @@ impl TextInput {
             content,
             placeholder,
             secret,
+            revealed: false,
+            reveal_generation: 0,
+            reveal_task: None,
+            window: None,
             tab_order: 0,
+        }
+    }
+
+    pub(super) fn password_revealed(&self) -> bool {
+        self.secret && self.revealed
+    }
+
+    /// Toggle presentation only: never replace text, selection or editing history.
+    pub(super) fn reveal_password(&mut self, cx: &mut Context<Self>) {
+        if !self.secret {
+            return;
+        }
+        if self.revealed {
+            self.hide_password(cx);
+            return;
+        }
+        self.revealed = true;
+        self.reveal_generation = self.reveal_generation.wrapping_add(1);
+        let generation = self.reveal_generation;
+        self.sync_mask(cx);
+        let timer = cx.background_executor().timer(Duration::from_secs(3));
+        self.reveal_task = Some(cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.reveal_generation == generation {
+                    this.hide_password(cx);
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    pub(super) fn hide_password(&mut self, cx: &mut Context<Self>) {
+        self.reveal_generation = self.reveal_generation.wrapping_add(1);
+        self.reveal_task = None;
+        if self.revealed {
+            self.revealed = false;
+            self.sync_mask(cx);
+            cx.notify();
+        }
+    }
+
+    fn sync_mask(&self, cx: &mut Context<Self>) {
+        if let (Some(window), Some(state)) = (self.window, self.state.as_ref()) {
+            let masked = self.secret && !self.revealed;
+            let state = state.clone();
+            // Button callbacks may already borrow this window. Apply after the
+            // event; render also reconciles the current presentation below.
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, cx| {
+                    state.update(cx, |state, cx| state.set_masked(masked, window, cx));
+                });
+            });
         }
     }
 
@@ -53,6 +114,7 @@ impl TextInput {
     }
 
     pub(super) fn set_value(&mut self, value: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.hide_password(cx);
         let value: SharedString = single_line(&value.into()).into();
         self.pending_value = Some(value.clone());
         self.content = value;
@@ -73,15 +135,17 @@ impl TextInput {
     }
 
     fn ensure_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        self.window = Some(window.window_handle());
         if self.state.is_none() {
             let value = self.content.clone();
             let placeholder = self.placeholder;
             let secret = self.secret;
+            let masked = secret && !self.revealed;
             let state = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(value)
                     .placeholder(placeholder)
-                    .masked(secret)
+                    .masked(masked)
             });
             self.input_focus = Some(state.read(cx).focus_handle(cx));
             cx.subscribe(&state, |this, state, event: &InputEvent, cx| {
@@ -107,6 +171,10 @@ impl TextInput {
             self.state = Some(state);
         }
         let state = self.state.as_ref().unwrap().clone();
+        let masked = self.secret && !self.revealed;
+        if state.read(cx).presentation().is_masked() != masked {
+            state.update(cx, |state, cx| state.set_masked(masked, window, cx));
+        }
         if let Some(value) = self.pending_value.take() {
             state.update(cx, |state, cx| state.set_value(value, window, cx));
         }
@@ -134,6 +202,12 @@ impl Render for TextInput {
             .tab_index(self.tab_order)
             .track_focus(&self.fallback_focus)
             .tab_stop(false)
+            .when(self.secret, |this| {
+                // Capture before Kit's handlers: revealing must not enable
+                // clipboard extraction (including context-menu actions).
+                this.capture_action(|_: &Copy, _, cx| cx.stop_propagation())
+                    .capture_action(|_: &Cut, _, cx| cx.stop_propagation())
+            })
             .child(
                 Input::new(&state)
                     .small()
@@ -511,6 +585,143 @@ mod tests {
                 assert!(!input.fallback_focus.is_focused(window));
             });
         });
+    }
+
+    #[gpui::test]
+    fn reveal_expires_without_rerender_and_keeps_clipboard_and_native_text_private(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("é😀secret", "", true, cx));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        visual.update(|window, app| {
+            app.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
+            input.read(app).focus_handle().focus(window, app);
+        });
+        visual.dispatch_action(SelectAll);
+        input.update(visual, |input, cx| input.reveal_password(cx));
+        visual.run_until_parked();
+        visual.refresh().unwrap();
+        input.read_with(visual, |input, cx| {
+            assert!(input.password_revealed());
+            assert!(
+                !input
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .presentation()
+                    .is_masked()
+            );
+        });
+        visual.dispatch_action(Copy);
+        visual.dispatch_action(Cut);
+        visual.update(|window, app| {
+            let handler = input.read(app).password_handler.clone().unwrap();
+            handler.update(app, |handler, cx| {
+                let mut adjusted = Some(0..1);
+                assert!(
+                    handler
+                        .text_for_range(0..10, &mut adjusted, window, cx)
+                        .is_none()
+                );
+                assert!(adjusted.is_none());
+                assert_eq!(
+                    handler
+                        .selected_text_range(false, window, cx)
+                        .unwrap()
+                        .range,
+                    0..9
+                );
+            });
+            assert_eq!(
+                app.read_from_clipboard().unwrap().text().as_deref(),
+                Some("sentinel")
+            );
+        });
+        visual.executor().advance_clock(Duration::from_millis(2999));
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| assert!(input.password_revealed()));
+        visual.executor().advance_clock(Duration::from_millis(1));
+        visual.run_until_parked();
+        input.read_with(visual, |input, cx| {
+            assert!(!input.password_revealed());
+            assert!(
+                input
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .presentation()
+                    .is_masked()
+            );
+            assert_eq!(input.value(), "é😀secret");
+        });
+    }
+
+    #[gpui::test]
+    fn hide_and_set_value_invalidate_prior_reveal_deadlines(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("fixture", "", true, cx));
+        visual.refresh().unwrap();
+        input.update(visual, |input, cx| input.reveal_password(cx));
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(2));
+        input.update(visual, |input, cx| {
+            input.reveal_password(cx);
+            assert!(!input.password_revealed());
+            input.reveal_password(cx);
+        });
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| assert!(input.password_revealed()));
+        input.update(visual, |input, cx| input.set_value("replacement", cx));
+        visual.run_until_parked();
+        input.read_with(visual, |input, cx| {
+            assert!(!input.password_revealed());
+            assert!(
+                input
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .presentation()
+                    .is_masked()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn reveal_preserves_caret_focus_and_undo(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("", "", true, cx));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        visual.update(|window, app| input.read(app).focus_handle().focus(window, app));
+        visual.simulate_input("fixture");
+        visual.run_until_parked();
+        input.update(visual, |input, cx| input.reveal_password(cx));
+        visual.run_until_parked();
+        visual.update(|window, app| {
+            assert!(input.read(app).focus_handle().is_focused(window));
+            let handler = input.read(app).password_handler.clone().unwrap();
+            handler.update(app, |handler, cx| {
+                assert_eq!(
+                    handler
+                        .selected_text_range(false, window, cx)
+                        .unwrap()
+                        .range,
+                    7..7
+                );
+            });
+        });
+        input.update(visual, |input, cx| input.hide_password(cx));
+        visual.run_until_parked();
+        visual.dispatch_action(gpui::component::input::Undo);
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| assert!(input.value().is_empty()));
     }
 
     #[gpui::test]

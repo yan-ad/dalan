@@ -174,6 +174,61 @@ impl RenderOnce for NewConnectionButton {
     }
 }
 
+#[derive(Clone)]
+struct AppearanceSettings {
+    preference: dalan_app::app_config::AppearancePreference,
+    repository: Option<dalan_app::app_config::ConfigRepository>,
+    error: Option<String>,
+}
+impl gpui::Global for AppearanceSettings {}
+fn sync_appearance(appearance: gpui::WindowAppearance, cx: &mut App) {
+    use dalan_app::app_config::AppearancePreference;
+    let preference = cx
+        .try_global::<AppearanceSettings>()
+        .map(|s| s.preference)
+        .unwrap_or_default();
+    let mode = match preference {
+        AppearancePreference::System => appearance.into(),
+        AppearancePreference::Light => gpui::component::ThemeMode::Light,
+        AppearancePreference::Dark => gpui::component::ThemeMode::Dark,
+    };
+    gpui::component::Theme::change(mode, None, cx);
+}
+fn apply_appearance(window: &mut Window, cx: &mut App) {
+    sync_appearance(window.appearance(), cx);
+}
+fn next_appearance(window: &mut Window, cx: &mut App) {
+    let current = cx
+        .try_global::<AppearanceSettings>()
+        .cloned()
+        .unwrap_or(AppearanceSettings {
+            preference: Default::default(),
+            repository: None,
+            error: None,
+        });
+    let preference = current.preference.next();
+    let error = match &current.repository {
+        Some(repo) => {
+            repo.save(&dalan_app::app_config::Config {
+                appearance: preference,
+                ..Default::default()
+            })
+            .err()
+            .map(|_| "Appearance changed for this session; dalan.config could not be saved.".into())
+        }
+        None => {
+            Some("Appearance changed for this session; settings storage is unavailable.".into())
+        }
+    };
+    cx.set_global(AppearanceSettings {
+        preference,
+        repository: current.repository,
+        error,
+    });
+    apply_appearance(window, cx);
+    cx.refresh_windows();
+}
+
 struct Shell {
     state: ShellState,
     root_focus: FocusHandle,
@@ -185,10 +240,69 @@ struct Shell {
     workspace: gpui::Entity<source_workspace::SourceWorkspace>,
     sources: gpui::Entity<source_model::SourceModel>,
     _source_subscription: gpui::Subscription,
+    _appearance_subscription: gpui::Subscription,
 }
 
 impl Shell {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        if !cx.has_global::<AppearanceSettings>() {
+            #[cfg(all(test, feature = "ui-tests"))]
+            cx.set_global(AppearanceSettings {
+                preference: Default::default(),
+                repository: None,
+                error: None,
+            });
+            #[cfg(not(all(test, feature = "ui-tests")))]
+            {
+                let repository = dalan_app::app_config::ConfigRepository::default_path()
+                    .map(dalan_app::app_config::ConfigRepository::new);
+                let (repository, preference, error) = match repository {
+                    Ok(repo) => match repo.load() {
+                        Ok(config) => (Some(repo), config.appearance, None),
+                        Err(_) => (
+                            Some(repo),
+                            Default::default(),
+                            Some("Could not read dalan.config; using System appearance.".into()),
+                        ),
+                    },
+                    Err(_) => (
+                        None,
+                        Default::default(),
+                        Some(
+                            "Appearance cannot be persisted: settings directory unavailable."
+                                .into(),
+                        ),
+                    ),
+                };
+                cx.set_global(AppearanceSettings {
+                    repository,
+                    preference,
+                    error,
+                });
+                let initial = cx.global::<AppearanceSettings>().clone();
+                if initial.error.is_none()
+                    && let Some(repo) = initial.repository
+                    && repo
+                        .save(&dalan_app::app_config::Config {
+                            appearance: initial.preference,
+                            ..Default::default()
+                        })
+                        .is_err()
+                {
+                    cx.global_mut::<AppearanceSettings>().error =
+                        Some("Using System appearance; dalan.config could not be saved.".into());
+                }
+            }
+        }
+        apply_appearance(window, cx);
+        let appearance_subscription = cx.observe_window_appearance(window, |_, window, cx| {
+            if cx.global::<AppearanceSettings>().preference
+                == dalan_app::app_config::AppearancePreference::System
+            {
+                apply_appearance(window, cx);
+                cx.refresh_windows();
+            }
+        });
         let root_focus = cx.focus_handle().tab_stop(false);
         root_focus.focus(window, cx);
         let controls = HashMap::from([("database-resize", cx.focus_handle().tab_stop(true))]);
@@ -210,6 +324,7 @@ impl Shell {
             workspace,
             sources: model,
             _source_subscription: source_subscription,
+            _appearance_subscription: appearance_subscription,
         }
     }
 
@@ -351,16 +466,11 @@ impl Shell {
                         } else {
                             gpui::assets::IconName::Moon
                         }))
-                        .tooltip("Toggle light and dark appearance")
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            let next = if cx.theme().mode.is_dark() {
-                                gpui::component::ThemeMode::Light
-                            } else {
-                                gpui::component::ThemeMode::Dark
-                            };
-                            gpui::component::Theme::change(next, None, cx);
-                            cx.refresh_windows();
-                        })),
+                        .tooltip(format!(
+                            "Appearance: {} (System / Light / Dark)",
+                            cx.global::<AppearanceSettings>().preference.label()
+                        ))
+                        .on_click(cx.listener(|_, _, window, cx| next_appearance(window, cx))),
                     cx,
                 ),
             )
@@ -542,15 +652,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ToggleAcp, window, cx| {
                 this.apply(Control::ToggleAcp, window, cx)
             }))
-            .on_action(|_: &ToggleTheme, _, cx| {
-                let next = if cx.theme().mode.is_dark() {
-                    gpui::component::ThemeMode::Light
-                } else {
-                    gpui::component::ThemeMode::Dark
-                };
-                gpui::component::Theme::change(next, None, cx);
-                cx.refresh_windows();
-            })
+            .on_action(|_: &ToggleTheme, window, cx| next_appearance(window, cx))
             .on_action(cx.listener(|this, _: &ResetLayout, window, cx| {
                 this.apply(Control::ResetLayout, window, cx)
             }))
@@ -650,6 +752,12 @@ impl Render for Shell {
                             )
                         },
                     )
+                    .when_some(
+                        cx.global::<AppearanceSettings>().error.clone(),
+                        |status, error| {
+                            status.child(div().text_color(colors(cx).warning).child(error))
+                        },
+                    )
                     .child(
                         div()
                             .id("status-theme-hint")
@@ -657,9 +765,10 @@ impl Render for Shell {
                             .min_w(px(0.0))
                             .overflow_hidden()
                             .tooltip(|window, cx| {
-                                gpui::component::tooltip::Tooltip::new(
-                                    "Appearance follows the system theme",
-                                )
+                                gpui::component::tooltip::Tooltip::new(format!(
+                                    "Appearance: {}. Preferences are saved in dalan.config.",
+                                    cx.global::<AppearanceSettings>().preference.label()
+                                ))
                                 .build(window, cx)
                             }),
                     ),

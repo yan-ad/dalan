@@ -1,6 +1,6 @@
 # Feature checklist
 
-Status: experimental macOS read-only workspace. A checked item means the scoped implementation exists, not release readiness or full DataGrip/Compass compatibility. User direction is to complete database features one by one without adding non-database tools. See [testing](testing.md) for evidence and remaining verification limits.
+Status: experimental macOS read-only workspace. Historical Keychain test counts and checkbox descriptions below refer to the removed backend, not current persistence; current exact auth/theme validation remains pending primary confirmation. A checked item means the scoped implementation exists, not release readiness or full DataGrip/Compass compatibility. User direction is to complete database features one by one without adding non-database tools. See [testing](testing.md) for evidence and remaining verification limits.
 
 ## Confirmed scoped completions
 
@@ -8,7 +8,7 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 
 - [x] Shipping Kit foundation lives in the main workspace; isolated experiment and separate pilot job removed. Earlier pilot 328/146 callback metrics and four-test result are historical only, not runnable targets or native-performance parity.
 - [x] Optional external Bacon 3.26.0 configuration: default macOS native rebuild-and-restart preview, `r` preview / `c` check / `t` test / `l` lint / `u` UI tests. Owned process-group stops Cargo and the running foreground app, never unrelated instances by name. No hot reload, draft/password recovery or acknowledged server query cancellation.
-- [x] Top-right ACP beside Kit default Sun/Moon theme switch and Layout; removed status-bar ACP trigger. `Theme::change` without added persistence/custom palette; ACP still Not connected.
+- [x] Top-right ACP beside the appearance cycle and Layout; removed status-bar ACP trigger. The appearance control cycles **System → Light → Dark → System**. System is the default and follows the current OS appearance automatically; it is not an alias for Light. A global window-appearance callback updates Kit only while System is selected; explicit Light/Dark ignores OS changes. The preference is persisted as JSON version 1 `appearance` (`system`, `light` or `dark`) in `dalan.config` beside `sources.json`. All modes use Kit defaults, with no custom palette. ACP still Not connected.
 - [x] Visible table/Console N labels via Kit Tab prefix icons, 100–220 px bounds, ellipsis/full tooltips and small ghost close icons with stopped propagation. Inactive close does not activate; nonempty-draft confirmation and 32-tab cap remain.
 - [x] Actual searchable Kit console Combobox, optional-string None sentinel/value-safe selection, virtualized 1,000-name fixture, retained catalog-unchanged state and busy guards. Source-form dropdown/SSH alternatives remain distinct.
 - [x] Cached-only explorer search through collapsed branches with ancestors/engine labels, lazy 50,000-item index, no full-metadata flattening on scroll/network/query-context change; focused Escape clears search.
@@ -49,7 +49,10 @@ See [table-browser guide](table-browser.md). Earlier slice inventories/counts be
 - [x] Main open-source icon set: thirty-six embedded Lucide SVGs pinned to `500620a2e8123f8d1db191538886dc0c223f69a9`, including hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. Bottom-right 28 px bot-message-square retains AI · ACP tooltip and Cmd-Shift-A. No new app/brand icon.
 - [x] Complete Lucide ISC and retained Feather MIT notices, with adapted GPUI input Apache-2.0 attribution in [third-party notices](../THIRD_PARTY_NOTICES.md), plus bundle resource wiring. Project license remains undecided.
 - [x] Experimental MySQL/MariaDB source form, version 1 password-free profile storage and optional database discovery. Test, Save and Connect remain separate actions.
-- [x] Session-only passwords and opt-in native macOS Keychain storage; explicit failure/compensation boundaries.
+- [x] Passwords remain session-only by default, with no credential write. The former **Save in Keychain** option is removed: checking **SaveForever** explicitly opts into local **unencrypted plaintext** password storage, not an OS vault. `dalan.auth` is JSON version 1 with a `credentials` map from source UUID to password, separate from password-free `sources.json`, in the same platform support directory. The backend no longer depends on `keyring` and does not access, migrate or delete old Keychain items. An old remembered-password profile without a local saved credential requires re-entry. No secure memory-erasure guarantee is made.
+- [x] New auth directories/files use Unix `0700`/`0600`; permissive auth parent directories/files are rejected rather than silently repaired. Auth paths reject symlinks and nonregular files; Unix auth files also reject hard links. Limits are **1 MiB per auth file, 100 credentials and 64 KiB per password**. On Windows, privacy relies on inherited user-directory ACLs: those ACLs are **not enforced or validated** by this implementation. These checks are neither encryption nor same-account isolation and cannot rule out hostile concurrent path replacement. Profile/auth writes use compensating rollback, not a shared transaction; metadata commits separately and export excludes credentials.
+- [x] **Show / Hide** temporarily reveals the password for **three seconds** as presentation only. Copy/cut remain blocked and native surrounding-text extraction remains hidden even while revealed; text, undo history and caret/selection are retained. This is not native OS/IME/accessibility privacy certification.
+- [ ] Current auth/theme validation totals and native platform certification; see [testing](testing.md#current-appearance-and-local-auth-validation).
 - [x] Direct TCP, strict SSH and anonymous HTTP/HTTPS CONNECT transport configuration; database VerifyIdentity TLS with optional CA and no insecure retry. Trusted system-CA HTTPS proxy success remains unverified.
 - [x] BASE TABLE discovery/browse, seven bound-value filters, bounded configurable 1–200-row UI pages (default 100), typed display and honest stale/error/cancel states. Views are listed but cannot be browsed.
 - [x] Column header sorting by click or Enter/Space: ascending, descending, none; metadata validation, filter retention, offset reset and available primary-key tie-breakers. Pages are not snapshots and can be unstable without keys.
@@ -75,8 +78,8 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 
 ## Persistent metadata slice
 
-- [x] Separate version 1 embedded SQLite cache using pinned rusqlite 0.40.2 with only bundled enabled; normalized database/table/view names and kinds, no columns/indexes/DDL/rows or passwords. Profile JSON and native Keychain remain separate.
-- [x] Offline startup register/prune/restore without network or Keychain calls; cached-first expansion and fixed 18 px Cached/hard-drive, Stale/triangle-alert and Refreshing/static loader-circle markers with meaning/timestamp/error tooltips on unchanged virtual 22 px rows.
+- [x] Separate version 1 embedded SQLite cache using pinned rusqlite 0.40.2 with only bundled enabled; normalized database/table/view names and kinds, no columns/indexes/DDL/rows or passwords. Profile JSON and local plaintext auth remain separate.
+- [x] Offline startup register/prune/restore without network or credential-store calls; cached-first expansion and fixed 18 px Cached/hard-drive, Stale/triangle-alert and Refreshing/static loader-circle markers with meaning/timestamp/error tooltips on unchanged virtual 22 px rows.
 - [x] Successful profile/credential commit closes the dialog before automatic full metadata-only discovery; all visible databases or explicit database scope, one serial owned connection/tunnel, no automatic data browse.
 - [x] Transactional bounded refresh, identity invalidation and globally monotonic ticket guards against stale/deleted/re-added/edit-away-back completions; old snapshots remain on refresh failure.
 - [x] Explicit explorer-selection-only Refresh, independent of table-page selection/paging; nonfatal disk-cache/save/delete warnings without suppressing profile JSON or inventing phantom sources.
@@ -170,7 +173,7 @@ Database explorer, query consoles, data views, results/sessions and optional ACP
 
 - [x] General/Options/SSH/SSL/Schemas titlebar tabs, real driver/authentication combos, Name/Color, opaque Carbonfox body and traffic-light reservation; independent source window reuse/saving guards.
 - [x] Default, explicit local Unix Socket and credential-free URL-only with generated URL synchronization and static rejected-credential diagnostics; no arbitrary JDBC properties.
-- [x] No Auth supplies no credentials, skips Keychain and clears remembered credentials on Save with compensation; password-free version 1 JSON compatibility.
+- [x] No Auth supplies no credentials, skips saved auth and clears local remembered credentials on Save with compensation; password-free version 1 JSON compatibility.
 - [x] Applied Connect 1–60 seconds, Query 1–120 seconds and Page size 1–200; defaults 10/20/100, unchanged global catalog cap.
 - [x] Independent reusable SSH manager/repository, named selection and Custom fallback; strict host checking, agent/key only, explicit Parse config warning, owned-child Test cancellation and in-use removal guard.
 - [x] Four explicit TLS modes, optional CA picker and paired driver-wired PEM identity paths; no encrypted TLS-key passphrase/Java truststore controls.

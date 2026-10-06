@@ -278,7 +278,8 @@ impl SourceDialog {
                 .as_ref()
                 .is_some_and(|ssh| ssh.read(cx).is_saving())
     }
-    fn snapshot_active(&mut self, cx: &App) {
+    fn snapshot_active(&mut self, cx: &mut Context<Self>) {
+        self.form.update(cx, |f, cx| f.hide_password(cx));
         if let Some(draft) = self.drafts.get_mut(&self.active) {
             draft.feedback = if self.model.read(cx).form_busy {
                 None
@@ -502,6 +503,7 @@ impl SourceDialog {
         if self.blocked(cx) {
             return;
         }
+        self.form.update(cx, |f, cx| f.hide_password(cx));
         self.page = page;
         cx.notify();
     }

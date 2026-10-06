@@ -1385,7 +1385,7 @@ impl SourceModel {
                         }
                         Ok(None) => {
                             this.form_feedback =
-                                Some("Saved Keychain password is missing; enter it again.".into())
+                                Some("Saved local password is missing; enter it again.".into())
                         }
                         Err(error) => this.form_feedback = Some(error.to_string()),
                     };
@@ -1401,7 +1401,7 @@ impl SourceModel {
         if self.saving || !self.storage_ready {
             return;
         }
-        // Reuse guarded Keychain loading; each navigation invalidates the prior worker.
+        // Reuse guarded local auth loading; each navigation invalidates the prior worker.
         self.form_open = false;
         self.edit_profile(profile, cx);
     }
@@ -1496,6 +1496,7 @@ impl SourceModel {
         self.form_busy = true;
         self.form_feedback = Some("Saving profile and credential choice…".into());
         let mut profiles = self.profiles.clone();
+        let secret_store = self.secret_store.clone();
         let previously_saved = profiles
             .iter()
             .find(|item| item.id == profile.id)
@@ -1509,7 +1510,7 @@ impl SourceModel {
         self.run(async move { tokio::task::spawn_blocking(move || {
             let profile = resolve_ssh_profile(&profile)?;
             if let Some(saved) = profiles.iter_mut().find(|item| item.id == profile.id) { *saved = profile.clone(); }
-            let store = NativeSecretStore;
+            let store = secret_store;
             // Validate settings without mutating disk before touching credentials.
             for item in &profiles { item.validate()?; }
             let credential_change = profile.save_password || previously_saved;
@@ -1518,7 +1519,7 @@ impl SourceModel {
             else if old.is_some() { store.delete(&profile.id)?; }
             if let Err(error) = repo.save(&profiles) {
                 let restore = if credential_change { match old { Some(old) => store.set(&profile.id, &old), None => store.delete(&profile.id) } } else { Ok(()) };
-                return Err(if restore.is_err() { anyhow!("Settings save failed; restoring the Keychain credential also failed. Review this source before connecting.") } else { error });
+                return Err(if restore.is_err() { anyhow!("Settings save failed; restoring the local auth credential also failed. Review this source before connecting.") } else { error });
             }
             let warning = cache.as_ref().and_then(|cache| cache.register(&profile).err())
                 .map(|_| "Profile saved, but local metadata registration failed.".to_string());
@@ -1599,7 +1600,7 @@ impl SourceModel {
             tokio::task::spawn_blocking(move || store.get(&id))
                 .await??
                 .ok_or_else(|| {
-                    anyhow!("Keychain password is missing. Edit this source to enter it again.")
+                    anyhow!("Local auth password is missing. Edit this source to enter it again.")
                 })
         } else {
             Ok(String::new())
@@ -1890,15 +1891,16 @@ impl SourceModel {
             .cloned()
             .collect();
         let removed_id = id.clone();
+        let secret_store = self.secret_store.clone();
         let credential_saved = self
             .profiles
             .iter()
             .find(|profile| profile.id == id)
             .is_some_and(|profile| profile.save_password);
         self.run(async move { tokio::task::spawn_blocking(move || {
-            let store = NativeSecretStore; let old = if credential_saved { store.get(&id)? } else { None };
+            let store = secret_store; let old = if credential_saved { store.get(&id)? } else { None };
             if credential_saved { store.delete(&id)?; }
-            if let Err(error) = repo.save(&profiles) { if let Some(password) = old { store.set(&id, &password).map_err(|_| anyhow!("Settings removal failed and Keychain restore failed; review saved source."))?; } return Err(error); }
+            if let Err(error) = repo.save(&profiles) { if let Some(password) = old { store.set(&id, &password).map_err(|_| anyhow!("Settings removal failed and local auth restore failed; review saved source."))?; } return Err(error); }
             let warning = cache.as_ref().and_then(|cache| cache.remove(&id).err())
                 .map(|_| "Profile removed, but local metadata cleanup failed.".to_string());
             Ok((profiles, warning))
@@ -3467,7 +3469,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn session_only_save_and_confirmed_delete_persist_without_keychain(cx: &mut TestAppContext) {
+    fn session_only_save_and_confirmed_delete_persist_without_saved_auth(cx: &mut TestAppContext) {
         struct Sandbox(std::path::PathBuf);
         impl Drop for Sandbox {
             fn drop(&mut self) {
@@ -3625,7 +3627,7 @@ mod tests {
         fn get(&self, _: &str) -> Result<Option<String>> {
             self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.deny {
-                return Err(anyhow!("Keychain permission denied (test)"));
+                return Err(anyhow!("Local auth permission denied (test)"));
             }
             Ok(self.value.clone())
         }
@@ -3677,7 +3679,7 @@ mod tests {
     }
 
     #[test]
-    fn no_auth_ignores_session_and_keychain_even_with_legacy_remember_flag() {
+    fn no_auth_ignores_session_and_local_auth_even_with_legacy_remember_flag() {
         let store = Arc::new(TestPasswordStore {
             value: None,
             deny: true,

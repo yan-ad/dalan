@@ -306,6 +306,9 @@ impl SourceForm {
         self.last_values.insert("source-password", value.clone());
         self.inputs["source-password"].update(cx, |input, cx| input.set_value(value, cx));
     }
+    pub(super) fn hide_password(&mut self, cx: &mut Context<Self>) {
+        self.inputs["source-password"].update(cx, |input, cx| input.hide_password(cx));
+    }
     pub(super) fn base_profile(&self) -> SourceProfile {
         self.original.clone()
     }
@@ -705,6 +708,7 @@ impl SourceForm {
         match id {
             "source-tab-general" | "source-tab-options" | "source-tab-ssh"
             | "source-tab-schemas" => {
+                self.hide_password(cx);
                 self.active_tab = match id {
                     "source-tab-options" => 1,
                     "source-tab-ssh" => 2,
@@ -1025,7 +1029,8 @@ impl SourceForm {
     fn checkbox(&self, cx: &mut Context<Self>) -> Checkbox {
         Checkbox::new("source-save-password")
             .debug_selector(|| "source-save-password".into())
-            .label("Save in Keychain")
+            .label("Save Forever")
+            .tooltip("Save the password as plaintext (unencrypted) in the local private dalan.auth file. This is not an OS keychain.")
             .checked(self.save_password)
             .small()
             .disabled(self.model.read(cx).saving)
@@ -1351,6 +1356,27 @@ impl Render for SourceForm {
                                         .flex_1()
                                         .min_w(px(0.))
                                         .child(self.inputs["source-password"].clone()),
+                                )
+                                .child(
+                                    Button::new("source-show-password")
+                                        .debug_selector(|| "source-show-password".into())
+                                        .label(
+                                            if self.inputs["source-password"]
+                                                .read(cx)
+                                                .password_revealed()
+                                            {
+                                                "Hide"
+                                            } else {
+                                                "Show"
+                                            },
+                                        )
+                                        .tooltip("Reveal password for 3 seconds")
+                                        .small()
+                                        .disabled(self.model.read(cx).saving)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.inputs["source-password"]
+                                                .update(cx, |input, cx| input.reveal_password(cx));
+                                        })),
                                 )
                                 .child(self.checkbox(cx)),
                             cx,
@@ -1832,6 +1858,44 @@ mod tests {
         let input = form.read_with(cx, |form, _| form.inputs[id].clone());
         input.update(cx, |input, cx| input.set_value(value.to_owned(), cx));
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn password_show_hide_is_presentation_only_and_expires(cx: &mut TestAppContext) {
+        let (form, _, visual) = fixture(cx);
+        let password = form.read_with(visual, |form, _| form.inputs["source-password"].clone());
+        let before = form.read_with(visual, |form, cx| {
+            (form.dirty, form.password_edited, form.password(cx))
+        });
+        click(visual, "source-show-password");
+        password.read_with(visual, |input, _| assert!(input.password_revealed()));
+        form.read_with(visual, |form, cx| {
+            assert_eq!(
+                (form.dirty, form.password_edited, form.password(cx)),
+                before
+            );
+        });
+        visual.refresh().unwrap();
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(3));
+        visual.run_until_parked();
+        password.read_with(visual, |input, _| assert!(!input.password_revealed()));
+        click(visual, "source-show-password");
+        click(visual, "source-show-password");
+        password.read_with(visual, |input, _| assert!(!input.password_revealed()));
+        form.read_with(visual, |form, cx| {
+            assert_eq!(
+                (form.dirty, form.password_edited, form.password(cx)),
+                before
+            );
+        });
+        let field = visual.debug_bounds("source-password").unwrap();
+        let button = visual.debug_bounds("source-show-password").unwrap();
+        let checkbox = visual.debug_bounds("source-save-password").unwrap();
+        assert!(field.size.width > px(0.));
+        assert!(field.right() <= button.left());
+        assert!(button.right() <= checkbox.left());
     }
 
     #[test]

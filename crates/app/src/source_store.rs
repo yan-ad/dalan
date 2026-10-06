@@ -1,11 +1,13 @@
-//! Versioned, password-free source settings and an explicit native credential store.
+//! Password-free source settings and separate local credential persistence.
 //!
-//! JSON and Keychain are separate persistence operations, not a transaction. Callers
-//! should validate/serialize settings before changing credentials, and report either
-//! failure. A failed JSON commit after a credential change can leave the previous
-//! profile with an updated credential. Never fall back to plaintext credentials.
-//! Filesystem checks reject existing symlinks; as with other portable `std` path
-//! operations, they do not protect against a hostile concurrent directory replacement.
+//! Credentials are stored unencrypted in a private `dalan.auth` file, not in an OS
+//! keychain. Settings and credentials are separate commits, not a transaction.
+//! Unix auth directories/files require private modes (0700/0600). On Windows,
+//! privacy relies on inherited ACLs of the user's support directory; std does not
+//! enforce or inspect ACLs. No keychain import or migration is performed.
+//! Checks reject symlinks but portable std operations cannot defend against a
+//! hostile concurrent directory replacement. Serialization protects only writers
+//! in this process, not independent processes.
 
 use anyhow::{Context, Result, bail, ensure};
 use dalan_drivers::SourceProfile;
@@ -293,66 +295,257 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, id: &str) -> Result<()>;
 }
 
-/// macOS Keychain only. Other platforms explicitly report unavailable; no mock or
-/// plaintext fallback is ever installed. Accounts are canonical profile UUIDs.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NativeSecretStore;
+const MAX_PASSWORD_BYTES: usize = 64 * 1024;
+static AUTH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-#[cfg(target_os = "macos")]
-fn entry(id: &str) -> Result<keyring::Entry> {
-    let id = Uuid::parse_str(id).context("A valid source UUID is required for Keychain access")?;
-    keyring::Entry::new("Dalan.database-sources", &id.to_string()).map_err(|_| {
-        anyhow::anyhow!("Cannot access macOS Keychain; check Keychain access permissions")
-    })
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthDocument {
+    version: u32,
+    #[serde(deserialize_with = "read_credentials")]
+    credentials: std::collections::BTreeMap<Uuid, String>,
 }
 
+// A Value/map intermediate would silently accept duplicate JSON keys. Detect both
+// identical keys and alternate spellings of the same UUID before inserting.
+fn read_credentials<'de, D>(
+    deserializer: D,
+) -> std::result::Result<std::collections::BTreeMap<Uuid, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Credentials;
+    impl<'de> serde::de::Visitor<'de> for Credentials {
+        type Value = std::collections::BTreeMap<Uuid, String>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a bounded UUID credential map")
+        }
+        fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
+        where
+            M: serde::de::MapAccess<'de>,
+        {
+            use serde::de::Error;
+            let mut result = std::collections::BTreeMap::new();
+            while let Some((key, password)) = map.next_entry::<String, String>()? {
+                let id = Uuid::parse_str(&key).map_err(|_| M::Error::custom("invalid UUID"))?;
+                if password.len() > MAX_PASSWORD_BYTES
+                    || result.len() >= MAX_PROFILES
+                    || result.contains_key(&id)
+                {
+                    return Err(M::Error::custom(
+                        "invalid credential bounds or duplicate UUID",
+                    ));
+                }
+                result.insert(id, password);
+            }
+            Ok(result)
+        }
+    }
+    deserializer.deserialize_map(Credentials)
+}
+
+/// Explicit-path local storage, useful for isolated callers and tests. Does not
+/// expose paths or passwords through Debug, or access any legacy secret backend.
+#[derive(Clone)]
+pub struct AuthRepository {
+    path: PathBuf,
+}
+impl std::fmt::Debug for AuthRepository {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthRepository")
+    }
+}
+impl AuthRepository {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+    pub fn default_path() -> Result<PathBuf> {
+        Ok(default_path()?.with_file_name("dalan.auth"))
+    }
+
+    fn parent(&self) -> Result<&Path> {
+        ensure!(
+            self.path.is_absolute()
+                && !self
+                    .path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir)),
+            "Invalid auth path"
+        );
+        let parent = parent_of(&self.path)?;
+        for ancestor in parent.ancestors() {
+            match fs::symlink_metadata(ancestor) {
+                Ok(metadata) => ensure!(
+                    metadata.is_dir() && !metadata.file_type().is_symlink(),
+                    "Invalid auth directory"
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => bail!("Cannot inspect auth directory"),
+            }
+        }
+        #[cfg(unix)]
+        if let Ok(metadata) = fs::symlink_metadata(parent) {
+            use std::os::unix::fs::PermissionsExt;
+            ensure!(
+                metadata.permissions().mode() & 0o077 == 0,
+                "Auth directory must be private"
+            );
+        }
+        Ok(parent)
+    }
+
+    fn check_file(&self) -> Result<bool> {
+        match fs::symlink_metadata(&self.path) {
+            Ok(metadata) => {
+                ensure!(
+                    metadata.is_file() && !metadata.file_type().is_symlink(),
+                    "Invalid auth file"
+                );
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                    ensure!(
+                        metadata.permissions().mode() & 0o077 == 0 && metadata.nlink() == 1,
+                        "Auth file must be private and unshared"
+                    );
+                }
+                ensure!(metadata.len() <= MAX_BYTES, "Auth file exceeds size limit");
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(_) => bail!("Cannot inspect auth file"),
+        }
+    }
+
+    fn load(&self) -> Result<AuthDocument> {
+        self.parent()?;
+        if !self.check_file()? {
+            return Ok(AuthDocument {
+                version: VERSION,
+                credentials: Default::default(),
+            });
+        }
+        let file = File::open(&self.path)?;
+        ensure!(
+            file.metadata()?.len() <= MAX_BYTES,
+            "Auth file exceeds size limit"
+        );
+        let mut bytes = Vec::new();
+        file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 <= MAX_BYTES,
+            "Auth file exceeds size limit"
+        );
+        let document: AuthDocument =
+            serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Invalid auth document"))?;
+        ensure!(document.version == VERSION, "Unsupported auth version");
+        Ok(document)
+    }
+
+    fn save(&self, document: &AuthDocument) -> Result<()> {
+        let bytes = serde_json::to_vec(document)?;
+        ensure!(
+            bytes.len() as u64 <= MAX_BYTES,
+            "Auth file exceeds size limit"
+        );
+        let parent = self.parent()?;
+        self.check_file()?;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(parent)?;
+        self.parent()?;
+        let temporary = parent.join(format!(".dalan-auth-{}.tmp", Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        let cleanup = TemporaryFile(temporary.clone());
+        file.write_all(&bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        self.parent()?;
+        self.check_file()?;
+        fs::rename(&temporary, &self.path)?;
+        drop(cleanup);
+        #[cfg(target_os = "linux")]
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| anyhow::anyhow!("Auth file replaced but directory sync failed"))?;
+        Ok(())
+    }
+
+    // Strip all underlying I/O/parser errors, including their source chains.
+    fn operation<T>(&self, action: impl FnOnce(Uuid) -> Result<T>, id: &str) -> Result<T> {
+        let result = (|| {
+            let id = Uuid::parse_str(id).map_err(|_| anyhow::anyhow!("Invalid auth UUID"))?;
+            let _guard = AUTH_LOCK
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Auth lock unavailable"))?;
+            action(id)
+        })();
+        result.map_err(|_| anyhow::anyhow!("Cannot access local Dalan credentials; check private directory/file permissions, valid version 1 data and storage limits (100 credentials, 64 KiB per password, 1 MiB file). A failed directory sync may follow a committed update."))
+    }
+}
+
+impl SecretStore for AuthRepository {
+    fn get(&self, id: &str) -> Result<Option<String>> {
+        self.operation(|id| Ok(self.load()?.credentials.remove(&id)), id)
+    }
+    fn set(&self, id: &str, password: &str) -> Result<()> {
+        self.operation(
+            |id| {
+                ensure!(
+                    password.len() <= MAX_PASSWORD_BYTES,
+                    "Password exceeds size limit"
+                );
+                let mut document = self.load()?;
+                ensure!(
+                    document.credentials.contains_key(&id)
+                        || document.credentials.len() < MAX_PROFILES,
+                    "Too many credentials"
+                );
+                document.credentials.insert(id, password.to_owned());
+                self.save(&document)
+            },
+            id,
+        )
+    }
+    fn delete(&self, id: &str) -> Result<()> {
+        self.operation(
+            |id| {
+                let mut document = self.load()?;
+                if document.credentials.remove(&id).is_some() {
+                    self.save(&document)?;
+                }
+                Ok(())
+            },
+            id,
+        )
+    }
+}
+
+/// Compatibility facade: exclusively delegates to `dalan.auth` beside sources.json.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NativeSecretStore;
 impl SecretStore for NativeSecretStore {
     fn get(&self, id: &str) -> Result<Option<String>> {
-        #[cfg(target_os = "macos")]
-        {
-            match entry(id)?.get_password() {
-                Ok(password) => Ok(Some(password)),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(_) => bail!(
-                    "Cannot read source password from macOS Keychain; check Keychain access permissions"
-                ),
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = id;
-            bail!("Native password storage is unavailable on this platform")
-        }
+        AuthRepository::new(AuthRepository::default_path()?).get(id)
     }
-
     fn set(&self, id: &str, password: &str) -> Result<()> {
-        #[cfg(target_os = "macos")]
-        {
-            entry(id)?.set_password(password)
-                .map_err(|_| anyhow::anyhow!("Cannot save source password in macOS Keychain; check Keychain access permissions"))
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (id, password);
-            bail!("Native password storage is unavailable on this platform")
-        }
+        AuthRepository::new(AuthRepository::default_path()?).set(id, password)
     }
-
     fn delete(&self, id: &str) -> Result<()> {
-        #[cfg(target_os = "macos")]
-        {
-            match entry(id)?.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(_) => bail!(
-                    "Cannot delete source password from macOS Keychain; check Keychain access permissions"
-                ),
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = id;
-            bail!("Native password storage is unavailable on this platform")
-        }
+        AuthRepository::new(AuthRepository::default_path()?).delete(id)
     }
 }
 
@@ -524,31 +717,239 @@ mod tests {
         assert!(linked.save(&[]).is_err());
     }
 
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn native_secrets_are_explicitly_unavailable() {
-        let id = Uuid::new_v4().to_string();
-        assert!(NativeSecretStore.get(&id).is_err());
-        assert!(NativeSecretStore.set(&id, "test").is_err());
-        assert!(NativeSecretStore.delete(&id).is_err());
+    impl Sandbox {
+        fn auth(&self) -> AuthRepository {
+            AuthRepository::new(self.0.join("dalan.auth"))
+        }
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "Requires an unlocked macOS Keychain and may prompt for permission"]
-    fn generated_keychain_item_round_trip() {
-        struct Cleanup(String);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = NativeSecretStore.delete(&self.0);
-            }
+    fn auth_round_trip_update_delete_and_private_modes() {
+        let sandbox = Sandbox::new();
+        let repo = sandbox.auth();
+        let id = Uuid::new_v4().to_string();
+        let other = Uuid::new_v4().to_string();
+        assert_eq!(repo.get(&id).unwrap(), None);
+        repo.delete(&id).unwrap();
+        assert!(!sandbox.0.exists());
+        repo.set(&id, "synthetic-secret-☃").unwrap();
+        repo.set(&other, "").unwrap();
+        assert_eq!(
+            repo.get(&id).unwrap().as_deref(),
+            Some("synthetic-secret-☃")
+        );
+        repo.set(&id, "updated").unwrap();
+        assert_eq!(repo.get(&id).unwrap().as_deref(), Some("updated"));
+        assert_eq!(repo.get(&other).unwrap().as_deref(), Some(""));
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&repo.path).unwrap()).unwrap();
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["credentials"][&id], "updated");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&repo.path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&sandbox.0).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
         }
-        let cleanup = Cleanup(Uuid::new_v4().to_string());
-        let password = Uuid::new_v4().to_string();
-        assert_eq!(NativeSecretStore.get(&cleanup.0).unwrap(), None);
-        NativeSecretStore.set(&cleanup.0, &password).unwrap();
-        assert!(NativeSecretStore.get(&cleanup.0).unwrap().as_deref() == Some(password.as_str()));
-        NativeSecretStore.delete(&cleanup.0).unwrap();
-        assert_eq!(NativeSecretStore.get(&cleanup.0).unwrap(), None);
+        repo.delete(&id).unwrap();
+        repo.delete(&id).unwrap();
+        assert_eq!(repo.get(&id).unwrap(), None);
+        assert_eq!(repo.get(&other).unwrap().as_deref(), Some(""));
+        repo.delete(&other).unwrap();
+        assert_eq!(repo.get(&other).unwrap(), None);
+        assert_eq!(fs::read_dir(&sandbox.0).unwrap().count(), 1);
+        assert_eq!(format!("{repo:?}"), "AuthRepository");
+    }
+
+    #[test]
+    fn auth_malformed_documents_are_retained_and_errors_redacted() {
+        let sandbox = Sandbox::new();
+        let repo = sandbox.auth();
+        let id = Uuid::new_v4().to_string();
+        repo.set(&id, "initial").unwrap();
+        let duplicate =
+            format!(r#"{{"version":1,"credentials":{{"{id}":"secret-marker","{id}":"other"}}}}"#);
+        let alias = format!(
+            r#"{{"version":1,"credentials":{{"{id}":"one","{}":"secret-marker"}}}}"#,
+            id.replace('-', "")
+        );
+        for document in [
+            "secret-marker invalid-json".to_string(),
+            r#"{"version":2,"credentials":{}}"#.to_string(),
+            r#"{"version":1,"credentials":{"secret-marker":"value"}}"#.to_string(),
+            r#"{"version":1,"credentials":{},"unknown":"secret-marker"}"#.to_string(),
+            r#"{"version":1,"version":1,"credentials":{}}"#.to_string(),
+            r#"{"version":1}"#.to_string(),
+            r#"{"version":1,"credentials":[]}"#.to_string(),
+            duplicate,
+            alias,
+        ] {
+            fs::write(&repo.path, &document).unwrap();
+            for error in [
+                repo.get(&id).unwrap_err(),
+                repo.set(&id, "secret-marker").unwrap_err(),
+                repo.delete(&id).unwrap_err(),
+            ] {
+                let text = format!("{error:#}");
+                assert!(!text.contains("secret-marker"));
+                assert!(!text.contains(repo.path.to_str().unwrap()));
+                assert!(!text.contains("line "));
+            }
+            assert_eq!(fs::read_to_string(&repo.path).unwrap(), document);
+        }
+    }
+
+    #[test]
+    fn auth_limits_and_invalid_ids_preserve_previous_file() {
+        let sandbox = Sandbox::new();
+        let repo = sandbox.auth();
+        let id = Uuid::new_v4().to_string();
+        repo.set(&id, &"a".repeat(MAX_PASSWORD_BYTES)).unwrap();
+        let initial = fs::read(&repo.path).unwrap();
+        assert!(
+            repo.set(&id, &"é".repeat(MAX_PASSWORD_BYTES / 2 + 1))
+                .is_err()
+        );
+        assert!(repo.get("not-a-uuid-secret").is_err());
+        assert!(repo.set("not-a-uuid-secret", "secret").is_err());
+        assert!(repo.delete("not-a-uuid-secret").is_err());
+        assert_eq!(fs::read(&repo.path).unwrap(), initial);
+        repo.set(&id, "short").unwrap();
+        for _ in 1..MAX_PROFILES {
+            repo.set(&Uuid::new_v4().to_string(), "short").unwrap();
+        }
+        let full = fs::read(&repo.path).unwrap();
+        assert!(repo.set(&Uuid::new_v4().to_string(), "extra").is_err());
+        assert_eq!(fs::read(&repo.path).unwrap(), full);
+        repo.set(&id, "updated").unwrap();
+        repo.delete(&id).unwrap();
+        repo.set(&Uuid::new_v4().to_string(), "replacement")
+            .unwrap();
+        let oversized_password = serde_json::json!({"version":1,"credentials":{id.clone(): "a".repeat(MAX_PASSWORD_BYTES + 1)}});
+        fs::write(&repo.path, serde_json::to_vec(&oversized_password).unwrap()).unwrap();
+        assert!(repo.get(&id).is_err());
+        let credentials: std::collections::BTreeMap<_, _> = (0..101)
+            .map(|_| (Uuid::new_v4().to_string(), "x"))
+            .collect();
+        fs::write(
+            &repo.path,
+            serde_json::to_vec(&serde_json::json!({"version":1,"credentials":credentials}))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(repo.get(&id).is_err());
+        fs::write(&repo.path, vec![b' '; MAX_BYTES as usize + 1]).unwrap();
+        assert!(repo.get(&id).is_err());
+        assert!(repo.set(&id, "value").is_err());
+        assert_eq!(fs::metadata(&repo.path).unwrap().len(), MAX_BYTES + 1);
+    }
+
+    #[test]
+    fn auth_serialized_size_failure_retains_file_and_cleans_temporary() {
+        let sandbox = Sandbox::new();
+        let repo = sandbox.auth();
+        // Escaping control bytes makes JSON much larger than the password itself.
+        let password = "\0".repeat(MAX_PASSWORD_BYTES);
+        repo.set(&Uuid::new_v4().to_string(), &password).unwrap();
+        repo.set(&Uuid::new_v4().to_string(), &password).unwrap();
+        let initial = fs::read(&repo.path).unwrap();
+        assert!(repo.set(&Uuid::new_v4().to_string(), &password).is_err());
+        assert_eq!(fs::read(&repo.path).unwrap(), initial);
+        assert_eq!(fs::read_dir(&sandbox.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn auth_concurrent_independent_instances_do_not_lose_updates() {
+        let sandbox = Sandbox::new();
+        let path = sandbox.auth().path;
+        let ids: Vec<_> = (0..24).map(|_| Uuid::new_v4().to_string()).collect();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(ids.len()));
+        let workers: Vec<_> = ids
+            .iter()
+            .cloned()
+            .map(|id| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let repo = AuthRepository::new(path);
+                    repo.set(&id, "first").unwrap();
+                    repo.set(&id, "second").unwrap();
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let repo = AuthRepository::new(path);
+        for id in ids {
+            assert_eq!(repo.get(&id).unwrap().as_deref(), Some("second"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auth_rejects_symlinks_hardlinks_and_permissive_files_and_directories() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let sandbox = Sandbox::new();
+        let repo = sandbox.auth();
+        let id = Uuid::new_v4().to_string();
+        repo.set(&id, "retained").unwrap();
+        let initial = fs::read(&repo.path).unwrap();
+        fs::set_permissions(&repo.path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(repo.get(&id).is_err());
+        assert!(repo.set(&id, "change").is_err());
+        assert!(repo.delete(&id).is_err());
+        assert_eq!(fs::read(&repo.path).unwrap(), initial);
+        fs::set_permissions(&repo.path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&sandbox.0, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(repo.get(&id).is_err());
+        assert!(repo.set(&id, "change").is_err());
+        fs::set_permissions(&sandbox.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let target = sandbox.0.join("target");
+        fs::hard_link(&repo.path, &target).unwrap();
+        assert!(repo.get(&id).is_err());
+        assert!(repo.set(&id, "change").is_err());
+        fs::remove_file(&target).unwrap();
+        fs::rename(&repo.path, &target).unwrap();
+        symlink(&target, &repo.path).unwrap();
+        assert!(repo.get(&id).is_err());
+        assert!(repo.set(&id, "change").is_err());
+        assert!(repo.delete(&id).is_err());
+        let linked = sandbox.0.join("linked");
+        symlink(&sandbox.0, &linked).unwrap();
+        let nested = AuthRepository::new(linked.join("missing/sub/auth"));
+        assert!(nested.get(&id).is_err());
+        assert!(nested.set(&id, "change").is_err());
+        assert_eq!(fs::read(&target).unwrap(), initial);
+    }
+
+    #[test]
+    fn auth_rejects_non_regular_files_and_relative_paths() {
+        let sandbox = Sandbox::new();
+        sandbox.repository().save(&[]).unwrap();
+        let repo = sandbox.auth();
+        fs::create_dir(&repo.path).unwrap();
+        let id = Uuid::new_v4().to_string();
+        assert!(repo.get(&id).is_err());
+        assert!(repo.set(&id, "secret").is_err());
+        assert!(repo.delete(&id).is_err());
+        let relative = AuthRepository::new(PathBuf::from("relative/dalan.auth"));
+        assert!(relative.get(&id).is_err());
+        assert!(relative.set(&id, "secret").is_err());
+    }
+
+    #[test]
+    fn auth_default_path_is_beside_settings_without_access() {
+        assert_eq!(
+            AuthRepository::default_path().unwrap(),
+            default_path().unwrap().with_file_name("dalan.auth")
+        );
     }
 }
