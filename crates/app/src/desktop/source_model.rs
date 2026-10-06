@@ -151,6 +151,8 @@ pub(super) struct SourceModel {
     pub profiles: Vec<SourceProfile>,
     pub tree: ExplorerTree,
     pub form_open: bool,
+    pub form_keep_open: bool,
+    pub form_saved_generation: u64,
     pub form_profile: Option<SourceProfile>,
     pub form_generation: u64,
     pub form_feedback: Option<String>,
@@ -1045,6 +1047,8 @@ impl SourceModel {
             profiles: vec![],
             tree: ExplorerTree::default(),
             form_open: false,
+            form_keep_open: false,
+            form_saved_generation: 0,
             form_profile: None,
             form_generation: 0,
             form_feedback: None,
@@ -1321,6 +1325,16 @@ impl SourceModel {
         cx.notify();
     }
 
+    /// Unified settings navigation changes only the form route, never browser selection.
+    pub fn navigate_form(&mut self, profile: SourceProfile, cx: &mut Context<Self>) {
+        if self.saving || !self.storage_ready {
+            return;
+        }
+        // Reuse guarded Keychain loading; each navigation invalidates the prior worker.
+        self.form_open = false;
+        self.edit_profile(profile, cx);
+    }
+
     pub fn edit_form(&mut self, cx: &mut Context<Self>) {
         if self.saving {
             return;
@@ -1460,8 +1474,12 @@ impl SourceModel {
                         this.selected_source = Some(saved_profile.id.clone());
                         if identity_changed { this.clear_data(); }
                     }
-                    this.form_open = false; this.form_profile = None; this.form_databases.clear();
-                    this.form_generation += 1; this.form_feedback = None; this.error = None;
+                    if this.form_keep_open {
+                        this.form_profile = Some(saved_profile.clone());
+                    } else {
+                        this.form_open = false; this.form_profile = None; this.form_databases.clear();
+                    }
+                    this.form_generation += 1; this.form_saved_generation = this.form_generation; this.form_feedback = None; this.error = None;
                     if this.automatic_discovery { this.refresh_schema(saved_profile.id, cx); }
                 },
                 Err(error) => this.form_feedback = Some(format!("Not saved: {error}")),

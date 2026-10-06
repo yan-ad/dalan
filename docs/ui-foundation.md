@@ -4,7 +4,7 @@ Implemented scope: macOS desktop shell using **GPUI Kit for all standard control
 
 ## Production Kit foundation
 
-Root `gpui` aliases Kit 0.7.1 with `tree-sitter-sql`, coordinated with `gpui-pre 0.3.8`; old GPUI 0.2 is removed. `gpui::application`, `gpui::init` and Kit `open_window`/Base Root cover main/source/About/SSH windows. Button, Input, Checkbox, tabs, dropdown/popup menus and tooltips are Kit controls. Driver/authentication dropdowns and saved SSH popup choices are functional native alternatives, not claimed Combobox/Select use.
+Root `gpui` aliases Kit 0.7.1 with `tree-sitter-sql`, coordinated with `gpui-pre 0.3.8`; old GPUI 0.2 is removed. `gpui::application`, `gpui::init` and Kit `open_window`/Base Root cover main/source/About windows, including the embedded SSH page. Button, Input, Checkbox, tabs, dropdown/popup menus and tooltips are Kit controls. Driver/authentication dropdowns and saved SSH popup choices are functional native alternatives, not claimed Combobox/Select use.
 
 `desktop/theme.rs` maps active semantic `Hsla` colors and layout metrics; no fixed app palette or Carbonfox override is installed. Kit owns initial theme selection. The top-right Sun/Moon toggle uses registered Kit default assets and `Theme::change` for default light/dark modes; no application theme persistence is added. InputState's thin window-less adapter preserves form synchronization; password native surrounding-text extraction is suppressed while Kit owns masked clipboard protections, editing, selection and IME. The thin rope EditorState adapter provides SQL Tree-sitter highlighting/native editing/undo; completion/history/scripts remain pending. The 64 KiB interactive SQL guard needs current regression validation, not inherited atomicity claims.
 
@@ -56,7 +56,7 @@ With no sources, the main area centers a working Connect to a Source action, not
 | Explorer Refresh / refresh-cw | Refresh complete explicitly explorer-selected source metadata without deleting the old snapshot first; disabled during source refresh/saving, not table pagination; no current-table fallback |
 | Row menu Remove | Confirm captured stable UUID, unaffected by selection changes; no server-object deletion, unrelated results preserved |
 | Explorer combined expansion / `toggle-tree-expansion` | A visibly expanded saved source means Collapse All; otherwise Expand Loaded cached branches only, no network fan-out or extra click for hidden child preferences |
-| Row menu Manage / Copy | Reuse tabbed SourceDialog; Copy is an unsaved fresh-UUID nonsecret draft, no Keychain retrieval or SQLite cache clone; existing draft and 100-profile guards |
+| Row menu Manage / Copy | Reuse retained SourceDialog; Copy is an unsaved fresh-UUID nonsecret draft, no Keychain retrieval or SQLite cache clone; retained drafts and 100-profile guard |
 | Main Connect to a Source | With no sources, open/reuse the dedicated source dialog window by mouse or Enter/Space, even with explorer hidden |
 | Top-bar 28 px Layout / panel-left icon | Open/close the existing four-row layout popover; titlebar keeps the database toggle and native controls rather than duplicate branding |
 | Top-right Kit Sun/Moon | Switch Kit default light/dark through `Theme::change`; no added saved theme preference |
@@ -173,7 +173,15 @@ The same virtual 22 px rows restore offline metadata without startup network or 
 
 A nonfatal 22 px `metadata_notice` strip with full tooltip warns about unavailable/corrupt disk cache, cache-save failure after a successfully committed profile, or orphaned metadata after failed cache deletion. Valid profile JSON still loads; no blank explorer or false profile-save failure is implied. Historical metadata local verification passed **67 headless tests**, **83 simulated UI tests** and **four Python bundle tests**, plus formatting, strict lint and signed bundle checks, including cached labels, warning visibility, offline startup, retained rows and explicit-selection gating. This is simulation, not native visual/accessibility, actual Keychain or production save-to-network end-to-end evidence; historical hosted gates are recorded in [testing](testing.md#persistent-metadata-revision).
 
-## Dedicated source dialog window
+## Unified Data Sources and Drivers (current)
+
+One retained SourceDialog unifies Sources, SSH and Drivers in a normal independent window, **1160 × 760** initially and **1040 × 560** minimum. Its **48 px icon rail** and **228 px source list** need the extra width. Saved/new source rows use provider icons; Add/Cmd-N, Duplicate/Cmd-D and confirmed Remove are working actions. Each retained source entity keeps invalid text, input selection, passwords and tab choice across navigation; changing the dialog source does not select the main browser. Guarded form routes invalidate old test and Keychain completions.
+
+The right editor keeps Name/Color identity, General / Options / SSH/SSL / Schemas tabs and the Test Connection/status strip persistent, with a global Cancel / Apply / OK footer. Embedded SSH retains manager drafts across rail switching; Apply/Saved publishes the persisted catalog to every retained source form, Back discards pending manager drafts, and Use selects the SSH route and returns to Sources without saving that source. Drivers provides built-in MySQL/MariaDB information only, with no JDBC plugin installation.
+
+Apply saves the active source or SSH page, not every source draft and not a batch-atomic transaction; source Apply stays open. OK applies the active source and closes if no other dirty drafts remain, otherwise presenting an explicit discard/keep prompt. Cancel/Escape/Cmd-W/native close require explicit dirty-draft confirmation. Busy saves block switching and close. Kit owns default styling rather than pixel-identical screenshot geometry; no unimplemented Add comment, templates or Advanced buttons appear. See [interaction contracts](source-management.md) and [pending primary verification](testing.md#unified-data-sources-and-drivers).
+
+## Historical dedicated source dialog window
 
 **Data Sources · Dalan** is one application-wide, resizable normal GPUI window: initial 1040 × 760, minimum 780 × 560. It is not an OS modal sheet and does not trap or block the main window. New Connection, row Manage/Copy and the centered connection action use it, preserving draft edits. A new form or model `form_generation` refresh (including loaded passwords) replaces the form inside the existing window and focuses Name; ordinary notifications do not reset it. Cancel/Escape/Cmd-W/native close discard the draft and cancel testing. Native close and Cmd-W refuse dismissal while credential/JSON saving is active. Model-observed successful Save closes the window, then starts metadata-only refresh, without automatic row browsing.
 
@@ -181,7 +189,7 @@ The form starts at Engine, without a redundant internal title strip. Compact sty
 
 The supplied screenshot may predate the full-width form, but it exposed a real flex-shrink defect, not merely an old sidebar layout. Draw-bound regressions at 1040 × 760 and 850 × 600 exercise long values, key labels and password/color changes, proving fields no longer collapse to single-character widths in simulation. Historical source-dialog local suites passed 54 headless, 63 simulated UI and four Python tests. Native visual/accessibility review remains unverified; existing capture attempts were blocked by Screen Recording permissions, which were not changed. See [testing](testing.md#source-dialog-window-and-windows-fixture-fix) for CI evidence and the pending next-main gate.
 
-## Current source and read-view slice
+## Historical source and read-view slice
 
 Source setup has no separate Data Source/repeated-engine header. Password and its labeled Keychain checkbox share a row; the checkbox has an 18 px visible indicator and Lucide check rather than a Unicode glyph. CA path accepts both manual edits and a native single-file Browse action. Cancel preserves the path, stale selections do not replace newer manual edits, and focus returns to the path after the dialog. Native Open-dialog behavior remains a manual macOS check; shared completion and form control behavior have regression tests.
 
@@ -259,7 +267,7 @@ Menlo 13 px SQL text has 22 px lines, a 44 px gutter, visible-line shaping and n
 
 Nonempty console drafts are unsaved regardless of prior execution. Close x/Cmd-W presents Keep Open and Discard, with Keep Open focused by default and mouse/Enter/Space confirmation. Empty drafts close without confirmation. Cmd-W closes the active workspace tab; with no tab the shell close-window fallback must remain available. The native OS window-close control is unchanged and is not a new draft-persistence contract. See [query guide](query-consoles.md) and [validation](testing.md#workspace-tabs-and-query-consoles).
 
-## Tabbed source manager
+## Historical tabbed source manager
 
 The source window keeps 1040 × 760 initial/780 × 560 minimum sizing and opaque Carbonfox flat compact body. General, Options, SSH/SSL and Schemas sit in the 34 px transparent native titlebar with 84 px reserved for traffic lights. An empty `TitlebarOptions.title` suppresses duplicate native “Data Sources · Dalan” text, not Dalan branding in the macOS menu/About window.
 

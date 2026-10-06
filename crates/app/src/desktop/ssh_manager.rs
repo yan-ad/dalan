@@ -1,4 +1,4 @@
-//! Independent SSH session editor. Only saved metadata is published; Use selects a session.
+//! Standalone or embedded SSH session editor. Only saved metadata is published; Use selects a session.
 use std::{
     collections::HashMap,
     process::{Command, Stdio},
@@ -15,8 +15,9 @@ use dalan_app::{
     ssh_config_store::{SshAuthentication, SshProfile, SshRepository},
 };
 use gpui::{
-    AnyWindowHandle, App, Bounds, Context, Div, Entity, Global, KeyBinding, Subscription,
-    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    AnyWindowHandle, App, Bounds, Context, Div, Entity, EventEmitter, Global, KeyBinding,
+    Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, size,
 };
 
 use gpui::component::{
@@ -51,7 +52,19 @@ enum AuthChoice {
     KeyPair,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum EmbeddedSshEvent {
+    Cancel,
+    Used,
+    Saved,
+}
+
+impl EventEmitter<EmbeddedSshEvent> for SshManager {}
+
 pub(super) struct SshManager {
+    embedded: bool,
+    native_close_registered: bool,
+    saved_profiles: Vec<SshProfile>,
     profiles: Vec<SshProfile>,
     inputs: HashMap<&'static str, Entity<TextInput>>,
     last_values: HashMap<&'static str, String>,
@@ -74,6 +87,66 @@ pub(super) struct SshManager {
 }
 
 impl SshManager {
+    pub(super) fn embedded(
+        owner: Entity<SourceForm>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        #[cfg(not(feature = "ui-tests"))]
+        let mut this = Self::new(owner, None, window, cx);
+        #[cfg(feature = "ui-tests")]
+        let mut this = {
+            let mut manager = Self::with_repository(
+                owner,
+                None,
+                Err(anyhow::anyhow!(
+                    "Synthetic SSH editor: no local repository access"
+                )),
+                window,
+                cx,
+            );
+            manager.loaded = true;
+            manager
+        };
+        this.embedded = true;
+        this
+    }
+
+    /// Rebind only outside a save, and publish only the last persisted snapshot.
+    pub(super) fn set_owner(&mut self, owner: Entity<SourceForm>, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
+        self.owner = owner.downgrade();
+        if self.loaded {
+            owner.update(cx, |owner, cx| {
+                owner.refresh_ssh_configurations(self.saved_profiles.clone(), cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub(super) fn apply_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save(false, window, cx);
+    }
+
+    pub(super) fn is_saving(&self) -> bool {
+        self.saving
+    }
+
+    pub(super) fn has_unsaved_changes(&self, cx: &App) -> bool {
+        if !self.loaded {
+            return false;
+        }
+        if self.profiles != self.saved_profiles {
+            return true;
+        }
+        self.selected.is_some()
+            && self.collect_current(cx).map_or(true, |profile| {
+                !self.saved_profiles.iter().any(|saved| saved == &profile)
+            })
+    }
+
     fn new(
         owner: Entity<SourceForm>,
         selected: Option<String>,
@@ -97,6 +170,9 @@ impl SshManager {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self {
+            embedded: false,
+            native_close_registered: false,
+            saved_profiles: Vec::new(),
             profiles: Vec::new(),
             inputs: HashMap::new(),
             last_values: HashMap::new(),
@@ -146,17 +222,6 @@ impl SshManager {
                 }));
             this.inputs.insert(id, input);
         }
-        let weak = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |_, cx| {
-            weak.upgrade().is_none_or(|entity| {
-                let manager = entity.read(cx);
-                if manager.saving {
-                    return false;
-                }
-                manager.cancel_test();
-                true
-            })
-        });
         this.load(window, cx);
         this
     }
@@ -173,8 +238,16 @@ impl SshManager {
                 this.busy = false;
                 match result {
                     Ok(profiles) => {
+                        this.saved_profiles = profiles.clone();
                         this.profiles = profiles;
                         this.loaded = true;
+                        if this.embedded
+                            && let Some(owner) = this.owner.upgrade()
+                        {
+                            owner.update(cx, |owner, cx| {
+                                owner.refresh_ssh_configurations(this.saved_profiles.clone(), cx);
+                            });
+                        }
                         let id = this
                             .selected
                             .clone()
@@ -341,6 +414,7 @@ impl SshManager {
         self.picker_open = true;
         let id = self.selected.clone();
         let original = self.inputs[key].read(cx).value();
+        let revision = self.revision;
         let picker = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
@@ -351,7 +425,10 @@ impl SshManager {
             let result = picker.await;
             let _ = this.update_in(cx, |this, _, cx| {
                 this.picker_open = false;
-                if this.selected != id || this.inputs[key].read(cx).value() != original {
+                if this.revision != revision
+                    || this.selected != id
+                    || this.inputs[key].read(cx).value() != original
+                {
                     cx.notify();
                     return;
                 }
@@ -437,19 +514,25 @@ impl SshManager {
                 this.saving = false;
                 match result {
                     Ok(()) => {
+                        this.saved_profiles = saved_profiles.clone();
                         this.feedback = Some("SSH sessions saved.".into());
                         if let Some(owner) = this.owner.upgrade() {
                             owner.update(cx, |owner, cx| {
                                 owner.refresh_ssh_configurations(saved_profiles.clone(), cx);
                             });
                         }
+                        if this.embedded { cx.emit(EmbeddedSshEvent::Saved); }
                         if let Some(profile) = chosen {
                             if let Some(owner) = this.owner.upgrade() {
                                 if owner.read(cx).can_use_ssh_session(cx) {
                                     owner.update(cx, |owner, cx| {
                                         owner.set_ssh_configuration(profile, cx)
                                     });
-                                    window.remove_window();
+                                    if this.embedded {
+                                        cx.emit(EmbeddedSshEvent::Used);
+                                    } else {
+                                        window.remove_window();
+                                    }
                                 } else {
                                     this.error = Some("Sessions saved, but the datasource is saving or uses a local socket. Return to a network endpoint before using this session.".into());
                                 }
@@ -513,10 +596,25 @@ impl SshManager {
         }
     }
 
-    fn close(&mut self, window: &mut Window) {
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.saving {
             self.cancel_test();
-            window.remove_window();
+            if self.embedded {
+                // Discard in memory as well: the host may retain this entity.
+                self.revision += 1;
+                self.profiles = self.saved_profiles.clone();
+                self.selected = None;
+                self.error = None;
+                self.feedback = None;
+                self.delete_confirmation = false;
+                if let Some(id) = self.profiles.first().map(|profile| profile.id.clone()) {
+                    self.select(id, cx);
+                }
+                cx.emit(EmbeddedSshEvent::Cancel);
+                cx.notify();
+            } else {
+                window.remove_window();
+            }
         }
     }
 
@@ -670,7 +768,22 @@ fn test_connection(profile: &SshProfile, cancel: &AtomicBool) -> Result<()> {
 }
 
 impl Render for SshManager {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The embedded editor must not replace its host's native-close guard.
+        if !self.embedded && !self.native_close_registered {
+            self.native_close_registered = true;
+            let weak = cx.entity().downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                weak.upgrade().is_none_or(|entity| {
+                    let manager = entity.read(cx);
+                    if manager.saving {
+                        return false;
+                    }
+                    manager.cancel_test();
+                    true
+                })
+            });
+        }
         let enabled = self.editable();
         let mut list = div()
             .id("ssh-profile-list")
@@ -865,8 +978,14 @@ impl Render for SshManager {
                 cx.stop_propagation();
                 window.focus_prev(cx);
             }))
-            .on_action(cx.listener(|this, _: &CloseWindow, window, _| this.close(window)))
-            .on_action(cx.listener(|this, _: &Dismiss, window, _| this.close(window)))
+            .on_action(cx.listener(|this, _: &CloseWindow, window, cx| {
+                cx.stop_propagation();
+                this.close(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &Dismiss, window, cx| {
+                cx.stop_propagation();
+                this.close(window, cx);
+            }))
             .child(
                 div()
                     .p(px(12.))
@@ -964,10 +1083,10 @@ impl Render for SshManager {
                     .child(div().flex_1())
                     .child(self.button(
                         "ssh-cancel",
-                        "Cancel",
+                        if self.embedded { "Back" } else { "Cancel" },
                         Icon::Close,
                         !self.saving,
-                        |this, window, _| this.close(window),
+                        |this, window, cx| this.close(window, cx),
                         cx,
                     ))
                     .child(self.button(
@@ -1012,7 +1131,7 @@ pub(super) fn show(owner: Entity<SourceForm>, selected: Option<String>, cx: &mut
             .update_window(window, |_, window, cx| {
                 manager.update(cx, |manager, cx| {
                     if manager.owner.entity_id() != owner.entity_id() && !manager.saving {
-                        manager.owner = owner.downgrade();
+                        manager.set_owner(owner.clone(), cx);
                         if let Some(id) = selected.clone()
                             && manager.commit_current(cx)
                         {
@@ -1142,6 +1261,114 @@ mod ui_tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.root).unwrap();
         }
+    }
+
+    struct EmbeddedHost(Entity<SshManager>);
+
+    impl Render for EmbeddedHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    fn embedded_fixture<'a>(
+        cx: &'a mut TestAppContext,
+        files: &Files,
+    ) -> (
+        Entity<SshManager>,
+        Entity<SourceForm>,
+        &'a mut VisualTestContext,
+    ) {
+        cx.update(bind_keys);
+        let model = cx.new(|_| SourceModel::for_tests(vec![]));
+        model.update(cx, |model, cx| model.new_source(cx));
+        let profile = model.read_with(cx, |model, _| model.form_profile.clone().unwrap());
+        let owner = cx.new(|cx| SourceForm::new(profile, model, cx));
+        let (window, host) = cx.update(|cx| {
+            gpui::init(cx);
+            gpui::open_window(WindowOptions::default(), cx, |window, cx| {
+                let manager = cx.new(|cx| {
+                    let mut manager = SshManager::with_repository(
+                        owner.clone(),
+                        Some(files.profile.id.clone()),
+                        Ok(files.ssh.clone()),
+                        window,
+                        cx,
+                    );
+                    manager.embedded = true;
+                    manager.source_repository = Some(files.sources.clone());
+                    manager
+                });
+                cx.new(|_| EmbeddedHost(manager))
+            })
+            .unwrap()
+        });
+        let manager = host.read_with(cx, |host, _| host.0.clone());
+        let visual = VisualTestContext::from_window(window, cx).into_mut();
+        visual.simulate_resize(size(px(900.), px(760.)));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        assert!(manager.read_with(visual, |manager, _| manager.loaded));
+        (manager, owner, visual)
+    }
+
+    #[gpui::test]
+    fn embedded_use_emits_used_and_preserves_host_window(cx: &mut TestAppContext) {
+        let files = Files::new(false);
+        let (manager, owner, cx) = embedded_fixture(cx, &files);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let received = events.clone();
+        let _subscription = cx.cx.update(|app| {
+            app.subscribe(&manager, move |_, event: &EmbeddedSshEvent, _| {
+                received.borrow_mut().push(*event);
+            })
+        });
+        set(&manager, cx, "ssh-name", "Used embedded session");
+        click(cx, "ssh-use");
+        assert_eq!(
+            *events.borrow(),
+            vec![EmbeddedSshEvent::Saved, EmbeddedSshEvent::Used]
+        );
+        assert_eq!(cx.cx.read(|app| app.windows().len()), 1);
+        assert!(cx.refresh().is_ok());
+        assert!(!manager.read_with(cx, |manager, app| manager.has_unsaved_changes(app)));
+        assert_eq!(files.ssh.load().unwrap()[0].name, "Used embedded session");
+        assert_eq!(
+            owner.read_with(cx, |form, app| form
+                .profile(app)
+                .unwrap()
+                .ssh_configuration_id),
+            Some(files.profile.id.clone())
+        );
+    }
+
+    #[gpui::test]
+    fn embedded_cancel_discards_drafts_and_keeps_unrelated_window_alive(cx: &mut TestAppContext) {
+        let files = Files::new(false);
+        let (manager, owner, cx) = embedded_fixture(cx, &files);
+        let mut unrelated = owner_window(&owner, cx);
+        let before = owner.read_with(cx, |form, app| form.profile(app).unwrap());
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let received = events.clone();
+        let _subscription = cx.cx.update(|app| {
+            app.subscribe(&manager, move |_, event: &EmbeddedSshEvent, _| {
+                received.borrow_mut().push(*event);
+            })
+        });
+        set(&manager, cx, "ssh-name", "Unapplied embedded draft");
+        click(cx, "ssh-add");
+        assert!(manager.read_with(cx, |manager, app| manager.has_unsaved_changes(app)));
+        click(cx, "ssh-cancel");
+        assert_eq!(*events.borrow(), vec![EmbeddedSshEvent::Cancel]);
+        assert_eq!(cx.cx.read(|app| app.windows().len()), 2);
+        assert!(unrelated.refresh().is_ok());
+        assert!(cx.refresh().is_ok());
+        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+        assert!(!manager.read_with(cx, |manager, app| manager.has_unsaved_changes(app)));
+        assert_eq!(
+            owner.read_with(cx, |form, app| form.profile(app).unwrap()),
+            before
+        );
     }
 
     fn fixture<'a>(
@@ -1299,7 +1526,7 @@ mod ui_tests {
         );
         click(cx, "ssh-cancel");
         assert!(!cx.simulate_close());
-        manager.update_in(cx, |manager, window, _| manager.close(window));
+        manager.update_in(cx, |manager, window, cx| manager.close(window, cx));
         assert!(!cx.cx.read(|app| app.windows().is_empty()));
         manager.update(cx, |manager, cx| {
             manager.saving = false;

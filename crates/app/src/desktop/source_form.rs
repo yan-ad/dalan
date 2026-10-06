@@ -33,7 +33,16 @@ const COLOR_PRESETS: [(&str, &str, &str, Option<u32>); 6] = [
 ];
 
 /// A draft is kept separate from the persisted model until Save is activated.
+pub(super) enum SourceFormEvent {
+    ManageSsh,
+    Cancel,
+}
+impl gpui::EventEmitter<SourceFormEvent> for SourceForm {}
+
 pub(super) struct SourceForm {
+    embedded: bool,
+    dirty: bool,
+    password_edited: bool,
     original: SourceProfile,
     model: Entity<SourceModel>,
     inputs: HashMap<&'static str, Entity<TextInput>>,
@@ -194,6 +203,12 @@ impl SourceForm {
                             .map(str::to_owned)
                             .collect();
                     }
+                    if id == "source-password" {
+                        this.password_edited = true;
+                    }
+                    if id != "source-schema-search" {
+                        this.dirty = true;
+                    }
                     this.last_values.insert(id, value);
                     if id == "source-url" {
                         this.endpoint_mode = 2;
@@ -235,6 +250,9 @@ impl SourceForm {
             .detach();
         }
         Self {
+            embedded: false,
+            dirty: false,
+            password_edited: false,
             ssh_catalog_revision: 0,
             ssh_selected: profile.ssh_configuration_id.clone(),
             ssh_profiles: Vec::new(),
@@ -266,6 +284,39 @@ impl SourceForm {
         }
     }
 
+    pub(super) fn set_embedded(&mut self) {
+        self.embedded = true;
+    }
+    pub(super) fn mark_new(&mut self) {
+        self.dirty = true;
+    }
+    pub(super) fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+    pub(super) fn mark_saved(&mut self, profile: SourceProfile) {
+        self.original = profile;
+        self.dirty = false;
+    }
+
+    pub(super) fn load_session_password(&mut self, cx: &mut Context<Self>) {
+        if self.password_edited {
+            return;
+        }
+        let value = self.model.read(cx).password(&self.original.id);
+        self.last_values.insert("source-password", value.clone());
+        self.inputs["source-password"].update(cx, |input, cx| input.set_value(value, cx));
+    }
+    pub(super) fn base_profile(&self) -> SourceProfile {
+        self.original.clone()
+    }
+
+    pub(super) fn draft_identity(&self, cx: &App) -> (String, DbEngine) {
+        (self.value("source-name", cx), self.engine)
+    }
+    pub(super) fn save_draft(&mut self, cx: &mut Context<Self>) {
+        self.activate("source-save", cx);
+    }
+
     /// Publish persisted metadata without enabling SSH or choosing another session.
     pub(super) fn refresh_ssh_configurations(
         &mut self,
@@ -278,7 +329,16 @@ impl SourceForm {
         });
         self.ssh_profiles = profiles;
         self.ssh_load_error = None;
-        if selected_changed && self.transport == 1 && !self.model.read(cx).saving {
+        if selected_changed
+            && self.transport == 1
+            && !self.model.read(cx).saving
+            && self
+                .model
+                .read(cx)
+                .form_profile
+                .as_ref()
+                .is_some_and(|p| p.id == self.original.id)
+        {
             // Apply invalidates a completed/in-flight test, but never changes the route.
             self.model.update(cx, |model, cx| model.edit_form(cx));
         }
@@ -295,6 +355,7 @@ impl SourceForm {
             return;
         }
         self.ssh_catalog_revision += 1;
+        self.dirty = true;
         self.transport = 1;
         self.ssh_selected = Some(profile.id.clone());
         self.ssh_combo_open = false;
@@ -442,6 +503,7 @@ impl SourceForm {
         if !self.selected_schema_names.remove(&name) {
             self.selected_schema_names.insert(name);
         }
+        self.dirty = true;
         self.model.update(cx, |model, cx| model.edit_form(cx));
         cx.notify();
     }
@@ -635,6 +697,7 @@ impl SourceForm {
         {
             self.inputs["source-color"].update(cx, |input, cx| input.set_value(*value, cx));
             self.last_values.insert("source-color", (*value).to_owned());
+            self.dirty = true;
             self.model.update(cx, |model, cx| model.edit_form(cx));
             cx.notify();
             return;
@@ -675,7 +738,11 @@ impl SourceForm {
             }
             "source-manage-ssh" => {
                 self.ssh_combo_open = false;
-                super::ssh_manager::show(cx.entity(), self.ssh_selected.clone(), cx);
+                if self.embedded {
+                    cx.emit(SourceFormEvent::ManageSsh);
+                } else {
+                    super::ssh_manager::show(cx.entity(), self.ssh_selected.clone(), cx);
+                }
                 return;
             }
             "source-driver" => {
@@ -712,6 +779,10 @@ impl SourceForm {
             "source-schemas-all" => self.schemas_all = true,
             "source-schemas-selected" => self.schemas_all = false,
             "source-cancel" => {
+                if self.embedded {
+                    cx.emit(SourceFormEvent::Cancel);
+                    return;
+                }
                 self.cancel(cx);
                 return;
             }
@@ -763,6 +834,7 @@ impl SourceForm {
             "source-save-password" => self.save_password = !self.save_password,
             _ => return,
         }
+        self.dirty = true;
         self.model.update(cx, |model, cx| model.edit_form(cx));
         cx.notify();
     }
@@ -1552,23 +1624,27 @@ impl Render for SourceForm {
                     this.ssh_combo_open = false;
                     this.tls_open = false;
                     cx.notify();
+                } else if this.embedded {
+                    cx.emit(SourceFormEvent::Cancel);
                 } else {
                     this.cancel(cx);
                 }
             }))
-            .child(
-                div()
-                    .id("source-titlebar")
-                    .debug_selector(|| "source-titlebar".into())
-                    .h(px(34.))
-                    .w_full()
-                    .flex_shrink_0()
-                    .bg(palette.header)
-                    .window_control_area(gpui::WindowControlArea::Drag)
-                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
-                        window.start_window_move()
-                    }),
-            )
+            .when(!self.embedded, |root| {
+                root.child(
+                    div()
+                        .id("source-titlebar")
+                        .debug_selector(|| "source-titlebar".into())
+                        .h(px(34.))
+                        .w_full()
+                        .flex_shrink_0()
+                        .bg(palette.header)
+                        .window_control_area(gpui::WindowControlArea::Drag)
+                        .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                            window.start_window_move()
+                        }),
+                )
+            })
             .child(
                 div()
                     .id("source-identity-header")
@@ -1669,13 +1745,21 @@ impl Render for SourceForm {
                     .justify_between()
                     .gap(px(8.))
                     .child(self.button("source-test", "Test Connection", false, 21, cx))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(8.))
-                            .child(self.button("source-save", "Save", true, 22, cx))
-                            .child(self.button("source-cancel", "Cancel", false, 23, cx)),
-                    ),
+                    .when(!self.embedded, |footer| {
+                        footer.child(
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(self.button(
+                                    "source-save",
+                                    if self.embedded { "Apply" } else { "Save" },
+                                    true,
+                                    22,
+                                    cx,
+                                ))
+                                .child(self.button("source-cancel", "Cancel", false, 23, cx)),
+                        )
+                    }),
             )
     }
 }
@@ -2031,6 +2115,33 @@ mod tests {
             visual.update(|_, app| form.read(app).profile(app).unwrap()),
             profile
         );
+    }
+
+    #[gpui::test]
+    fn schema_and_preset_edits_mark_dirty_and_inactive_session_refresh_does_not_cancel_active_form(
+        cx: &mut TestAppContext,
+    ) {
+        let (form, model, cx) = fixture(cx);
+        assert!(!form.read_with(cx, |f, _| f.is_dirty()));
+        form.update(cx, |f, cx| f.activate("source-color-blue", cx));
+        assert!(form.read_with(cx, |f, _| f.is_dirty()));
+        form.update(cx, |f, _| f.dirty = false);
+        form.update(cx, |f, cx| f.toggle_schema("fixture_schema".into(), cx));
+        assert!(form.read_with(cx, |f, _| f.is_dirty()));
+        let mut session = SshProfile::default();
+        form.update(cx, |f, cx| f.set_ssh_configuration(session.clone(), cx));
+        model.update(cx, |m, cx| {
+            m.form_profile = Some(SourceProfile::default());
+            m.form_busy = true;
+            m.form_feedback = Some("Active source test".into());
+            cx.notify();
+        });
+        session.host = "changed-jump.example".into();
+        form.update(cx, |f, cx| f.refresh_ssh_configurations(vec![session], cx));
+        model.read_with(cx, |m, _| {
+            assert!(m.form_busy);
+            assert_eq!(m.form_feedback.as_deref(), Some("Active source test"));
+        });
     }
 
     #[gpui::test]

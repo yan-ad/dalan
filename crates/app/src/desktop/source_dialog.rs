@@ -1,8 +1,21 @@
-use super::{CloseWindow, source_form::SourceForm, source_model::SourceModel};
+use super::{
+    CloseWindow, Dismiss,
+    icons::{Icon, provider_icon},
+    source_form::{SourceForm, SourceFormEvent},
+    source_model::SourceModel,
+    ssh_manager::{EmbeddedSshEvent, SshManager},
+};
+use dalan_drivers::sources::{DbEngine, SourceProfile};
+use gpui::component::{
+    ActiveTheme, Disableable, Selectable, Sizable,
+    button::{Button, ButtonVariants},
+    list::ListItem,
+};
 use gpui::{
     AnyWindowHandle, App, Bounds, Context, Entity, Global, Subscription, TitlebarOptions,
     WeakEntity, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
+use std::collections::HashMap;
 
 #[derive(Clone)]
 struct DialogSlot {
@@ -10,14 +23,35 @@ struct DialogSlot {
     view: WeakEntity<SourceDialog>,
 }
 impl Global for DialogSlot {}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsPage {
+    Sources,
+    Ssh,
+    Drivers,
+}
+struct SourceDraft {
+    form: Entity<SourceForm>,
+    feedback: Option<String>,
+    databases: Vec<String>,
+}
 
 pub(super) struct SourceDialog {
     model: Entity<SourceModel>,
     form: Entity<SourceForm>,
     generation: u64,
-    _subscription: Subscription,
+    active: String,
+    drafts: HashMap<String, SourceDraft>,
+    order: Vec<String>,
+    page: SettingsPage,
+    ssh: Option<Entity<SshManager>>,
+    driver: DbEngine,
+    confirm_close: bool,
+    removing: Option<String>,
+    ok_pending: bool,
+    confirm_remove: bool,
+    notice: Option<String>,
+    _subscriptions: Vec<Subscription>,
 }
-
 impl SourceDialog {
     pub(super) fn current_window(cx: &App) -> Option<AnyWindowHandle> {
         let slot = cx.try_global::<DialogSlot>()?;
@@ -26,13 +60,43 @@ impl SourceDialog {
             .into_iter()
             .find(|window| *window == slot.window)
     }
-
     #[cfg(all(test, feature = "ui-tests"))]
     pub(super) fn current_view(cx: &App) -> Option<Entity<Self>> {
         Self::current_window(cx)?;
         cx.try_global::<DialogSlot>()?.view.upgrade()
     }
-
+    fn attach_form(
+        &mut self,
+        form: &Entity<SourceForm>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._subscriptions
+            .push(cx.subscribe_in(form, window, |this, _, event, window, cx| {
+                match event {
+                    SourceFormEvent::ManageSsh => {
+                        this.page = SettingsPage::Ssh;
+                    }
+                    SourceFormEvent::Cancel => {
+                        this.close(window, cx);
+                    }
+                }
+                cx.notify();
+            }));
+        self._subscriptions
+            .push(cx.observe(form, |_, _, cx| cx.notify()));
+    }
+    fn make_form(
+        profile: SourceProfile,
+        model: Entity<SourceModel>,
+        cx: &mut Context<Self>,
+    ) -> Entity<SourceForm> {
+        cx.new(|cx| {
+            let mut form = SourceForm::new(profile, model, cx);
+            form.set_embedded();
+            form
+        })
+    }
     fn new(model: Entity<SourceModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let profile = model
             .read(cx)
@@ -40,64 +104,689 @@ impl SourceDialog {
             .clone()
             .expect("source dialog requires a draft");
         let generation = model.read(cx).form_generation;
-        let form = cx.new(|cx| SourceForm::new(profile, model.clone(), cx));
-        form.read(cx).preferred_first_focus(cx).focus(window, cx);
-        let subscription = cx.observe_in(&model, window, |this, _, window, cx| {
-            let model = this.model.read(cx);
-            if !model.form_open {
-                window.remove_window();
-                return;
-            }
-            if model.form_generation != this.generation {
-                let profile = model
-                    .form_profile
-                    .clone()
-                    .expect("open source dialog has draft");
-                this.generation = model.form_generation;
-                let model = this.model.clone();
-                this.form = cx.new(|cx| SourceForm::new(profile, model, cx));
-                this.form
-                    .read(cx)
-                    .preferred_first_focus(cx)
-                    .focus(window, cx);
-            }
-            cx.notify();
-        });
-        let close_model = model.clone();
-        window.on_window_should_close(cx, move |_, app| {
-            close_model.update(app, |model, cx| {
-                if model.saving {
-                    return false;
-                }
-                model.close_form(cx);
-                true
-            })
-        });
-        Self {
-            model,
-            form,
+        let form = Self::make_form(profile.clone(), model.clone(), cx);
+        let active = profile.id.clone();
+        let mut this = Self {
+            model: model.clone(),
+            form: form.clone(),
             generation,
-            _subscription: subscription,
+            active: active.clone(),
+            drafts: HashMap::new(),
+            order: vec![active.clone()],
+            page: SettingsPage::Sources,
+            ssh: None,
+            driver: profile.engine,
+            confirm_close: false,
+            removing: None,
+            ok_pending: false,
+            confirm_remove: false,
+            notice: None,
+            _subscriptions: vec![],
+        };
+        this.drafts.insert(
+            active,
+            SourceDraft {
+                form: form.clone(),
+                feedback: None,
+                databases: model.read(cx).form_databases.clone(),
+            },
+        );
+        this.attach_form(&form, window, cx);
+        model.update(cx, |m, _| m.form_keep_open = true);
+        form.read(cx).preferred_first_focus(cx).focus(window, cx);
+        this._subscriptions
+            .push(cx.observe_in(&model, window, |this, _, window, cx| {
+                if !this.model.read(cx).form_open {
+                    window.remove_window();
+                    return;
+                }
+                if let Some(id) = this.removing.clone()
+                    && !this.model.read(cx).saving
+                {
+                    if !this.model.read(cx).profiles.iter().any(|p| p.id == id) {
+                        this.removing = None;
+                        this.notice = None;
+                        this.discard_active(window, cx);
+                    } else if this.model.read(cx).error.is_some() {
+                        this.removing = None;
+                        this.notice = this.model.read(cx).error.clone();
+                    }
+                }
+                let generation = this.model.read(cx).form_generation;
+                if generation != this.generation {
+                    this.generation = generation;
+                    let profile = this.model.read(cx).form_profile.clone().expect("open form");
+                    if profile.id == this.active {
+                        let saved = this.model.read(cx).form_saved_generation == generation;
+                        this.form.update(cx, |f, cx| {
+                            if saved {
+                                f.mark_saved(profile.clone());
+                            } else {
+                                f.load_session_password(cx);
+                            }
+                        });
+                    } else {
+                        this.install(profile, window, cx);
+                    }
+                    if this.ok_pending && !this.model.read(cx).saving {
+                        this.ok_pending = false;
+                        if this.form.read(cx).is_dirty() {
+                            cx.notify();
+                        } else {
+                            this.close(window, cx);
+                        }
+                    }
+                }
+                if this.ok_pending
+                    && !this.model.read(cx).saving
+                    && this
+                        .model
+                        .read(cx)
+                        .form_feedback
+                        .as_ref()
+                        .is_some_and(|f| f.starts_with("Not saved:") || f.contains("unavailable"))
+                {
+                    this.ok_pending = false;
+                }
+                cx.notify();
+            }));
+        let weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, app| {
+            weak.update(app, |this, cx| {
+                this.close(window, cx);
+                false
+            })
+            .unwrap_or(true)
+        });
+        this
+    }
+    fn blocked(&self, cx: &App) -> bool {
+        self.model.read(cx).saving
+            || self
+                .ssh
+                .as_ref()
+                .is_some_and(|ssh| ssh.read(cx).is_saving())
+    }
+    fn snapshot_active(&mut self, cx: &App) {
+        if let Some(draft) = self.drafts.get_mut(&self.active) {
+            draft.feedback = if self.model.read(cx).form_busy {
+                None
+            } else {
+                self.model.read(cx).form_feedback.clone()
+            };
+            draft.databases = self.model.read(cx).form_databases.clone();
         }
     }
-
-    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.read(cx).saving {
+    fn install(&mut self, profile: SourceProfile, window: &mut Window, cx: &mut Context<Self>) {
+        self.active = profile.id.clone();
+        if !self.drafts.contains_key(&profile.id) {
+            let form = Self::make_form(profile.clone(), self.model.clone(), cx);
+            self.attach_form(&form, window, cx);
+            self.order.push(profile.id.clone());
+            self.drafts.insert(
+                profile.id.clone(),
+                SourceDraft {
+                    form,
+                    feedback: None,
+                    databases: self.model.read(cx).form_databases.clone(),
+                },
+            );
+        }
+        self.form = self.drafts[&profile.id].form.clone();
+        if let Some(ssh) = &self.ssh {
+            ssh.update(cx, |ssh, cx| ssh.set_owner(self.form.clone(), cx));
+        }
+        self.form
+            .read(cx)
+            .preferred_first_focus(cx)
+            .focus(window, cx);
+    }
+    fn select(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
             return;
         }
-        self.model.update(cx, |model, cx| model.close_form(cx));
+        self.page = SettingsPage::Sources;
+        if id == self.active {
+            cx.notify();
+            return;
+        }
+        self.snapshot_active(cx);
+        let profile = self
+            .drafts
+            .get(&id)
+            .map(|d| d.form.read(cx).base_profile())
+            .or_else(|| {
+                self.model
+                    .read(cx)
+                    .profiles
+                    .iter()
+                    .find(|p| p.id == id)
+                    .cloned()
+            });
+        let Some(profile) = profile else {
+            return;
+        };
+        self.model
+            .update(cx, |m, cx| m.navigate_form(profile.clone(), cx));
+        self.generation = self.model.read(cx).form_generation;
+        self.install(profile, window, cx);
+        if let Some(draft) = self.drafts.get(&id) {
+            let feedback = draft.feedback.clone();
+            let databases = draft.databases.clone();
+            self.model.update(cx, |m, cx| {
+                m.form_feedback = feedback;
+                m.form_databases = databases;
+                cx.notify();
+            });
+        }
+        self.confirm_remove = false;
+        self.notice = None;
+        cx.notify();
+    }
+    fn add(&mut self, copy: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
+            return;
+        }
+        let saved = self.model.read(cx).profiles.len();
+        let unsaved = self
+            .drafts
+            .keys()
+            .filter(|id| !self.model.read(cx).profiles.iter().any(|p| &p.id == *id))
+            .count();
+        if saved + unsaved >= 100 {
+            self.notice = Some("The limit of 100 sources has been reached.".into());
+            cx.notify();
+            return;
+        }
+        let mut profile = if copy {
+            match self.form.read(cx).profile(cx) {
+                Ok(p) => p,
+                Err(e) => {
+                    self.notice = Some(format!("Fix the draft before duplicating: {e}"));
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            SourceProfile::default()
+        };
+        if copy {
+            profile.id = uuid::Uuid::new_v4().to_string();
+            profile.name = format!("{} copy", profile.name);
+            while profile.name.len() > 256 {
+                profile.name.pop();
+            }
+            profile.save_password = false;
+        }
+        self.snapshot_active(cx);
+        self.model
+            .update(cx, |m, cx| m.navigate_form(profile.clone(), cx));
+        self.generation = self.model.read(cx).form_generation;
+        self.install(profile, window, cx);
+        self.form.update(cx, |f, _| f.mark_new());
+        self.page = SettingsPage::Sources;
+        self.notice = None;
+        cx.notify();
+    }
+    fn remove(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
+            return;
+        }
+        if !self.confirm_remove {
+            self.confirm_remove = true;
+            cx.notify();
+            return;
+        }
+        let id = self.active.clone();
+        if self.model.read(cx).profiles.iter().any(|p| p.id == id) {
+            self.model.update(cx, |m, cx| {
+                m.delete_confirm = false;
+                m.request_delete_source(id.clone(), cx);
+                m.confirm_delete(cx);
+            });
+            if !self.model.read(cx).saving {
+                self.notice = Some("Source storage is unavailable; nothing was removed.".into());
+                self.confirm_remove = false;
+                cx.notify();
+                return;
+            }
+            self.removing = Some(id);
+            self.notice = Some("Removing source settings and credentials…".into());
+            self.confirm_remove = false;
+            cx.notify();
+            return;
+        }
+        self.discard_active(window, cx);
+    }
+    fn discard_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.active.clone();
+        self.drafts.remove(&id);
+        self.order.retain(|x| x != &id);
+        self.confirm_remove = false;
+        let next = self
+            .model
+            .read(cx)
+            .profiles
+            .first()
+            .map(|p| p.id.clone())
+            .or_else(|| self.order.first().cloned());
+        if let Some(next) = next {
+            self.active.clear();
+            self.select(next, window, cx);
+        } else {
+            self.add(false, window, cx);
+        }
+    }
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
+            return;
+        }
+        let dirty = self.drafts.values().any(|d| d.form.read(cx).is_dirty())
+            || self
+                .ssh
+                .as_ref()
+                .is_some_and(|s| s.read(cx).has_unsaved_changes(cx));
+        if dirty {
+            self.confirm_close = true;
+            cx.notify();
+            return;
+        }
+        self.finish_close(window, cx);
+    }
+    fn finish_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
+            return;
+        }
+        self.model.update(cx, |m, cx| {
+            m.form_keep_open = false;
+            m.close_form(cx);
+        });
         window.remove_window();
+    }
+    fn ensure_ssh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ssh.is_some() {
+            return;
+        }
+        let ssh = cx.new(|cx| SshManager::embedded(self.form.clone(), window, cx));
+        self._subscriptions
+            .push(cx.subscribe(&ssh, |this, ssh, event, cx| {
+                if matches!(event, EmbeddedSshEvent::Saved) {
+                    for draft in this.drafts.values() {
+                        ssh.update(cx, |ssh, cx| ssh.set_owner(draft.form.clone(), cx));
+                    }
+                    ssh.update(cx, |ssh, cx| ssh.set_owner(this.form.clone(), cx));
+                } else {
+                    this.page = SettingsPage::Sources;
+                    if matches!(event, EmbeddedSshEvent::Cancel) {
+                        this.ssh = None;
+                    }
+                }
+                cx.notify();
+            }));
+        self._subscriptions
+            .push(cx.observe(&ssh, |_, _, cx| cx.notify()));
+        self.ssh = Some(ssh);
+    }
+    fn page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
+            return;
+        }
+        self.page = page;
+        cx.notify();
+    }
+    fn drivers(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut list = div()
+            .w(px(210.))
+            .flex_shrink_0()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2();
+        for (index, engine) in [DbEngine::MySql, DbEngine::MariaDb].into_iter().enumerate() {
+            list = list.child(
+                ListItem::new(index)
+                    .debug_selector(move || format!("settings-driver-{index}"))
+                    .selected(self.driver == engine)
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(provider_icon(engine))
+                            .child(format!("{engine:?}")),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.driver = engine;
+                        cx.notify();
+                    })),
+            );
+        }
+        div().id("settings-drivers").debug_selector(||"settings-drivers".into()).size_full().flex()
+            .child(list).child(div().flex_1().min_w_0().p_5().flex().flex_col().gap_3()
+            .child(format!("{:?} driver",self.driver)).child("Native MySQL wire protocol · Experimental")
+            .child("MySQL and MariaDB connections support read-only query execution, table browsing, TLS and saved SSH sessions.")
+            .child("Drivers are built into Dalan. There are no JDBC libraries to download or editable driver-class settings.")
+            .child("PostgreSQL, MongoDB and Redis executors are not implemented."))
     }
 }
 impl Render for SourceDialog {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.page == SettingsPage::Ssh {
+            self.ensure_ssh(window, cx);
+        }
+        let blocked = self.blocked(cx);
+        let mut rail = div()
+            .id("settings-icon-rail")
+            .debug_selector(|| "settings-icon-rail".into())
+            .w(px(48.))
+            .flex_shrink_0()
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .py_2()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_2();
+        for (id, label, page, icon) in [
+            (
+                "settings-sources",
+                "Data Sources",
+                SettingsPage::Sources,
+                Icon::Database,
+            ),
+            (
+                "settings-ssh",
+                "SSH Sessions",
+                SettingsPage::Ssh,
+                Icon::ReadOnly,
+            ),
+            (
+                "settings-driver-page",
+                "Drivers",
+                SettingsPage::Drivers,
+                Icon::Manage,
+            ),
+        ] {
+            rail = rail.child(
+                Button::new(id)
+                    .debug_selector(move || id.into())
+                    .icon(icon.kit_name())
+                    .tooltip(label)
+                    .ghost()
+                    .selected(self.page == page)
+                    .disabled(blocked)
+                    .on_click(cx.listener(move |this, _, _, cx| this.page(page, cx))),
+            );
+        }
+        let mut sidebar = div()
+            .id("settings-source-list")
+            .debug_selector(|| "settings-source-list".into())
+            .w(px(228.))
+            .flex_shrink_0()
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .h(px(40.))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .child("Data Sources"),
+            );
+        let mut toolbar = div().h(px(34.)).px_2().flex().gap_1();
+        for (id, label, icon, action) in [
+            ("settings-add-source", "Add source (Cmd-N)", Icon::Add, 0),
+            ("settings-remove-source", "Remove source", Icon::Remove, 1),
+            (
+                "settings-copy-source",
+                "Duplicate source (Cmd-D)",
+                Icon::Cached,
+                2,
+            ),
+        ] {
+            toolbar = toolbar.child(
+                Button::new(id)
+                    .debug_selector(move || id.into())
+                    .icon(icon.kit_name())
+                    .tooltip(label)
+                    .ghost()
+                    .small()
+                    .disabled(blocked)
+                    .on_click(cx.listener(move |this, _, window, cx| match action {
+                        0 => this.add(false, window, cx),
+                        1 => this.remove(window, cx),
+                        _ => this.add(true, window, cx),
+                    })),
+            );
+        }
+        sidebar = sidebar.child(toolbar).child(
+            div()
+                .px_3()
+                .py_2()
+                .text_color(cx.theme().muted_foreground)
+                .child("Saved Sources"),
+        );
+        let mut rows = div()
+            .id("settings-source-rows")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px_2()
+            .flex()
+            .flex_col()
+            .gap_1();
+        let mut ids = self
+            .model
+            .read(cx)
+            .profiles
+            .iter()
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>();
+        for id in &self.order {
+            if !ids.contains(id) {
+                ids.push(id.clone());
+            }
+        }
+        for (index, id) in ids.iter().enumerate() {
+            let (name, engine, dirty) = if let Some(d) = self.drafts.get(id) {
+                let (n, e) = d.form.read(cx).draft_identity(cx);
+                (n, e, d.form.read(cx).is_dirty())
+            } else {
+                let p = self
+                    .model
+                    .read(cx)
+                    .profiles
+                    .iter()
+                    .find(|p| &p.id == id)
+                    .unwrap();
+                (p.name.clone(), p.engine, false)
+            };
+            let unsaved = !self.model.read(cx).profiles.iter().any(|p| &p.id == id);
+            let label = format!(
+                "{}{}",
+                if name.is_empty() { "New source" } else { &name },
+                if dirty || unsaved { " •" } else { "" }
+            );
+            let id = id.clone();
+            rows = rows.child(
+                ListItem::new(index)
+                    .debug_selector(move || format!("settings-source-{index}"))
+                    .selected(self.active == id)
+                    .disabled(blocked)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .child(provider_icon(engine))
+                            .child(div().flex_1().min_w_0().text_ellipsis().child(label)),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.select(id.clone(), window, cx)),
+                    ),
+            );
+        }
+        sidebar = sidebar.child(rows);
+        let content = match self.page {
+            SettingsPage::Sources => self.form.clone().into_any_element(),
+            SettingsPage::Ssh => self.ssh.as_ref().unwrap().clone().into_any_element(),
+            SettingsPage::Drivers => self.drivers(cx).into_any_element(),
+        };
+        let mut root = div()
             .id("source-dialog")
             .debug_selector(|| "source-dialog".into())
             .key_context("SourceDialog")
             .size_full()
+            .flex()
+            .flex_col()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
             .on_action(cx.listener(|this, _: &CloseWindow, window, cx| this.close(window, cx)))
-            .child(self.form.clone())
+            .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.close(window, cx)))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.platform && !event.is_held {
+                    match event.keystroke.key.as_str() {
+                        "n" => {
+                            this.add(false, window, cx);
+                            cx.stop_propagation();
+                        }
+                        "d" => {
+                            this.add(true, window, cx);
+                            cx.stop_propagation();
+                        }
+                        "s" => {
+                            if this.page == SettingsPage::Sources && !this.blocked(cx) {
+                                this.form.update(cx, |f, cx| f.save_draft(cx));
+                            }
+                            cx.stop_propagation();
+                        }
+                        _ => {}
+                    }
+                }
+            }))
+            .child(
+                div()
+                    .id("source-titlebar")
+                    .debug_selector(|| "source-titlebar".into())
+                    .h(px(34.))
+                    .flex_shrink_0()
+                    .pl(px(96.))
+                    .flex()
+                    .items_center()
+                    .child("Data Sources and Drivers")
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                        window.start_window_move()
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(rail)
+                    .when(self.page == SettingsPage::Sources, |body| {
+                        body.child(sidebar)
+                    })
+                    .child(div().flex_1().min_w_0().min_h_0().child(content)),
+            );
+        root = root.child(
+            div()
+                .id("settings-footer")
+                .debug_selector(|| "settings-footer".into())
+                .h(px(48.))
+                .flex_shrink_0()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .px_4()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("source-cancel")
+                        .debug_selector(|| "source-cancel".into())
+                        .label("Cancel")
+                        .disabled(blocked)
+                        .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+                )
+                .child(
+                    Button::new("source-save")
+                        .debug_selector(|| "source-save".into())
+                        .label("Apply")
+                        .disabled(blocked || self.page == SettingsPage::Drivers)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.page == SettingsPage::Ssh {
+                                if let Some(ssh) = &this.ssh {
+                                    ssh.update(cx, |s, cx| s.apply_settings(window, cx));
+                                }
+                            } else {
+                                this.form.update(cx, |f, cx| f.save_draft(cx));
+                            }
+                        })),
+                )
+                .child(
+                    Button::new("settings-ok")
+                        .debug_selector(|| "settings-ok".into())
+                        .label("OK")
+                        .primary()
+                        .disabled(blocked)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.page == SettingsPage::Sources
+                                && (this.form.read(cx).is_dirty()
+                                    || !this
+                                        .model
+                                        .read(cx)
+                                        .profiles
+                                        .iter()
+                                        .any(|p| p.id == this.active))
+                            {
+                                this.ok_pending = true;
+                                this.form.update(cx, |f, cx| f.save_draft(cx));
+                                if !this.model.read(cx).saving {
+                                    this.ok_pending = false;
+                                }
+                            } else {
+                                this.close(window, cx);
+                            }
+                        })),
+                ),
+        );
+        if let Some(notice) = &self.notice {
+            root = root.child(div().p_2().child(notice.clone()));
+        }
+        if self.confirm_remove {
+            root=root.child(div().p_2().flex().gap_2().child("Remove this source and its saved credentials? Database objects are not changed.").child(Button::new("settings-confirm-remove").debug_selector(||"settings-confirm-remove".into()).label("Remove").disabled(blocked).on_click(cx.listener(|this,_,window,cx|this.remove(window,cx)))).child(Button::new("settings-keep-source").label("Keep").on_click(cx.listener(|this,_,_,cx|{this.confirm_remove=false;cx.notify();}))));
+        }
+        if self.confirm_close {
+            root = root.child(
+                div()
+                    .p_2()
+                    .flex()
+                    .gap_2()
+                    .child("Close settings and discard unapplied drafts?")
+                    .child(
+                        Button::new("settings-discard-close")
+                            .debug_selector(|| "settings-discard-close".into())
+                            .label("Discard and close")
+                            .disabled(blocked)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.finish_close(window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("settings-keep-editing")
+                            .debug_selector(|| "settings-keep-editing".into())
+                            .label("Keep editing")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.confirm_close = false;
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+        root
     }
 }
 
@@ -109,11 +798,11 @@ pub(super) fn show(model: Entity<SourceModel>, cx: &mut App) {
         let _ = handle.update(cx, |_, window, _| window.activate_window());
         return;
     }
-    let bounds = Bounds::centered(None, size(px(1040.0), px(760.0)), cx);
+    let bounds = Bounds::centered(None, size(px(1160.0), px(760.0)), cx);
     match gpui::open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(780.0), px(560.0))),
+            window_min_size: Some(size(px(1040.0), px(560.0))),
             window_background: gpui::WindowBackgroundAppearance::Opaque,
             titlebar: Some(TitlebarOptions {
                 title: Some("".into()),
@@ -215,6 +904,214 @@ mod tests {
     }
 
     #[gpui::test]
+    fn list_navigation_retains_invalid_drafts_passwords_color_and_does_not_select_browser(
+        cx: &mut TestAppContext,
+    ) {
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        let original = handle.update(cx, |d, _, _| d.active.clone()).unwrap();
+        edit(&mut visual, "source-name", "First draft");
+        edit(&mut visual, "source-password", "fixture secret");
+        edit(&mut visual, "source-port", "invalid");
+        click(&mut visual, "source-color-menu");
+        click(&mut visual, "source-color-blue");
+        click(&mut visual, "settings-add-source");
+        let second = handle.update(cx, |d, _, _| d.active.clone()).unwrap();
+        assert_ne!(second, original);
+        edit(&mut visual, "source-name", "Second draft");
+        click(&mut visual, "settings-source-0");
+        handle
+            .update(cx, |d, _, app| {
+                assert_eq!(d.active, original);
+                assert_eq!(d.form.read(app).draft_identity(app).0, "First draft");
+                assert_eq!(d.form.read(app).password(app), "fixture secret");
+                assert!(d.form.read(app).profile(app).is_err());
+            })
+            .unwrap();
+        edit(&mut visual, "source-port", "3306");
+        handle
+            .update(cx, |d, _, app| {
+                assert_eq!(
+                    d.form.read(app).profile(app).unwrap().color.as_deref(),
+                    Some("#8AB4F8")
+                )
+            })
+            .unwrap();
+        click(&mut visual, "settings-source-1");
+        handle
+            .update(cx, |d, _, app| {
+                assert_eq!(d.active, second);
+                assert_eq!(d.form.read(app).draft_identity(app).0, "Second draft");
+                assert!(d.form.read(app).password(app).is_empty());
+            })
+            .unwrap();
+        model.read_with(cx, |m, _| {
+            assert!(m.profiles.is_empty());
+            assert!(m.selected_source.is_none());
+        });
+        visual.simulate_keystrokes("cmd-w");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("settings-discard-close").is_some());
+        visual.simulate_keystrokes("cmd-w");
+        visual.run_until_parked();
+        assert!(model.read_with(cx, |m, _| m.form_open));
+        click(&mut visual, "settings-discard-close");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn source_shortcuts_duplicate_without_password_and_remove_requires_confirmation(
+        cx: &mut TestAppContext,
+    ) {
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        edit(&mut visual, "source-name", "Fixture");
+        edit(&mut visual, "source-password", "fixture secret");
+        visual.simulate_keystrokes("cmd-d");
+        visual.run_until_parked();
+        handle
+            .update(cx, |d, _, app| {
+                assert_eq!(d.drafts.len(), 2);
+                assert_eq!(d.form.read(app).profile(app).unwrap().name, "Fixture copy");
+                assert!(d.form.read(app).password(app).is_empty());
+                assert!(!d.form.read(app).profile(app).unwrap().save_password);
+            })
+            .unwrap();
+        click(&mut visual, "settings-remove-source");
+        handle
+            .update(cx, |d, _, _| assert_eq!(d.drafts.len(), 2))
+            .unwrap();
+        click(&mut visual, "settings-confirm-remove");
+        handle
+            .update(cx, |d, _, app| {
+                assert_eq!(d.drafts.len(), 1);
+                assert_eq!(d.form.read(app).draft_identity(app).0, "Fixture");
+            })
+            .unwrap();
+        visual.simulate_keystrokes("cmd-n");
+        visual.run_until_parked();
+        handle
+            .update(cx, |d, _, _| assert_eq!(d.drafts.len(), 2))
+            .unwrap();
+        edit(&mut visual, "source-port", "invalid");
+        visual.simulate_keystrokes("cmd-s");
+        visual.run_until_parked();
+        assert!(model.read_with(cx, |m, _| !m.saving && m.form_feedback.is_some()));
+        click(&mut visual, "source-cancel");
+        click(&mut visual, "settings-discard-close");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn side_rail_embeds_ssh_and_driver_pages_without_new_window(cx: &mut TestAppContext) {
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        edit(&mut visual, "source-name", "Retained source");
+        let form_id = handle.update(cx, |d, _, _| d.form.entity_id()).unwrap();
+        click(&mut visual, "settings-ssh");
+        assert_eq!(cx.update(|app| app.windows().len()), 1);
+        assert!(visual.debug_bounds("ssh-manager").is_some());
+        assert!(visual.debug_bounds("settings-source-list").is_none());
+        click(&mut visual, "settings-driver-page");
+        assert!(visual.debug_bounds("settings-drivers").is_some());
+        click(&mut visual, "settings-driver-1");
+        handle
+            .update(cx, |d, _, _| assert_eq!(d.driver, DbEngine::MariaDb))
+            .unwrap();
+        click(&mut visual, "settings-sources");
+        handle
+            .update(cx, |d, _, app| {
+                assert_eq!(d.form.entity_id(), form_id);
+                assert_eq!(d.form.read(app).draft_identity(app).0, "Retained source");
+            })
+            .unwrap();
+        click(&mut visual, "source-tab-ssh");
+        click(&mut visual, "source-manage-ssh");
+        assert!(visual.debug_bounds("ssh-manager").is_some());
+        assert_eq!(cx.update(|app| app.windows().len()), 1);
+        click(&mut visual, "settings-sources");
+        click(&mut visual, "source-cancel");
+        click(&mut visual, "settings-discard-close");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn password_load_generation_never_marks_pending_password_or_preset_as_saved(
+        cx: &mut TestAppContext,
+    ) {
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        edit(&mut visual, "source-password", "fixture secret");
+        model.update(cx, |m, cx| {
+            let profile = m.form_profile.clone().unwrap();
+            m.profiles.push(profile);
+            m.form_generation += 1;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        handle
+            .update(cx, |d, _, app| {
+                assert!(d.form.read(app).is_dirty());
+                assert_eq!(d.form.read(app).password(app), "fixture secret");
+            })
+            .unwrap();
+        click(&mut visual, "source-color-menu");
+        click(&mut visual, "source-color-green");
+        handle
+            .update(cx, |d, _, app| assert!(d.form.read(app).is_dirty()))
+            .unwrap();
+        click(&mut visual, "source-cancel");
+        click(&mut visual, "settings-discard-close");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn apply_acknowledgement_stays_open_and_navigation_is_guarded_while_saving(
+        cx: &mut TestAppContext,
+    ) {
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        edit(&mut visual, "source-name", "Applied fixture");
+        let profile = handle
+            .update(cx, |d, _, app| d.form.read(app).profile(app).unwrap())
+            .unwrap();
+        let form_id = handle.update(cx, |d, _, _| d.form.entity_id()).unwrap();
+        model.update(cx, |m, cx| {
+            m.saving = true;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        click(&mut visual, "settings-add-source");
+        click(&mut visual, "settings-ssh");
+        handle
+            .update(cx, |d, _, _| {
+                assert_eq!(d.form.entity_id(), form_id);
+                assert_eq!(d.drafts.len(), 1);
+                assert!(d.page == SettingsPage::Sources);
+            })
+            .unwrap();
+        model.update(cx, |m, cx| {
+            m.saving = false;
+            m.form_busy = false;
+            m.profiles.push(profile.clone());
+            m.form_profile = Some(profile);
+            m.form_generation += 1;
+            m.form_saved_generation = m.form_generation;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        handle
+            .update(cx, |d, _, app| {
+                assert_eq!(d.form.entity_id(), form_id);
+                assert!(!d.form.read(app).is_dirty());
+            })
+            .unwrap();
+        assert_eq!(cx.update(|app| app.windows().len()), 1);
+        click(&mut visual, "settings-ok");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
     fn native_titlebar_precedes_persistent_identity_and_tabs(cx: &mut TestAppContext) {
         // GPUI's test window does not expose native titlebar metadata. Check only
         // the production show() definition, never the assertion's own literals.
@@ -228,17 +1125,17 @@ mod tests {
             .unwrap();
         assert!(show.contains("title: Some(\"\".into())"));
         assert!(show.contains("appears_transparent: true"));
-        assert!(show.contains("window_min_size: Some(size(px(780.0), px(560.0)))"));
+        assert!(show.contains("window_min_size: Some(size(px(1040.0), px(560.0)))"));
         assert!(show.contains("window_background: gpui::WindowBackgroundAppearance::Opaque"));
-        assert!(!show.contains("Data Sources"));
+        assert!(!show.contains("JDBC"));
         assert!(!show.contains("Dalan"));
 
         let model = new_model(cx);
         let (_, mut visual) = open(&model, cx);
         visual.update(|window, _| {
-            assert_eq!(window.bounds().size, size(px(1040.), px(760.)));
+            assert_eq!(window.bounds().size, size(px(1160.), px(760.)));
         });
-        for viewport in [size(px(1040.), px(760.)), size(px(780.), px(560.))] {
+        for viewport in [size(px(1160.), px(760.)), size(px(1040.), px(560.))] {
             visual.simulate_resize(viewport);
             visual.run_until_parked();
             let titlebar = visual.debug_bounds("source-titlebar").unwrap();
@@ -248,9 +1145,10 @@ mod tests {
             let bar = visual.debug_bounds("source-tab-bar").unwrap();
             assert_eq!(identity.top(), titlebar.bottom());
             assert_eq!(bar.top(), identity.bottom());
-            assert_eq!(bar.size, size(viewport.width, px(34.)));
+            assert_eq!(bar.size.height, px(34.));
+            assert_eq!(bar.left(), px(276.));
             assert!(visual.debug_bounds("source-name").unwrap().top() >= titlebar.bottom());
-            let mut right = px(16.);
+            let mut right = px(292.);
             for id in [
                 "source-tab-general",
                 "source-tab-options",
@@ -270,6 +1168,12 @@ mod tests {
             }
         }
         visual.simulate_keystrokes("cmd-w");
+        visual.run_until_parked();
+        if model.read_with(cx, |m, _| m.form_open)
+            && visual.debug_bounds("settings-discard-close").is_some()
+        {
+            click(&mut visual, "settings-discard-close");
+        }
         assert_closed(&model, cx);
     }
 
@@ -316,6 +1220,12 @@ mod tests {
                 .unwrap();
         }
         visual.simulate_keystrokes("cmd-w");
+        visual.run_until_parked();
+        if model.read_with(cx, |m, _| m.form_open)
+            && visual.debug_bounds("settings-discard-close").is_some()
+        {
+            click(&mut visual, "settings-discard-close");
+        }
         assert_closed(&model, cx);
     }
 
@@ -323,7 +1233,7 @@ mod tests {
     fn minimum_dialog_keeps_aligned_editors_footer_and_local_validation(cx: &mut TestAppContext) {
         let model = new_model(cx);
         let (_, mut visual) = open(&model, cx);
-        visual.simulate_resize(size(px(780.), px(560.)));
+        visual.simulate_resize(size(px(1040.), px(560.)));
         visual.run_until_parked();
         edit(&mut visual, "source-port", "not-a-port");
         for tab in [
@@ -336,15 +1246,13 @@ mod tests {
             let body = visual.debug_bounds("source-form-body").unwrap();
             assert!(body.size.width <= px(720.));
             assert!(body.left() >= px(16.));
-            assert!(body.right() <= px(764.));
+            assert!(body.right() <= px(1024.));
             let footer = visual.debug_bounds("source-form-footer").unwrap();
             assert!(footer.bottom() <= px(560.));
             assert!(footer.top() >= px(34.));
-            for id in ["source-test", "source-save", "source-cancel"] {
-                let button = visual.debug_bounds(id).unwrap();
-                assert!(button.top() >= footer.top());
-                assert!(button.bottom() <= footer.bottom());
-            }
+            let button = visual.debug_bounds("source-test").unwrap();
+            assert!(button.top() >= footer.top());
+            assert!(button.bottom() <= footer.bottom());
             if tab == "source-tab-options" {
                 let mut left = None;
                 for id in [
@@ -371,6 +1279,12 @@ mod tests {
             );
         });
         visual.simulate_keystrokes("cmd-w");
+        visual.run_until_parked();
+        if model.read_with(cx, |m, _| m.form_open)
+            && visual.debug_bounds("settings-discard-close").is_some()
+        {
+            click(&mut visual, "settings-discard-close");
+        }
         assert_closed(&model, cx);
     }
 
@@ -379,7 +1293,7 @@ mod tests {
         let model = new_model(cx);
         let (handle, mut visual) = open(&model, cx);
         visual.update(|window, _| {
-            assert_eq!(window.bounds().size, size(px(1040.), px(760.)));
+            assert_eq!(window.bounds().size, size(px(1160.), px(760.)));
         });
         for id in [
             "source-dialog",
@@ -416,6 +1330,12 @@ mod tests {
             })
             .unwrap();
         visual.simulate_keystrokes("cmd-w");
+        visual.run_until_parked();
+        if model.read_with(cx, |m, _| m.form_open)
+            && visual.debug_bounds("settings-discard-close").is_some()
+        {
+            click(&mut visual, "settings-discard-close");
+        }
         assert_closed(&model, cx);
     }
 
@@ -510,11 +1430,11 @@ mod tests {
         visual.run_until_parked();
         handle
             .update(cx, |dialog, _, app| {
-                assert_ne!(dialog.form.entity_id(), form.entity_id());
+                assert_eq!(dialog.form.entity_id(), form.entity_id());
                 assert_eq!(dialog.generation, model.read(app).form_generation);
                 assert_eq!(
                     dialog.form.read(app).profile(app).unwrap().name,
-                    "Refreshed draft"
+                    "Edited draft"
                 );
             })
             .unwrap();
@@ -556,6 +1476,12 @@ mod tests {
         model.update(cx, |model, cx| model.new_source(cx));
         let (_, mut visual) = open(&model, cx);
         visual.simulate_keystrokes("cmd-w");
+        visual.run_until_parked();
+        if model.read_with(cx, |m, _| m.form_open)
+            && visual.debug_bounds("settings-discard-close").is_some()
+        {
+            click(&mut visual, "settings-discard-close");
+        }
         assert_closed(&model, cx);
     }
 }
