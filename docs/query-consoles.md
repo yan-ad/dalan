@@ -1,6 +1,6 @@
 # Workspace tabs and read-only query consoles
 
-Status: experimental five-engine native database workspace. MySQL/MariaDB/PostgreSQL consoles accept restricted single SELECTs; MongoDB accepts a restricted JSON find object and Redis an allowlisted JSON command array. This is not arbitrary SQL/shell execution, a write editor or a full DataGrip replacement. See the [native support matrix](native-drivers.md) for engine-specific limits and evidence. See [ADR 0004](adr/0004-workspace-tabs-and-read-only-consoles.md), [MySQL source setup](mysql-sources.md) and [testing](testing.md#workspace-tabs-and-query-consoles).
+Status: experimental five-engine native database workspace. MySQL/MariaDB/PostgreSQL consoles accept restricted single SELECTs; MongoDB accepts a restricted JSON find object and Redis an allowlisted JSON command array. These consoles are not arbitrary SQL/shell execution or write editors. The separate [staged SQL table-editing path](table-editing.md) does not broaden console policy; this is not a full DataGrip replacement. See the [native support matrix](native-drivers.md) for engine-specific limits and evidence. See [ADR 0004](adr/0004-workspace-tabs-and-read-only-consoles.md), [MySQL source setup](mysql-sources.md) and [testing](testing.md#workspace-tabs-and-query-consoles).
 
 ## Open and switch tabs
 
@@ -48,7 +48,7 @@ At 800 px available toolbar width, safe tools move into **More** and source sele
 
 ## Close and discard
 
-Closing an active tab selects its left neighbor, or the first remaining tab if there is no left neighbor. Closing an inactive tab does not change active selection. Closing a tab cancels only that tab's owned requests; late completions cannot install results into another tab.
+Closing an active tab selects its left neighbor, or the first remaining tab if there is no left neighbor. Closing an inactive tab does not change active selection. Pending table edits require Keep Open/Discard and in-flight table Apply blocks close/cancel; see [write lifecycle guards](table-editing.md#unknown-outcomes-and-target-changes). Otherwise, closing a tab cancels only that tab's owned read requests; late completions cannot install results into another tab.
 
 Any **nonempty console draft is unsaved**, even if it has already run successfully. Close x/Cmd-W asks **Keep Open** or **Discard**. Keep Open has default focus; both choices support mouse and keyboard Enter/Space activation. An empty console closes without draft confirmation. Closing never writes a SQL file automatically; explicit Save SQL creates a new file and does not mark the console draft as persisted.
 

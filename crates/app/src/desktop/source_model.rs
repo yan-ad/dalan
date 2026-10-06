@@ -163,6 +163,11 @@ pub(super) struct SourceModel {
     pub form_busy: bool,
     pub saving: bool,
     pub error: Option<String>,
+    pub table_edits: Option<dalan_app::table_edits::TableEdits>,
+    pub write_busy: bool,
+    pub write_uncertain: bool,
+    write_target_invalidated: bool,
+    pub write_feedback: Option<String>,
     pub busy: bool,
     pub databases: Vec<String>,
     pub selected_source: Option<String>,
@@ -195,6 +200,144 @@ pub(super) struct SourceModel {
 }
 
 impl SourceModel {
+    pub fn has_table_changes(&self) -> bool {
+        self.table_edits.as_ref().is_some_and(|e| e.has_changes())
+    }
+    pub fn table_editable(&self) -> bool {
+        !self.query_console
+            && !self.workspace_invalidated
+            && !self.busy
+            && !self.saving
+            && !self.write_busy
+            && !self.write_uncertain
+            && matches!(
+                self.selected_engine(),
+                dalan_drivers::DbEngine::MySql
+                    | dalan_drivers::DbEngine::MariaDb
+                    | dalan_drivers::DbEngine::PostgreSql
+            )
+            && self.selected_table.as_ref().is_some_and(|name| {
+                self.tables
+                    .iter()
+                    .any(|t| &t.name == name && t.kind == "BASE TABLE")
+            })
+            && self
+                .page
+                .as_ref()
+                .is_some_and(|page| dalan_app::table_edits::can_edit(page).is_ok())
+    }
+    fn ensure_table_edits(&mut self) -> Result<&mut dalan_app::table_edits::TableEdits> {
+        anyhow::ensure!(
+            self.table_editable(),
+            "This preview is not editable: require a non-truncated SQL base table with a complete primary key and supported scalar columns"
+        );
+        if self.table_edits.is_none() {
+            self.table_edits = Some(dalan_app::table_edits::TableEdits::new(
+                self.page
+                    .clone()
+                    .ok_or_else(|| anyhow!("Load a table first"))?,
+                self.selected_database
+                    .clone()
+                    .ok_or_else(|| anyhow!("Select a database"))?,
+                self.selected_table
+                    .clone()
+                    .ok_or_else(|| anyhow!("Select a table"))?,
+            )?);
+        }
+        Ok(self.table_edits.as_mut().unwrap())
+    }
+    pub fn stage_cell(
+        &mut self,
+        row: usize,
+        col: usize,
+        text: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let result = (|| {
+            let edits = self.ensure_table_edits()?;
+            let column = edits
+                .base()
+                .columns
+                .get(col)
+                .ok_or_else(|| anyhow!("Invalid column"))?;
+            let value = if let Some(text) = text {
+                dalan_app::table_edits::parse_cell(&text, column)?
+            } else {
+                dalan_drivers::CellValue::Null
+            };
+            edits.set_cell(row, col, value)
+        })();
+        self.write_feedback = result.err().map(|_| {
+            "Cell edit rejected: check column type, key/null rules and value limits.".into()
+        });
+        cx.notify();
+    }
+    pub fn stage_row(&mut self, row: usize, action: &str, cx: &mut Context<Self>) {
+        let result = (|| {
+            let edits = self.ensure_table_edits()?;
+            match action {
+                "add" => {
+                    edits.add_row()?;
+                }
+                "clone" => {
+                    edits.clone_row(row)?;
+                }
+                "delete" => edits.delete_row(row)?,
+                "restore" => edits.restore_row(row)?,
+                _ => return Err(anyhow!("Invalid row action")),
+            }
+            Ok(())
+        })();
+        self.write_feedback = result
+            .err()
+            .map(|_| "Row action rejected; no staged changes were applied.".into());
+        cx.notify();
+    }
+    pub fn discard_table_changes(&mut self, cx: &mut Context<Self>) {
+        if self.write_busy {
+            return;
+        }
+        self.table_edits = None;
+        self.write_feedback = None;
+        cx.notify();
+    }
+    pub fn apply_table_changes(&mut self, cx: &mut Context<Self>) {
+        if !self.table_editable() || !self.has_table_changes() {
+            return;
+        }
+        let Some(edits) = &self.table_edits else {
+            return;
+        };
+        let request = match edits.request().and_then(|request| {
+            dalan_drivers::mutations::validate_request(&request)?;
+            Ok(request)
+        }) {
+            Ok(request) => request,
+            Err(_) => {
+                self.write_feedback = Some("Staged changes are invalid; review the rows.".into());
+                cx.notify();
+                return;
+            }
+        };
+        let Some(profile) = self.selected_profile() else {
+            return;
+        };
+        let id = profile.id.clone();
+        let session = self.session_password(&id);
+        let secret_store = self.secret_store.clone();
+        self.write_target_invalidated = false;
+        self.write_busy = true;
+        self.busy = true;
+        self.write_feedback = Some("Applying staged table changes in a transaction…".into());
+        self.run(async move{let profile=Self::resolve_connection_profile(profile).await?;let password=Self::resolve_password(&profile,session,secret_store).await?;dalan_drivers::apply_table_changes(&profile,&password,&request).await},cx,move|m,result,cx|{
+            m.write_busy=false;m.busy=false;
+            if m.write_target_invalidated {m.workspace_invalidated=true;m.write_uncertain=true;m.write_feedback=Some("Source settings changed during Apply. The original target may have been modified; do not retry or reload through the changed source. Verify the original server and reopen the tab.".into());cx.notify();return;}
+            match result {Ok(report)=>{m.table_edits=None;m.write_feedback=Some(format!("Applied: {} updated, {} inserted, {} deleted.",report.updated,report.inserted,report.deleted));let offset=m.page.as_ref().map(|p|p.offset).unwrap_or(0);m.load_page(offset,cx);},Err(error)=>{m.write_uncertain=error.downcast_ref::<dalan_drivers::WriteFailure>().is_some();m.write_feedback=Some(if m.write_uncertain{"Write outcome unknown. Do not retry; discard local staging, reload and verify the database.".into()}else{"Changes were not applied; transaction failed or optimistic row conflict. Review and reload before retry.".into()});}}
+            cx.notify();
+        });
+        cx.notify();
+    }
+
     pub fn selected_engine(&self) -> dalan_drivers::DbEngine {
         self.selected_profile()
             .map(|p| p.engine)
@@ -380,6 +523,11 @@ impl SourceModel {
             serde_json::to_value(&self.profiles).ok() != serde_json::to_value(&profiles).ok();
         self.profiles = profiles;
         if invalid {
+            if self.write_busy {
+                self.write_target_invalidated = true;
+                cx.notify();
+                return;
+            }
             self.workspace_invalidated = true;
             self.invalidate();
             self.page = None;
@@ -1163,6 +1311,11 @@ impl SourceModel {
             form_busy: false,
             saving: false,
             error: None,
+            table_edits: None,
+            write_busy: false,
+            write_uncertain: false,
+            write_target_invalidated: false,
+            write_feedback: None,
             busy: false,
             databases: vec![],
             selected_source: None,
@@ -1709,7 +1862,7 @@ impl SourceModel {
     }
 
     pub fn select_table(&mut self, table: String, cx: &mut Context<Self>) {
-        if self.saving {
+        if self.saving || self.write_busy || self.has_table_changes() {
             return;
         }
         self.selected_table = Some(table);
@@ -1769,6 +1922,7 @@ impl SourceModel {
                             Ok(page) => {
                                 this.page = Some(Arc::new(page));
                                 this.result_evicted = false;
+                                this.write_uncertain = false;
                             }
                             Err(error) => this.error = Some(error.to_string()),
                         }
@@ -1781,7 +1935,12 @@ impl SourceModel {
         cx.notify();
     }
     fn table_action_blocked(&self) -> bool {
-        self.busy || self.saving || self.workspace_invalidated || self.query_console
+        self.busy
+            || self.saving
+            || self.write_busy
+            || self.has_table_changes()
+            || self.workspace_invalidated
+            || self.query_console
     }
 
     /// Validate before touching credentials or starting any network operation.
@@ -1847,7 +2006,7 @@ impl SourceModel {
 
     /// Cancels the client task; this does not confirm a server-side query kill.
     pub fn cancel_table(&mut self, cx: &mut Context<Self>) {
-        if self.query_console || self.saving || !self.busy {
+        if self.query_console || self.saving || self.write_busy || !self.busy {
             return;
         }
         self.invalidate();
@@ -1884,7 +2043,7 @@ impl SourceModel {
             bytes += row.capacity() * size_of::<CellValue>();
             for cell in row {
                 bytes += match cell {
-                    CellValue::Null => 0,
+                    dalan_drivers::CellValue::Null => 0,
                     CellValue::Text(value)
                     | CellValue::Binary(value)
                     | CellValue::Number(value)
@@ -2334,6 +2493,30 @@ mod tests {
                 .is_ok()
             }));
         }
+    }
+
+    #[gpui::test]
+    fn write_busy_blocks_cancel_and_connection_change_is_deferred_not_rebound(
+        cx: &mut TestAppContext,
+    ) {
+        let profile = SourceProfile::default();
+        let id = profile.id.clone();
+        let model = cx.new(|_| SourceModel::for_tests(vec![profile.clone()]));
+        model.update(cx, |m, cx| {
+            m.selected_source = Some(id);
+            m.write_busy = true;
+            m.busy = true;
+            let generation = m.generation;
+            m.cancel_table(cx);
+            assert_eq!(m.generation, generation);
+            assert!(m.write_busy && m.busy);
+            let mut changed = profile;
+            changed.host = "different.example.invalid".into();
+            m.sync_workspace_sources(vec![changed], cx);
+            assert!(m.write_target_invalidated);
+            assert!(m.write_busy && m.busy);
+            assert_eq!(m.generation, generation);
+        });
     }
 
     #[gpui::test]

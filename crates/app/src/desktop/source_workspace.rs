@@ -243,12 +243,21 @@ impl SourceWorkspace {
             cx.notify();
         }
     }
+    pub(super) fn has_inflight_write(&self, cx: &gpui::App) -> bool {
+        self.views.values().any(|t| t.model.read(cx).write_busy)
+    }
     fn close_tab(&mut self, id: &str, force: bool, cx: &mut Context<Self>) {
         let Some(tab) = self.views.get(id) else {
             return;
         };
         let state = tab.model.read(cx);
-        if !force && state.query_console && !state.query_sql.trim().is_empty() {
+        if state.write_busy {
+            return;
+        }
+        if !force
+            && ((state.query_console && !state.query_sql.trim().is_empty())
+                || state.has_table_changes())
+        {
             self.close_confirmation = Some(id.to_owned());
             self.pending_confirmation_focus = true;
             cx.notify();
@@ -336,7 +345,9 @@ impl SourceWorkspace {
                 protected: self.tabs.active() == Some(id.as_str())
                     || model.busy
                     || model.export_busy
-                    || model.saving,
+                    || model.saving
+                    || model.write_busy
+                    || model.has_table_changes(),
                 last_used: stats.last_used,
             });
         }

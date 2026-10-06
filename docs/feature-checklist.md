@@ -1,8 +1,19 @@
 # Feature checklist
 
-Status: experimental macOS read-only workspace. Historical Keychain test counts and checkbox descriptions below refer to the removed backend, not current persistence; current exact auth/theme validation remains pending primary confirmation. A checked item means the scoped implementation exists, not release readiness or full DataGrip/Compass compatibility. User direction is to complete database features one by one without adding non-database tools. See [testing](testing.md) for evidence and remaining verification limits.
+Status: experimental macOS database workspace with restricted read consoles and bounded staged SQL table writes. Historical Keychain test counts and checkbox descriptions below refer to the removed backend, not current persistence; current exact auth/theme validation remains pending primary confirmation. A checked item means the scoped implementation exists, not release readiness or full DataGrip/Compass compatibility. User direction is to complete database features one by one without adding non-database tools. See [testing](testing.md) for evidence and remaining verification limits.
 
 ## Confirmed scoped completions
+
+### Bounded staged SQL table writes (current)
+
+- [x] Local cell/NULL staging, insert/clone with omitted PK/default fields, delete/restore/discard and explicit confirmed Apply for eligible SQL base tables; no autosave or arbitrary SQL write command.
+- [x] Complete untruncated originals and NOT NULL complete PK; all-supported-column gate; MySQL/MariaDB InnoDB and PostgreSQL ordinary/partitioned tables only. Query results/views/keyless/MongoDB/Redis remain read-only.
+- [x] 100 operations, 64 KiB/value, 2 MiB value-data bounds; backend locked exact expected-schema comparison, full-original optimistic predicates and exactly-one effect per mutation in one transaction; no automatic retry.
+- [x] Unknown COMMIT outcome guard, pending-change retention/close protection, blocked paging/refresh/sort, in-flight close/cancel guards and original-target verification after source changes; canvas highlights and one editor overlay, no per-cell Divs.
+- [ ] Actual-server write/commit fixtures, final primary-verified test results and native interaction/release gates. OS quit/crash is not proof of rollback; no hosted CI/private testing claimed here.
+- [ ] Full DBX parity: bulk tools, details/filter drawers, hide/freeze, grouping, archives and reusable transaction sessions.
+
+See [current editing contract](table-editing.md). Historical counts/inventories below remain scoped to their original revisions.
 
 ### Native three-engine additions (current)
 
@@ -141,10 +152,10 @@ The following palette checks/counts apply only to the earlier Carbonfox revision
 
 ## Next read-workflow slices, in order
 
-1. [ ] Column resizing and bounded cell inspection/copy, with keyboard/focus and value-fidelity tests. These are next, not already done.
+1. [ ] Column resizing and a bounded details inspector, with keyboard/focus and value-fidelity tests. Cell selection/copy now exists in the current grid; this does not complete resizing or a details drawer.
 2. [x] Scoped read-only query console, with [ADR 0004](adr/0004-workspace-tabs-and-read-only-consoles.md), MySQL-dialect AST allowlist, fresh run-owned sessions and local cancellation. No semicolon splitting or prefix-only safety classification; broader dialect support remains future work.
 3. [ ] SQL editor completion and history, with scoped dialect support, sensitive-text retention/deletion and distinct selection/current-statement/script execution semantics.
-4. [ ] Dedicated transaction sessions and guarded staged writes, primary-key identity, conflict/affected-row checks, immutable approvals and unknown-outcome handling. Do not turn browse/export completion into write authorization.
+4. [ ] Dedicated reusable transaction sessions and broader immutable approvals. The current bounded staged SQL write path implements primary-key identity, conflict/affected-row checks and unknown-outcome handling; real-server write/commit gates remain unrun. Do not turn browse/export completion into write authorization.
 5. [ ] Separate bounded streaming full-query/whole-table export pipeline, disk backpressure and cancellation. Do not imply snapshot consistency.
 
 ## Remaining platform and release work

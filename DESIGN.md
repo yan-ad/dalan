@@ -1,6 +1,6 @@
 # Dalan design direction
 
-Status: production GPUI Kit standard-control/default-theme foundation with an experimental read-only database workspace. This is not a finished SQL client, native visual approval or accessibility certification. **Dalan** means “ways” in Javanese.
+Status: production GPUI Kit standard-control/default-theme foundation with an experimental database workspace with restricted reads and bounded staged SQL table writes. This is not a finished SQL client, native visual approval or accessibility certification. **Dalan** means “ways” in Javanese.
 
 ## Current visual direction
 
@@ -28,9 +28,9 @@ SSH is embedded in the same window: rail switching retains manager drafts; Apply
 
 The shipping result body remains specialized direct canvas paint with cached shaped text and row/grid quads, **zero per-cell Divs**, two-axis viewport virtualization and native interactive header controls. This is an intentional app-owned rendering exception, not a standard Table replacement. The pinned 44 px row gutter uses body y only and stays at x = 0; numbering is `offset + row + 1`. Display previews sanitize newline/control text and cap at 128 graphemes/4,096 bytes without splitting combining clusters or altering typed/export values. Native single-line shaping previously panicked on multiline data; this is not a font/OS-renderer diagnosis.
 
-WHERE/ORDER BY are single-line drafts: typing never fetches; Apply/Enter validates and submits both. Invalid conditions retain visibly stale rows. Name-only headers expose type/key metadata in tooltips and separate sort targets; query result headers remain nonsortable. Refresh/owned Cancel, loaded CSV, paging and range feedback are functional, with no placeholder mutation/DDL/history menus.
+WHERE/ORDER BY are single-line drafts: typing never fetches; Apply/Enter validates and submits both. Invalid conditions retain visibly stale rows. Name-only headers expose type/key metadata in tooltips and separate sort targets; query result headers remain nonsortable. Refresh/owned Cancel, loaded CSV, paging and range feedback are functional, with no placeholder DDL/history menus. [Staged SQL editing](docs/table-editing.md) adds painted pending/deleted highlights, toolbar/context actions and a single editor overlay, never per-cell Divs or autosave. Pending changes protect result retention and block page/refresh/sort replacement; Apply blocks close/cancel.
 
-Best-effort inactive-result retention remains **16 MiB/eight pages**, protecting active/busy/export/save results and excluding metadata/drafts/GPU/export temporary allocations. Eviction drops pages/caches, not retained tab identities/drafts/scroll. Table activation can refresh an evicted page; consoles never autoexecute. Kit DataTable is still a benchmark candidate: the 100 × 512 pilot's 328 initial/146 last-column delegate calls are not canvas parity or native FPS.
+Best-effort inactive-result retention remains **16 MiB/eight pages**, protecting active/busy/pending-change/export/save results and excluding metadata/drafts/GPU/export temporary allocations. Eviction drops pages/caches, not retained tab identities/drafts/scroll. Table activation can refresh an evicted page; consoles never autoexecute. Kit DataTable is still a benchmark candidate: the 100 × 512 pilot's 328 initial/146 last-column delegate calls are not canvas parity or native FPS.
 
 ## Tabs and SQL editing
 
@@ -38,7 +38,7 @@ Up to 32 tabs retain independent model/view/request/result state. Tables dedupli
 
 The custom SQL editing engine is replaced by a thin adapter around Kit's rope EditorState. Kit owns native selection, clipboard, IME, scrolling, undo/redo and SQL Tree-sitter highlighting. Dalan owns source/database context, validation and selected-or-whole Run/Cancel. The SQL policy remains 64 KiB; interactive limit rejection is a current regression gate, not an inherited atomicity guarantee. Do not carry forward the bespoke editor's exact undo-count/indent/geometry promises without current tests.
 
-Database-aware completion, cursor-statement execution, persistent history, scripts and transaction/write workflows remain future scope. PostgreSQL/MongoDB/Redis labels or editor language support do not implement executors; MySQL/MariaDB remain experimental. The UI migration retains cache, query-safety, worker-budget and ACP-only boundaries. Current local plaintext credential persistence and password reveal rules are documented in [security](docs/security.md).
+Database-aware completion, cursor-statement execution, persistent history, scripts and reusable transaction sessions remain future scope. Five native read adapters remain experimental; eligible MySQL/MariaDB InnoDB and PostgreSQL base tables have explicit bounded transactional Apply, not arbitrary console writes. DBX is a conceptual reference, not 1:1 parity: bulk tools, details/filter drawers, hide/freeze, grouping and archives remain TODO. Actual-server write/commit and native interaction gates remain unrun. The UI migration retains cache, query-safety, worker-budget and ACP-only boundaries. Current local plaintext credential persistence and password reveal rules are documented in [security](docs/security.md).
 
 ## Evidence boundary
 

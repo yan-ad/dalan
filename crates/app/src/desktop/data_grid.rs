@@ -19,8 +19,9 @@ use gpui::{
 use super::{source_model::SourceModel, theme::*};
 
 use gpui::component::{
-    Disableable, Icon as KitIcon, Selectable,
+    ActiveTheme, Disableable, Icon as KitIcon, Selectable, Sizable,
     button::{Button as KitButton, ButtonVariants},
+    menu::{ContextMenuExt, PopupMenuItem},
 };
 
 /// Capture Kit's keyed button handle during rendering, when its element
@@ -202,6 +203,12 @@ pub(super) struct DataGrid {
     model: Entity<SourceModel>,
     page: Option<Arc<TablePage>>,
     sort: Option<TableSort>,
+    active_cell: Option<(usize, usize)>,
+    edit_input: Entity<super::input::TextInput>,
+    editing: bool,
+    edit_target: Option<(usize, usize)>,
+    write_confirm: bool,
+    edit_rows: usize,
     stale: bool,
     selection: Selection,
     viewport: GridViewport,
@@ -239,6 +246,7 @@ impl DataGrid {
     pub(super) fn new(model: Entity<SourceModel>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(&model, |this, model, cx| {
             let model = model.read(cx);
+            this.write_confirm = false;
             let selection = Self::selection(model);
             let page_changed = match (&this.page, &model.page) {
                 (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
@@ -249,6 +257,10 @@ impl DataGrid {
             // stale snapshot is not disrupted while the replacement is fetched.
             if selection != this.selection || page_changed {
                 this.viewport.reset();
+                this.active_cell = None;
+                this.editing = false;
+                this.edit_target = None;
+                this.write_confirm = false;
                 this.drag = None;
                 this.visible_text.clear();
                 this.visible_headers.clear();
@@ -257,11 +269,20 @@ impl DataGrid {
             }
             this.selection = selection;
             this.page = model.page.as_ref().map(Arc::clone);
+            this.visible_text.clear();
+            this.visible_lines.clear();
+            this.edit_rows = model
+                .table_edits
+                .as_ref()
+                .map(|e| e.rows_count())
+                .unwrap_or(0);
             this.sort = model.sort.clone();
             this.stale = model.busy
                 || model.saving
                 || model.error.is_some()
                 || model.query_console
+                || model.has_table_changes()
+                || model.write_busy
                 || matches!(
                     model.selected_engine(),
                     dalan_drivers::DbEngine::MongoDb | dalan_drivers::DbEngine::Redis
@@ -270,14 +291,23 @@ impl DataGrid {
             this.viewport.clamp(rows, columns);
             cx.notify();
         });
+        let edit_input = cx.new(|cx| super::input::TextInput::new("", "Cell value", false, cx));
         let snapshot = model.read(cx);
         Self {
             page: snapshot.page.as_ref().map(Arc::clone),
             sort: snapshot.sort.clone(),
+            active_cell: None,
+            edit_input,
+            editing: false,
+            edit_target: None,
+            write_confirm: false,
+            edit_rows: 0,
             stale: snapshot.busy
                 || snapshot.saving
                 || snapshot.error.is_some()
                 || snapshot.query_console
+                || snapshot.has_table_changes()
+                || snapshot.write_busy
                 || matches!(
                     snapshot.selected_engine(),
                     dalan_drivers::DbEngine::MongoDb | dalan_drivers::DbEngine::Redis
@@ -306,6 +336,106 @@ impl DataGrid {
         }
     }
 
+    fn hit_cell(&self, position: gpui::Point<Pixels>) -> Option<(usize, usize)> {
+        let x = f32::from(position.x - self.bounds.origin.x) - ROW_GUTTER_WIDTH;
+        let y = f32::from(position.y - self.bounds.origin.y) - HEADER_HEIGHT;
+        if x < 0. || y < 0. || x >= self.viewport.width || y >= self.viewport.height {
+            return None;
+        }
+        let row = ((y + self.viewport.y) / ROW_HEIGHT) as usize;
+        let col = ((x + self.viewport.x) / COLUMN_WIDTH) as usize;
+        let (rows, cols) = self.dimensions();
+        (row < rows && col < cols).then_some((row, col))
+    }
+    fn cell_value(&self, row: usize, col: usize, cx: &gpui::App) -> Option<CellValue> {
+        self.model
+            .read(cx)
+            .table_edits
+            .as_ref()
+            .and_then(|e| e.displayed(row, col))
+            .cloned()
+            .or_else(|| {
+                self.page
+                    .as_ref()
+                    .and_then(|p| p.rows.get(row))
+                    .and_then(|r| r.get(col))
+                    .cloned()
+            })
+    }
+    fn begin_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((row, col)) = self.active_cell else {
+            return;
+        };
+        if !self.model.read(cx).table_editable() {
+            return;
+        }
+        if self
+            .page
+            .as_ref()
+            .and_then(|p| p.columns.get(col))
+            .is_some_and(|c| c.is_primary_key)
+            && !self
+                .model
+                .read(cx)
+                .table_edits
+                .as_ref()
+                .is_some_and(|e| e.is_insert(row))
+        {
+            return;
+        }
+        if self
+            .cell_value(row, col, cx)
+            .is_some_and(|v| v.display().contains(['\n', '\r', '\t']))
+        {
+            self.model.update(cx,|m,cx|{m.write_feedback=Some("Multiline/tab-containing cell editing requires the future full-value editor; cell unchanged.".into());cx.notify();});
+            return;
+        }
+        let text = self
+            .cell_value(row, col, cx)
+            .map(|v| {
+                if matches!(v, CellValue::Null) {
+                    String::new()
+                } else {
+                    v.display()
+                }
+            })
+            .unwrap_or_default();
+        self.edit_input.update(cx, |i, cx| i.set_value(text, cx));
+        self.edit_target = Some((row, col));
+        self.editing = true;
+        self.edit_input.read(cx).focus_handle().focus(window, cx);
+        cx.notify();
+    }
+    fn grid_action(&mut self, action: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let (row, col) = self.active_cell.unwrap_or((0, 0));
+        match action {
+            "edit" => self.begin_edit(window, cx),
+            "copy" => {
+                if let Some(value) = self.cell_value(row, col, cx) {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(value.display()));
+                }
+            }
+            "null" => self
+                .model
+                .update(cx, |m, cx| m.stage_cell(row, col, None, cx)),
+            "add" | "clone" | "delete" | "restore" => {
+                self.model.update(cx, |m, cx| m.stage_row(row, action, cx))
+            }
+            "discard" => {
+                self.model.update(cx, |m, cx| m.discard_table_changes(cx));
+                self.editing = false;
+                self.write_confirm = false;
+            }
+            "apply" => self.write_confirm = true,
+            "confirm" => {
+                self.write_confirm = false;
+                self.model.update(cx, |m, cx| m.apply_table_changes(cx));
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
     fn selection(model: &SourceModel) -> Selection {
         (
             model.selected_source.clone(),
@@ -315,9 +445,9 @@ impl DataGrid {
     }
 
     fn dimensions(&self) -> (usize, usize) {
-        self.page
-            .as_ref()
-            .map_or((0, 0), |page| (page.rows.len(), page.columns.len()))
+        self.page.as_ref().map_or((0, 0), |page| {
+            (page.rows.len().max(self.edit_rows), page.columns.len())
+        })
     }
 
     fn wheel(&mut self, event: &gpui::ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -639,10 +769,50 @@ impl Render for DataGrid {
                     ),
                 });
             }
+            let mut highlights = Vec::new();
+            if let Some((row, col)) = self.active_cell {
+                highlights.push((
+                    col as f32 * COLUMN_WIDTH - self.viewport.x,
+                    row as f32 * ROW_HEIGHT - self.viewport.y,
+                    COLUMN_WIDTH,
+                    ROW_HEIGHT,
+                    palette.selection,
+                ));
+            }
+            if let Some(edits) = &self.model.read(cx).table_edits {
+                for row in rows.clone() {
+                    if edits.is_deleted(row) {
+                        highlights.push((
+                            0.,
+                            row as f32 * ROW_HEIGHT - self.viewport.y,
+                            self.viewport.width,
+                            ROW_HEIGHT,
+                            palette.error.opacity(0.16),
+                        ));
+                    } else {
+                        for col in columns.clone() {
+                            if edits.is_changed(row, col) || edits.is_insert(row) {
+                                highlights.push((
+                                    col as f32 * COLUMN_WIDTH - self.viewport.x,
+                                    row as f32 * ROW_HEIGHT - self.viewport.y,
+                                    COLUMN_WIDTH,
+                                    ROW_HEIGHT,
+                                    palette.selection.opacity(0.6),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
             let mut painted_cells = Vec::new();
             let mut painted_numbers = Vec::new();
             for row_index in rows.clone() {
-                let row = &page.rows[row_index];
+                let inserted = self
+                    .model
+                    .read(cx)
+                    .table_edits
+                    .as_ref()
+                    .is_some_and(|e| e.is_insert(row_index));
                 let top = row_index as f32 * ROW_HEIGHT - self.viewport.y;
                 let visible_row = top < self.viewport.height && top + ROW_HEIGHT > 0.;
                 if visible_row {
@@ -664,14 +834,19 @@ impl Render for DataGrid {
                     painted_numbers.push((top, number.clone()));
                 }
                 for column_index in columns.clone() {
-                    let value = row.get(column_index);
+                    let value = self.cell_value(row_index, column_index, cx);
+                    let value = value.as_ref();
                     let key = (row_index, column_index);
                     let text = self.visible_text.entry(key).or_insert_with(|| {
                         #[cfg(test)]
                         {
                             self.last_formatted_cells += 1;
                         }
-                        display_preview(value)
+                        if inserted && value.is_none() {
+                            "DEFAULT".into()
+                        } else {
+                            display_preview(value)
+                        }
                     });
                     let left = column_index as f32 * COLUMN_WIDTH - self.viewport.x;
                     if visible_row && left < self.viewport.width && left + COLUMN_WIDTH > 0. {
@@ -762,6 +937,15 @@ impl Render for DataGrid {
                                     ));
                                 }
                             }
+                            for (left, top, width, height, color) in highlights {
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        bounds.origin + point(px(left), px(top)),
+                                        size(px(width), px(height)),
+                                    ),
+                                    color,
+                                ));
+                            }
                             for (left, top, line) in painted_cells {
                                 let cell_bounds = Bounds::new(
                                     bounds.origin + point(px(left + CELL_PADDING), px(top)),
@@ -841,7 +1025,7 @@ impl Render for DataGrid {
             self.viewport.height,
             row_count as f32 * ROW_HEIGHT,
         );
-        div()
+        let mut root = div()
             .id("table-grid-scroll")
             .debug_selector(|| "table-grid-scroll".into())
             .relative()
@@ -856,6 +1040,25 @@ impl Render for DataGrid {
             // track_focus installs GPUI's default mouse focus behavior. An
             // explicitly focusing parent listener would steal focus from headers.
             .on_key_down(cx.listener(Self::keyboard))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                    this.active_cell = this.hit_cell(event.position);
+                    if this.active_cell.is_some() {
+                        if event.click_count == 2 {
+                            this.begin_edit(window, cx);
+                        }
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.active_cell = this.hit_cell(event.position);
+                    cx.notify();
+                }),
+            )
             .on_scroll_wheel(cx.listener(Self::wheel))
             .on_mouse_move(cx.listener(Self::move_thumb))
             .on_mouse_up(
@@ -897,7 +1100,7 @@ impl Render for DataGrid {
                         .bg(palette.scrollbar)
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, event, window, cx| {
+                            cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                                 this.track_click(Axis::Horizontal, event, window, cx)
                             }),
                         )
@@ -915,9 +1118,11 @@ impl Render for DataGrid {
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(|this, event, window, cx| {
-                                        this.start_thumb(Axis::Horizontal, event, window, cx)
-                                    }),
+                                    cx.listener(
+                                        |this, event: &gpui::MouseDownEvent, window, cx| {
+                                            this.start_thumb(Axis::Horizontal, event, window, cx)
+                                        },
+                                    ),
                                 ),
                         ),
                 )
@@ -935,7 +1140,7 @@ impl Render for DataGrid {
                         .bg(palette.scrollbar)
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, event, window, cx| {
+                            cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                                 this.track_click(Axis::Vertical, event, window, cx)
                             }),
                         )
@@ -953,13 +1158,170 @@ impl Render for DataGrid {
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(|this, event, window, cx| {
-                                        this.start_thumb(Axis::Vertical, event, window, cx)
-                                    }),
+                                    cx.listener(
+                                        |this, event: &gpui::MouseDownEvent, window, cx| {
+                                            this.start_thumb(Axis::Vertical, event, window, cx)
+                                        },
+                                    ),
                                 ),
                         ),
                 )
-            })
+            });
+        let pending = self.model.read(cx).has_table_changes();
+        let writable = self.model.read(cx).table_editable();
+        let busy = self.model.read(cx).write_busy;
+        if writable || pending || self.model.read(cx).write_uncertain {
+            let mut bar = div()
+                .id("grid-write-tools")
+                .debug_selector(|| "grid-write-tools".into())
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .p_2()
+                .bg(cx.theme().background)
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .flex()
+                .flex_wrap()
+                .gap_2();
+            for (id, label, action, disabled) in [
+                ("grid-add-row", "Add row", "add", !writable),
+                (
+                    "grid-edit-cell",
+                    "Edit cell",
+                    "edit",
+                    !writable || self.active_cell.is_none(),
+                ),
+                (
+                    "grid-clone-row",
+                    "Clone row",
+                    "clone",
+                    !writable || self.active_cell.is_none(),
+                ),
+                (
+                    "grid-delete-row",
+                    "Delete row",
+                    "delete",
+                    !writable || self.active_cell.is_none(),
+                ),
+                (
+                    "grid-apply",
+                    "Apply changes",
+                    "apply",
+                    !writable || !pending,
+                ),
+                ("grid-discard", "Discard", "discard", busy || !pending),
+            ] {
+                bar = bar.child(
+                    KitButton::new(id)
+                        .debug_selector(move || id.into())
+                        .small()
+                        .ghost()
+                        .label(label)
+                        .tooltip(label)
+                        .disabled(disabled)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.grid_action(action, window, cx)
+                        })),
+                );
+            }
+            root = root.child(bar);
+        }
+        if let Some(message) = self.model.read(cx).write_feedback.clone() {
+            root = root.child(
+                div()
+                    .id("grid-write-feedback")
+                    .debug_selector(|| "grid-write-feedback".into())
+                    .absolute()
+                    .top(px(HEADER_HEIGHT))
+                    .left(px(ROW_GUTTER_WIDTH))
+                    .right_0()
+                    .p_2()
+                    .bg(cx.theme().popover)
+                    .child(message),
+            );
+        }
+        if self.editing {
+            root = root.child(
+                div()
+                    .id("grid-cell-editor")
+                    .debug_selector(|| "grid-cell-editor".into())
+                    .absolute()
+                    .top(px(HEADER_HEIGHT))
+                    .left(px(ROW_GUTTER_WIDTH))
+                    .w(px(340.))
+                    .p_2()
+                    .bg(cx.theme().popover)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .flex()
+                    .gap_2()
+                    .child(self.edit_input.clone())
+                    .child(
+                        KitButton::new("grid-stage-cell")
+                            .debug_selector(|| "grid-stage-cell".into())
+                            .small()
+                            .label("Stage")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some((row, col)) = this.edit_target {
+                                    let text = this.edit_input.read(cx).value();
+                                    this.model
+                                        .update(cx, |m, cx| m.stage_cell(row, col, Some(text), cx));
+                                }
+                                this.editing = false;
+                                this.edit_target = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        KitButton::new("grid-cancel-cell")
+                            .small()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.editing = false;
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+        if self.write_confirm {
+            root=root.child(div().id("grid-write-confirm").debug_selector(||"grid-write-confirm".into()).absolute().top(px(HEADER_HEIGHT)).left(px(ROW_GUTTER_WIDTH)).right_0().p_3().bg(cx.theme().popover).border_1().border_color(cx.theme().border).flex().gap_2().child(format!("Apply {} staged operation(s) to {}? Updates/inserts/deletes will modify the database.",self.model.read(cx).table_edits.as_ref().map(|e|e.operation_count()).unwrap_or(0),self.model.read(cx).selected_table.as_deref().unwrap_or("table"))).child(KitButton::new("grid-confirm-apply").debug_selector(||"grid-confirm-apply".into()).small().label("Apply to database").on_click(cx.listener(|this,_,window,cx|this.grid_action("confirm",window,cx)))).child(KitButton::new("grid-keep-staging").small().label("Keep editing").on_click(cx.listener(|this,_,_,cx|{this.write_confirm=false;cx.notify();}))));
+        }
+        let entity = cx.entity().downgrade();
+        root.context_menu(move |mut menu, _, cx| {
+            let target = entity.upgrade().and_then(|grid| grid.read(cx).active_cell);
+            let allowed = entity
+                .upgrade()
+                .is_some_and(|grid| grid.read(cx).model.read(cx).table_editable());
+            for (action, label) in [
+                ("copy", "Copy cell"),
+                ("edit", "Edit cell"),
+                ("null", "Set NULL"),
+                ("add", "Add row"),
+                ("clone", "Clone row"),
+                ("delete", "Delete row"),
+                ("restore", "Restore row"),
+                ("discard", "Discard staged changes"),
+            ] {
+                let entity = entity.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(label)
+                        .disabled(
+                            (action != "copy" && !allowed)
+                                || (target.is_none() && !matches!(action, "add" | "discard")),
+                        )
+                        .on_click(move |_, window, cx| {
+                            let _ = entity.update(cx, |grid, cx| {
+                                if grid.active_cell == target {
+                                    grid.grid_action(action, window, cx)
+                                }
+                            });
+                        }),
+                );
+            }
+            menu
+        })
     }
 }
 
@@ -1023,6 +1385,119 @@ mod tests {
         cx.refresh().unwrap();
         cx.run_until_parked();
         (model, grid, cx)
+    }
+
+    fn editable_fixture(
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<SourceModel>,
+        Entity<DataGrid>,
+        &mut VisualTestContext,
+    ) {
+        let (model, grid, cx) = fixture(cx);
+        model.update(cx, |m, cx| {
+            m.selected_source = Some(m.profiles[0].id.clone());
+            m.tables = vec![dalan_drivers::TableInfo {
+                name: "wide".into(),
+                kind: "BASE TABLE".into(),
+            }];
+            m.page = Some(Arc::new(TablePage {
+                columns: vec![
+                    ColumnInfo {
+                        name: "id".into(),
+                        data_type: "int".into(),
+                        nullable: false,
+                        is_primary_key: true,
+                    },
+                    ColumnInfo {
+                        name: "name".into(),
+                        data_type: "varchar(255)".into(),
+                        nullable: true,
+                        is_primary_key: false,
+                    },
+                ],
+                rows: vec![
+                    vec![CellValue::Number("1".into()), CellValue::Text("one".into())],
+                    vec![CellValue::Number("2".into()), CellValue::Text("two".into())],
+                ],
+                has_more: false,
+                next_offset: None,
+                offset: 0,
+                truncated: false,
+            }));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        (model, grid, cx)
+    }
+    #[gpui::test]
+    fn cell_editor_stages_captured_target_and_discard_preserves_original_page(
+        cx: &mut TestAppContext,
+    ) {
+        let (model, grid, cx) = editable_fixture(cx);
+        let base = model.read_with(cx, |m, _| m.page.clone().unwrap());
+        grid.update_in(cx, |g, window, cx| {
+            g.active_cell = Some((0, 1));
+            g.begin_edit(window, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("grid-cell-editor").is_some());
+        grid.update(cx, |g, cx| {
+            g.active_cell = Some((1, 1));
+            g.edit_input.update(cx, |i, cx| i.set_value("changed", cx));
+        });
+        cx.run_until_parked();
+        click(cx, "grid-stage-cell");
+        model.read_with(cx, |m, _| {
+            let edits = m.table_edits.as_ref().unwrap();
+            assert_eq!(
+                edits.displayed(0, 1),
+                Some(&CellValue::Text("changed".into()))
+            );
+            assert_eq!(edits.displayed(1, 1), Some(&CellValue::Text("two".into())));
+            assert!(Arc::ptr_eq(m.page.as_ref().unwrap(), &base));
+            assert!(!m.write_busy && !m.busy);
+        });
+        click(cx, "grid-apply");
+        assert!(cx.debug_bounds("grid-write-confirm").is_some());
+        assert!(!model.read_with(cx, |m, _| m.write_busy));
+        grid.update_in(cx, |g, window, cx| g.grid_action("discard", window, cx));
+        cx.run_until_parked();
+        assert!(!model.read_with(cx, |m, _| m.has_table_changes()));
+        assert!(Arc::ptr_eq(
+            &base,
+            &model.read_with(cx, |m, _| m.page.clone().unwrap())
+        ));
+    }
+    #[gpui::test]
+    fn staged_rows_render_default_clone_deleted_restore_without_network(cx: &mut TestAppContext) {
+        let (model, grid, cx) = editable_fixture(cx);
+        grid.update_in(cx, |g, window, cx| {
+            g.active_cell = Some((0, 1));
+            g.grid_action("clone", window, cx);
+        });
+        cx.run_until_parked();
+        model.read_with(cx, |m, _| {
+            let edits = m.table_edits.as_ref().unwrap();
+            assert_eq!(edits.rows_count(), 3);
+            assert_eq!(edits.displayed(2, 0), None);
+            assert_eq!(edits.displayed(2, 1), Some(&CellValue::Text("one".into())));
+        });
+        model.update(cx, |m, cx| m.stage_row(0, "delete", cx));
+        cx.run_until_parked();
+        assert!(model.read_with(cx, |m, _| m.table_edits.as_ref().unwrap().is_deleted(0)));
+        model.update(cx, |m, cx| m.stage_row(0, "restore", cx));
+        cx.run_until_parked();
+        assert!(!model.read_with(cx, |m, _| m.table_edits.as_ref().unwrap().is_deleted(0)));
+        assert!(grid.read_with(cx, |g, _| g.last_materialized_cells < 100));
+        model.update(cx, |m, cx| {
+            let mut p = (**m.page.as_ref().unwrap()).clone();
+            p.truncated = true;
+            m.discard_table_changes(cx);
+            m.page = Some(Arc::new(p));
+            cx.notify();
+        });
+        assert!(!model.read_with(cx, |m, _| m.table_editable()));
     }
 
     fn click(cx: &mut VisualTestContext, selector: &'static str) {

@@ -1223,7 +1223,7 @@ impl Render for SourceBrowser {
                             .tooltip(|_, cx| {
                                 cx.new(|_| {
                                     super::ControlTooltip(
-                                        "Read-only preview. Editing isn't implemented.",
+                                        "SQL base tables with complete primary keys support staged edits. Query/view/truncated/unsupported previews remain read-only.",
                                     )
                                 })
                                 .into()

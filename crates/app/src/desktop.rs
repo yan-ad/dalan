@@ -313,6 +313,10 @@ impl Shell {
         let explorer = cx.new(|cx| source_browser::SourceExplorer::new(model.clone(), cx));
         let workspace = cx.new(|cx| source_workspace::SourceWorkspace::new(model.clone(), cx));
         let source_subscription = cx.observe(&model, |_, _, cx| cx.notify());
+        let close_workspace = workspace.clone();
+        window.on_window_should_close(cx, move |_, cx| {
+            !close_workspace.read(cx).has_inflight_write(cx)
+        });
         Self {
             state: ShellState::default(),
             root_focus,
@@ -662,7 +666,11 @@ impl Render for Shell {
                         .update(cx, |workspace, cx| workspace.new_console(cx));
                 }),
             )
-            .on_action(|_: &CloseWindow, window, _| window.remove_window())
+            .on_action(cx.listener(|this, _: &CloseWindow, window, cx| {
+                if !this.workspace.read(cx).has_inflight_write(cx) {
+                    window.remove_window();
+                }
+            }))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 if let Some(drag) = this.drag {
                     if !event.dragging() {

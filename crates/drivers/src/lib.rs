@@ -6,7 +6,9 @@ pub use catalog::{
 mod table_clauses;
 pub use table_clauses::validate_table_clauses;
 pub mod mongo;
+pub mod mutations;
 pub mod mysql;
+pub use mutations::{RowMutation, WriteFailure, WriteReport, WriteRequest, apply_table_changes};
 mod native;
 pub mod postgres;
 pub mod redis_driver;

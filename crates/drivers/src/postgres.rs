@@ -167,6 +167,21 @@ impl Session {
         password: &str,
         database: Option<&str>,
     ) -> Result<Self> {
+        Self::connect_mode(profile, password, database, true).await
+    }
+    async fn connect_write(
+        profile: &SourceProfile,
+        password: &str,
+        database: &str,
+    ) -> Result<Self> {
+        Self::connect_mode(profile, password, Some(database), false).await
+    }
+    async fn connect_mode(
+        profile: &SourceProfile,
+        password: &str,
+        database: Option<&str>,
+        read_only: bool,
+    ) -> Result<Self> {
         let mut profile = profile.resolved()?;
         ensure!(
             profile.engine == DbEngine::PostgreSql,
@@ -178,11 +193,15 @@ impl Session {
         }
         bounded_with(
             profile.options.connect_timeout_seconds,
-            Self::connect_resolved(&profile, password),
+            Self::connect_resolved(&profile, password, read_only),
         )
         .await
     }
-    async fn connect_resolved(profile: &SourceProfile, password: &str) -> Result<Self> {
+    async fn connect_resolved(
+        profile: &SourceProfile,
+        password: &str,
+        read_only: bool,
+    ) -> Result<Self> {
         let mut config = Config::new();
         let username = if profile.username.is_empty() {
             "postgres"
@@ -242,7 +261,11 @@ impl Session {
         };
         session
             .client
-            .batch_execute("BEGIN READ ONLY")
+            .batch_execute(if read_only {
+                "BEGIN READ ONLY"
+            } else {
+                "BEGIN"
+            })
             .await
             .map_err(driver_error)?;
         let timeout = format!("{}ms", profile.options.query_timeout_seconds * 1000);
@@ -519,6 +542,31 @@ fn row_cells(row: &Row) -> Result<Vec<CellValue>> {
         })
         .collect()
 }
+// Clipping at a UTF-8 boundary can leave up to three bytes below the cap.
+// Exact near-cap values are conservatively marked too: a preview must never
+// supply a clipped original to a staged write.
+fn cells_may_be_truncated(cells: &[CellValue]) -> bool {
+    cells.iter().any(|c| c.display().len() >= CELL_CAP - 3)
+}
+#[cfg(test)]
+#[test]
+fn utf8_clipped_previews_are_always_marked() {
+    for text in [
+        "x".repeat(CELL_CAP + 1),
+        "雪".repeat(CELL_CAP),
+        format!("x{}", "🦀".repeat(CELL_CAP)),
+    ] {
+        let clipped = clip(text);
+        assert!(clipped.len() <= CELL_CAP);
+        assert!(cells_may_be_truncated(&[CellValue::Text(clipped)]));
+    }
+    for len in CELL_CAP - 3..=CELL_CAP {
+        assert!(cells_may_be_truncated(&[CellValue::Text("x".repeat(len))]));
+    }
+    assert!(!cells_may_be_truncated(&[CellValue::Text(
+        "x".repeat(CELL_CAP - 4)
+    )]));
+}
 async fn preview(
     client: &Client,
     sql: &str,
@@ -559,8 +607,7 @@ async fn preview(
             truncated = true;
             break;
         }
-        // A cap-sized value may be exact; conservatively report preview clipping.
-        truncated |= cells.iter().any(|c| c.display().len() >= CELL_CAP);
+        truncated |= cells_may_be_truncated(&cells);
         bytes += size;
         rows.push(cells);
     }
@@ -692,9 +739,447 @@ pub async fn execute_read_only(
     }).await
 }
 
+/// Applies a parameter-only staged batch in a separate writable session.
+pub async fn apply_table_changes(
+    profile: &SourceProfile,
+    password: &str,
+    request: &crate::mutations::WriteRequest,
+) -> Result<crate::mutations::WriteReport> {
+    use crate::mutations::{self, Dialect, WriteFailure, WriteReport};
+    mutations::validate_request(request)?;
+    name(&request.database)?;
+    let (schema, table_name) = split_table(&request.table)?;
+    let profile = profile.resolved()?;
+    let session = Session::connect_write(&profile, password, &request.database).await?;
+    let timeout = profile.options.query_timeout_seconds;
+    let result = bounded_with(timeout, async {
+        let table = qualified(&schema, &table_name);
+        let mut kind = String::new();
+        for pass in 0..2 {
+            let row = session.client.query_opt(
+                "SELECT c.relkind::text FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2",
+                &[&schema, &table_name],
+            ).await.map_err(driver_error)?;
+            kind = row.map(|r| r.get::<_, String>(0)).unwrap_or_default();
+            ensure!(matches!(kind.as_str(), "r" | "p"), "Writes require a PostgreSQL base table");
+            if pass == 0 {
+                session.client.batch_execute(&format!("LOCK TABLE {table} IN ROW EXCLUSIVE MODE")).await.map_err(driver_error)?;
+            }
+        }
+        let columns = column_metadata(&session.client, &request.table).await?;
+        mutations::validate_schema(&request.expected_columns, &columns)?;
+        let names = columns.iter().map(|c| quote(&c.name)).collect::<Vec<_>>();
+        // Ordinary inherited tables cannot borrow uniqueness from their parent.
+        // Partitioned parents enforce their own composite primary key.
+        let target = if kind == "r" { format!("ONLY {table}") } else { table.clone() };
+        let statements = request.mutations.iter().map(|m| {
+            let target = if matches!(m, mutations::RowMutation::Insert { .. }) { &table } else { &target };
+            mutations::compile(m, &columns, target, &names, Dialect::Postgres)
+        }).collect::<Result<Vec<_>>>()?;
+        let mut report = WriteReport::default();
+        for (mutation, statement) in request.mutations.iter().zip(statements) {
+            let params = statement.params.iter().map(|p| p as &(dyn ToSql + Sync)).collect::<Vec<_>>();
+            let affected = session.client.execute(&statement.sql, &params).await.map_err(driver_error)?;
+            mutations::count(&mut report, mutation, affected)?;
+        }
+        Ok(report)
+    }).await;
+    let report = match result {
+        Ok(report) => report,
+        Err(error) => {
+            let _ = bounded_with(timeout, session.finish()).await;
+            return Err(error);
+        }
+    };
+    if bounded_with(timeout, async {
+        session
+            .client
+            .batch_execute("COMMIT")
+            .await
+            .map_err(driver_error)
+    })
+    .await
+    .is_err()
+    {
+        return Err(WriteFailure::CommitUncertain.into());
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Owned trust-authenticated wire peer: no database service or credentials.
+    // It implements the extended-query exchange rather than mocking Client calls.
+    #[derive(Clone, Copy)]
+    enum WritePeerOutcome {
+        Commit,
+        DropCommitAck,
+        ZeroAffected,
+    }
+
+    #[derive(Default, Debug)]
+    struct WriteWireTrace {
+        executed: Vec<String>,
+        mutation_binds: Vec<Vec<Option<Vec<u8>>>>,
+    }
+
+    fn wire_cstring<'a>(bytes: &mut &'a [u8]) -> &'a str {
+        let end = bytes.iter().position(|b| *b == 0).unwrap();
+        let value = std::str::from_utf8(&bytes[..end]).unwrap();
+        *bytes = &bytes[end + 1..];
+        value
+    }
+
+    async fn wire_message(stream: &mut tokio::net::TcpStream, tag: u8, payload: &[u8]) {
+        use tokio::io::AsyncWriteExt;
+        stream.write_u8(tag).await.unwrap();
+        stream.write_u32((payload.len() + 4) as u32).await.unwrap();
+        stream.write_all(payload).await.unwrap();
+    }
+
+    fn wire_fields(sql: &str) -> Vec<(&'static str, u32)> {
+        if sql.starts_with("SELECT pg_catalog.set_config") {
+            vec![("set_config", 25)]
+        } else if sql.starts_with("SELECT c.relkind") {
+            vec![("relkind", 25)]
+        } else if sql.starts_with("SELECT a.attname") {
+            vec![
+                ("attname", 25),
+                ("format_type", 25),
+                ("?column?", 16),
+                ("exists", 16),
+            ]
+        } else {
+            assert!(
+                sql.starts_with("UPDATE ONLY "),
+                "Unexpected prepared SQL: {sql}"
+            );
+            vec![]
+        }
+    }
+
+    async fn wire_description(stream: &mut tokio::net::TcpStream, sql: &str) {
+        let fields = wire_fields(sql);
+        if fields.is_empty() {
+            wire_message(stream, b'n', &[]).await;
+            return;
+        }
+        let mut payload = (fields.len() as u16).to_be_bytes().to_vec();
+        for (name, oid) in fields {
+            payload.extend_from_slice(name.as_bytes());
+            payload.push(0);
+            payload.extend_from_slice(&0u32.to_be_bytes()); // table OID
+            payload.extend_from_slice(&0u16.to_be_bytes()); // attribute
+            payload.extend_from_slice(&oid.to_be_bytes());
+            payload.extend_from_slice(&(if oid == 16 { 1i16 } else { -1i16 }).to_be_bytes());
+            payload.extend_from_slice(&(-1i32).to_be_bytes()); // type modifier
+            payload.extend_from_slice(&0u16.to_be_bytes()); // text description
+        }
+        wire_message(stream, b'T', &payload).await;
+    }
+
+    async fn wire_row(stream: &mut tokio::net::TcpStream, values: &[&[u8]]) {
+        let mut payload = (values.len() as u16).to_be_bytes().to_vec();
+        for value in values {
+            payload.extend_from_slice(&(value.len() as u32).to_be_bytes());
+            payload.extend_from_slice(value);
+        }
+        wire_message(stream, b'D', &payload).await;
+    }
+
+    async fn write_wire_peer(
+        listener: tokio::net::TcpListener,
+        outcome: WritePeerOutcome,
+    ) -> WriteWireTrace {
+        use std::collections::HashMap;
+        use tokio::io::AsyncReadExt;
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let length = stream.read_u32().await.unwrap();
+        assert!((8..4096).contains(&length));
+        let mut startup = vec![0; length as usize - 4];
+        stream.read_exact(&mut startup).await.unwrap();
+        assert_eq!(&startup[..4], &196608u32.to_be_bytes());
+        wire_message(&mut stream, b'R', &0u32.to_be_bytes()).await; // trust auth
+        wire_message(&mut stream, b'Z', b"I").await;
+        let mut statements = HashMap::<String, String>::new();
+        let mut portals = HashMap::<String, String>::new();
+        let mut trace = WriteWireTrace::default();
+        let mut in_transaction = false;
+        loop {
+            let tag = match stream.read_u8().await {
+                Ok(tag) => tag,
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(error) => panic!("Wire read failed: {error}"),
+            };
+            let length = stream.read_u32().await.unwrap();
+            assert!((4..65536).contains(&length));
+            let mut payload = vec![0; length as usize - 4];
+            stream.read_exact(&mut payload).await.unwrap();
+            let mut bytes = payload.as_slice();
+            match tag {
+                b'Q' => {
+                    let sql = wire_cstring(&mut bytes).to_owned();
+                    trace.executed.push(sql.clone());
+                    let command = match sql.as_str() {
+                        "BEGIN" => {
+                            in_transaction = true;
+                            "BEGIN"
+                        }
+                        "COMMIT" => {
+                            if matches!(outcome, WritePeerOutcome::DropCommitAck) {
+                                break; // received COMMIT, deliberately no acknowledgement
+                            }
+                            in_transaction = false;
+                            "COMMIT"
+                        }
+                        "ROLLBACK" => {
+                            in_transaction = false;
+                            "ROLLBACK"
+                        }
+                        "LOCK TABLE \"public\".\"fixture\" IN ROW EXCLUSIVE MODE" => "LOCK TABLE",
+                        _ => panic!("Unexpected simple SQL: {sql}"),
+                    };
+                    wire_message(&mut stream, b'C', format!("{command}\0").as_bytes()).await;
+                    wire_message(&mut stream, b'Z', if in_transaction { b"T" } else { b"I" }).await;
+                }
+                b'P' => {
+                    let name = wire_cstring(&mut bytes).to_owned();
+                    let sql = wire_cstring(&mut bytes).to_owned();
+                    wire_fields(&sql); // reject unexpected SQL, even when only prepared
+                    statements.insert(name, sql);
+                    wire_message(&mut stream, b'1', &[]).await;
+                }
+                b'D' => {
+                    let target = bytes[0];
+                    bytes = &bytes[1..];
+                    let name = wire_cstring(&mut bytes);
+                    let sql = if target == b'S' {
+                        &statements[name]
+                    } else {
+                        &portals[name]
+                    };
+                    if target == b'S' {
+                        let count = if sql.starts_with("SELECT pg_catalog.set_config") {
+                            1
+                        } else if sql.starts_with("UPDATE") {
+                            3
+                        } else {
+                            2
+                        };
+                        let mut params = (count as u16).to_be_bytes().to_vec();
+                        for _ in 0..count {
+                            params.extend_from_slice(&25u32.to_be_bytes());
+                        }
+                        wire_message(&mut stream, b't', &params).await;
+                    }
+                    wire_description(&mut stream, sql).await;
+                }
+                b'B' => {
+                    let portal = wire_cstring(&mut bytes).to_owned();
+                    let statement = wire_cstring(&mut bytes);
+                    let sql = statements[statement].clone();
+                    let formats = u16::from_be_bytes(bytes[..2].try_into().unwrap()) as usize;
+                    bytes = &bytes[2 + formats * 2..];
+                    let count = u16::from_be_bytes(bytes[..2].try_into().unwrap()) as usize;
+                    bytes = &bytes[2..];
+                    let mut params = Vec::new();
+                    for _ in 0..count {
+                        let len = i32::from_be_bytes(bytes[..4].try_into().unwrap());
+                        bytes = &bytes[4..];
+                        if len == -1 {
+                            params.push(None);
+                        } else {
+                            params.push(Some(bytes[..len as usize].to_vec()));
+                            bytes = &bytes[len as usize..];
+                        }
+                    }
+                    if sql.starts_with("UPDATE") {
+                        trace.mutation_binds.push(params);
+                    }
+                    portals.insert(portal, sql);
+                    wire_message(&mut stream, b'2', &[]).await;
+                }
+                b'E' => {
+                    let portal = wire_cstring(&mut bytes);
+                    let sql = &portals[portal];
+                    trace.executed.push(sql.clone());
+                    let command = if sql.starts_with("SELECT pg_catalog.set_config") {
+                        wire_row(&mut stream, &[b"1000"]).await;
+                        "SELECT 1".to_owned()
+                    } else if sql.starts_with("SELECT c.relkind") {
+                        wire_row(&mut stream, &[b"r"]).await;
+                        "SELECT 1".to_owned()
+                    } else if sql.starts_with("SELECT a.attname") {
+                        // DataRow uses the binary formats requested by tokio-postgres.
+                        wire_row(&mut stream, &[b"id", b"integer", &[0], &[1]]).await;
+                        wire_row(&mut stream, &[b"value", b"text", &[0], &[0]]).await;
+                        "SELECT 2".to_owned()
+                    } else {
+                        format!(
+                            "UPDATE {}",
+                            if matches!(outcome, WritePeerOutcome::ZeroAffected) {
+                                0
+                            } else {
+                                1
+                            }
+                        )
+                    };
+                    wire_message(&mut stream, b'C', format!("{command}\0").as_bytes()).await;
+                }
+                b'S' => {
+                    wire_message(&mut stream, b'Z', if in_transaction { b"T" } else { b"I" }).await
+                }
+                b'C' => {
+                    wire_message(&mut stream, b'3', &[]).await;
+                }
+                b'H' => {}
+                b'X' => break,
+                _ => panic!("Unexpected frontend message: {}", tag as char),
+            }
+        }
+        // Observe the listening socket as well: reconnect/retry must not occur.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+        trace
+    }
+
+    async fn run_write_wire_fixture(
+        outcome: WritePeerOutcome,
+    ) -> (Result<crate::mutations::WriteReport>, WriteWireTrace) {
+        use crate::mutations::{RowMutation, WriteRequest};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut profile = SourceProfile {
+            engine: DbEngine::PostgreSql,
+            host: "127.0.0.1".into(),
+            port: listener.local_addr().unwrap().port(),
+            username: "synthetic".into(),
+            tls: TlsMode::Disabled,
+            ..SourceProfile::default()
+        };
+        profile.options.connect_timeout_seconds = 1;
+        profile.options.query_timeout_seconds = 1;
+        let request = WriteRequest {
+            database: "synthetic".into(),
+            table: "public.fixture".into(),
+            expected_columns: vec![
+                ColumnInfo {
+                    name: "id".into(),
+                    data_type: "integer".into(),
+                    nullable: false,
+                    is_primary_key: true,
+                },
+                ColumnInfo {
+                    name: "value".into(),
+                    data_type: "text".into(),
+                    nullable: false,
+                    is_primary_key: false,
+                },
+            ],
+            mutations: vec![RowMutation::Update {
+                original: vec![
+                    CellValue::Number("7".into()),
+                    CellValue::Text("before".into()),
+                ],
+                changes: vec![(1, CellValue::Text("after'; COMMIT; --".into()))],
+            }],
+        };
+        let server = tokio::spawn(write_wire_peer(listener, outcome));
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::mutations::apply_table_changes(&profile, "", &request),
+        )
+        .await
+        .unwrap();
+        let trace = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(trace.executed[0], "BEGIN");
+        assert!(!trace.executed.iter().any(|sql| sql.contains("READ ONLY")));
+        assert!(trace.executed[1].starts_with("SELECT pg_catalog.set_config"));
+        assert!(trace.executed[2].starts_with("SELECT c.relkind"));
+        assert_eq!(
+            trace.executed[3],
+            "LOCK TABLE \"public\".\"fixture\" IN ROW EXCLUSIVE MODE"
+        );
+        assert!(trace.executed[4].starts_with("SELECT c.relkind"));
+        assert!(trace.executed[5].starts_with("SELECT a.attname"));
+        assert!(trace.executed[6].starts_with(
+            "UPDATE ONLY \"public\".\"fixture\" SET \"value\"=$1::text::pg_catalog.text WHERE "
+        ));
+        assert!(
+            trace.executed[6].contains("\"id\" IS NOT DISTINCT FROM $2::text::pg_catalog.int4")
+        );
+        assert!(!trace.executed[6].contains("after"));
+        assert_eq!(
+            trace.mutation_binds,
+            vec![vec![
+                Some(b"after'; COMMIT; --".to_vec()),
+                Some(b"7".to_vec()),
+                Some(b"before".to_vec()),
+            ]]
+        );
+        assert_eq!(trace.executed.len(), 8, "No mutation or transaction retry");
+        (result, trace)
+    }
+
+    #[tokio::test]
+    async fn postgres_write_owned_loopback_commit() {
+        let (result, trace) = run_write_wire_fixture(WritePeerOutcome::Commit).await;
+        assert_eq!(
+            result.unwrap(),
+            crate::mutations::WriteReport {
+                updated: 1,
+                inserted: 0,
+                deleted: 0
+            }
+        );
+        assert_eq!(trace.executed[7], "COMMIT");
+    }
+
+    #[tokio::test]
+    async fn postgres_write_owned_loopback_commit_ack_drop_is_uncertain_without_retry() {
+        let (result, trace) = run_write_wire_fixture(WritePeerOutcome::DropCommitAck).await;
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<crate::mutations::WriteFailure>(),
+            Some(&crate::mutations::WriteFailure::CommitUncertain)
+        );
+        assert_eq!(trace.executed[7], "COMMIT");
+        assert_eq!(
+            trace
+                .executed
+                .iter()
+                .filter(|sql| sql.as_str() == "COMMIT")
+                .count(),
+            1
+        );
+        assert!(!trace.executed.iter().any(|sql| sql == "ROLLBACK"));
+    }
+
+    #[tokio::test]
+    async fn postgres_write_owned_loopback_zero_affected_rolls_back_without_commit() {
+        let (result, trace) = run_write_wire_fixture(WritePeerOutcome::ZeroAffected).await;
+        let error = result.unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::mutations::WriteFailure>()
+                .is_none()
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("expected exactly one affected row"),
+            "{error}"
+        );
+        assert_eq!(trace.executed[7], "ROLLBACK");
+        assert!(!trace.executed.iter().any(|sql| sql == "COMMIT"));
+    }
+
     #[test]
     fn quoted_catalog_names_round_trip() {
         for (schema, table) in [

@@ -18,7 +18,7 @@ Status: product and technical plan, not a release promise. This is the canonical
 | Drivers | Five experimental native engines: MySQL/MariaDB, PostgreSQL, official-driver MongoDB and bounded-RESP2 Redis; engine-specific transport/TLS restrictions | Declared native server/auth/TLS matrices, extensible registry, JDBC and third-party workers |
 | Source management | General/Options/SSH-SSL/Schemas, reusable SSH configurations, session/SaveForever local plaintext auth, per-source menus; imports still MySQL/MariaDB-only | Complete authentication/version/topology matrix, release-grade signing |
 | Catalog | SQLite database/table/view-name cache, offline restoration, selected-source refresh, virtualized tree and cached-only search through collapsed branches | Cached columns/keys/indexes/routines, metadata-aware completion |
-| Workspace | Independent table/document/key tabs and restricted SQL/JSON read consoles; MySQL/MariaDB-only WHERE/ORDER BY fragments; canvas grid; loaded CSV; result-retention budget | Cell inspection/copy, column resizing, query history, scripts, transactions, staged writes |
+| Workspace | Independent table/document/key tabs and restricted SQL/JSON read consoles; MySQL/MariaDB-only WHERE/ORDER BY fragments; canvas grid with cell selection/copy; loaded CSV; result-retention budget; bounded staged SQL base-table writes | Details drawer, column resizing, query history, scripts, reusable transactions and full DBX editing parity |
 | Plugins | No plugin host, SDK, package installer, or marketplace | All plugin milestones below |
 | AI | ACP SDK boundary and disconnected panel | Agent launch, negotiation, authentication, sessions, streaming, permissions |
 
@@ -56,10 +56,10 @@ Completed starting point: attributed static catalog, distinct MySQL/MariaDB iden
 ### N2. Stabilize the daily DataGrip workflow
 
 - Profile native wide-grid scrolling/frame time and memory on representative hardware; keep two-axis canvas rendering and retained-result limits. Structural render counts are not latency measurements.
-- Add cell inspection/copy and column resizing/auto-fit one by one, preserving exact NULL/binary/decimal semantics.
+- Build on cell selection/copy and bounded staged SQL editing with details inspection and column resizing/auto-fit one by one, preserving exact NULL/binary/decimal semantics.
 - Build on implemented Kit SQL highlighting with metadata-aware completion and explicit opt-in history/draft recovery with retention/delete controls.
 - Introduce richer object metadata with `supported / unsupported / unknown` availability rather than fabricated fields.
-- Design pinned physical-session ownership before transactions/scripts/writes. Add cancel acknowledgements and uncertain outcomes before retry or write controls.
+- Consolidate the [bounded SQL write stage](docs/table-editing.md): actual-server transaction/commit fixtures, schema/conflict/uncertain-outcome and original-target reconciliation gates come before release claims or type expansion. No automatic write retry. Design pinned reusable physical-session ownership before general transactions/scripts; do not treat one-batch Apply as transaction-console parity.
 
 **Exit:** reproducible native performance evidence, keyboard/focus and error-state tests, lossless-value regressions, and isolated-tab cancellation/recovery. No unused toolbar placeholders.
 

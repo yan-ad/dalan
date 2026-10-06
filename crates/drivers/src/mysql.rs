@@ -1,4 +1,4 @@
-//! Restricted MySQL/MariaDB reader. No arbitrary SQL or write API is exposed.
+//! Restricted MySQL/MariaDB reader and bounded parameter-only staged writes.
 use crate::{
     relay::{self, Relay},
     sources::{Authentication, ConnectionMode, SourceProfile, TlsMode, identifier},
@@ -782,6 +782,84 @@ pub async fn browse(
     })
     .await
 }
+
+/// Applies a staged batch atomically on an InnoDB base table. Never retries.
+pub async fn apply_table_changes(
+    profile: &SourceProfile,
+    password: &str,
+    request: &crate::mutations::WriteRequest,
+) -> Result<crate::mutations::WriteReport> {
+    use crate::mutations::{self, Dialect, WriteFailure, WriteReport};
+    mutations::validate_request(request)?;
+    identifier(&request.database)?;
+    identifier(&request.table)?;
+    let profile = profile.resolved()?;
+    let mut session = Session::connect(&profile, password).await?;
+    let timeout = profile.options.query_timeout_seconds;
+    let result = bounded_with(timeout, async {
+        session.conn().query_drop("SET SESSION sql_mode=CONCAT(@@SESSION.sql_mode,',STRICT_ALL_TABLES')").await.map_err(driver_error)?;
+        session.conn().query_drop("START TRANSACTION").await.map_err(driver_error)?;
+        // Pin the table definition with a transaction-held metadata lock, without
+        // executing views. Repeat the base-table/engine proof after acquiring it.
+        let table = format!("{}.{}", quote(&request.database), quote(&request.table));
+        for pass in 0..2 {
+            let row: Option<mysql_async::Row> = session.conn().exec_first(
+                "SELECT TABLE_TYPE,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=? LIMIT 1",
+                (&request.database, &request.table),
+            ).await.map_err(driver_error)?;
+            let proof = row.map(mysql_async::from_row_opt::<(String, Option<String>)>).transpose()
+                .map_err(|_| anyhow!("Invalid write table metadata"))?;
+            ensure!(proof.as_ref().is_some_and(|(kind, engine)| kind == "BASE TABLE" && engine.as_deref() == Some("InnoDB")), "Writes require an InnoDB base table");
+            if pass == 0 {
+                session.conn().query_drop(format!("SELECT * FROM {table} LIMIT 0")).await.map_err(driver_error)?;
+            }
+        }
+        let columns = metadata(session.conn(), &request.database, &request.table).await?;
+        mutations::validate_schema(&request.expected_columns, &columns)?;
+        let names = columns.iter().map(|c| quote(&c.name)).collect::<Vec<_>>();
+        // Compile the entire batch before the first mutation is executed.
+        let statements = request.mutations.iter().map(|m| mutations::compile(m, &columns, &table, &names, Dialect::MySql)).collect::<Result<Vec<_>>>()?;
+        let mut report = WriteReport::default();
+        for (mutation, statement) in request.mutations.iter().zip(statements) {
+            let params = statement.params.into_iter().map(|v| v.map_or(Value::NULL, |s| Value::Bytes(s.into_bytes()))).collect::<Vec<_>>();
+            session.conn().exec_drop(statement.sql, params).await.map_err(driver_error)?;
+            let affected = session.conn().affected_rows();
+            let warnings: Option<(u64,)> = session.conn().query_first("SHOW COUNT(*) WARNINGS").await.map_err(driver_error)?;
+            ensure!(warnings == Some((0,)), "Write rejected because the server reported lossy conversion or warnings");
+            mutations::count(&mut report, mutation, affected)?;
+        }
+        Ok(report)
+    }).await;
+    let report = match result {
+        Ok(report) => report,
+        Err(error) => {
+            let _ = bounded_with(timeout, async {
+                session
+                    .conn()
+                    .query_drop("ROLLBACK")
+                    .await
+                    .map_err(driver_error)
+            })
+            .await;
+            return Err(error);
+        }
+    };
+    // Timeout/transport failure during COMMIT has a distinct, stable marker.
+    if bounded_with(timeout, async {
+        session
+            .conn()
+            .query_drop("COMMIT")
+            .await
+            .map_err(driver_error)
+    })
+    .await
+    .is_err()
+    {
+        return Err(WriteFailure::CommitUncertain.into());
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
