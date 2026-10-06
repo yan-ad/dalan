@@ -719,59 +719,57 @@ impl Render for Shell {
                         .child(self.acp_panel(width, cx))
                     }),
             )
-            .child(
-                div()
-                    .id("shell-status")
-                    .debug_selector(|| "shell-status".into())
-                    .h(px(STATUS_HEIGHT))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(px(12.0))
-                    .text_size(px(11.0))
-                    .text_color(colors(cx).muted)
-                    .gap(px(8.0))
-                    .when_some(
-                        self.sources.read(cx).connector_feedback.clone(),
-                        |status, feedback| {
-                            status.child(
+            .when_some(
+                self.sources
+                    .read(cx)
+                    .connector_feedback
+                    .clone()
+                    .or_else(|| cx.global::<AppearanceSettings>().error.clone()),
+                |shell, message| {
+                    // Feedback is an explicit, dismissible overlay, not a reserved footer.
+                    shell.child(
+                        div()
+                            .id("shell-notice")
+                            .debug_selector(|| "shell-notice".into())
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .right_0()
+                            .px_3()
+                            .py_2()
+                            .bg(colors(cx).panel)
+                            .border_t_1()
+                            .border_color(colors(cx).border)
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
                                 div()
                                     .id("connector-feedback")
                                     .debug_selector(|| "connector-feedback".into())
                                     .flex_1()
                                     .min_w_0()
-                                    .text_ellipsis()
-                                    .tooltip(move |window, cx| {
-                                        gpui::component::tooltip::Tooltip::new(feedback.clone())
-                                            .build(window, cx)
-                                    })
-                                    .child(
-                                        self.sources.read(cx).connector_feedback.clone().unwrap(),
-                                    ),
+                                    .text_size(px(12.))
+                                    .child(message),
                             )
-                        },
+                            .child(
+                                KitButton::new("dismiss-shell-notice")
+                                    .debug_selector(|| "dismiss-shell-notice".into())
+                                    .icon(gpui::assets::IconName::X)
+                                    .small()
+                                    .ghost()
+                                    .tooltip("Dismiss notification")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.sources.update(cx, |model, cx| {
+                                            model.connector_feedback = None;
+                                            cx.notify();
+                                        });
+                                        cx.global_mut::<AppearanceSettings>().error = None;
+                                        cx.notify();
+                                    })),
+                            ),
                     )
-                    .when_some(
-                        cx.global::<AppearanceSettings>().error.clone(),
-                        |status, error| {
-                            status.child(div().text_color(colors(cx).warning).child(error))
-                        },
-                    )
-                    .child(
-                        div()
-                            .id("status-theme-hint")
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .tooltip(|window, cx| {
-                                gpui::component::tooltip::Tooltip::new(format!(
-                                    "Appearance: {}. Preferences are saved in dalan.config.",
-                                    cx.global::<AppearanceSettings>().preference.label()
-                                ))
-                                .build(window, cx)
-                            }),
-                    ),
+                },
             )
     }
 }

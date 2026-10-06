@@ -1,5 +1,9 @@
 # Test strategy and release evidence
 
+## Flush workspace bottom edge
+
+Removed the empty 28 px shell status strip left behind by the ACP trigger relocation. Regression geometry requires explorer, main workspace and visible ACP to reach the 800 px window bottom; main content also reaches the edge with explorer hidden and at compact 720 × 480 size. Connector/appearance feedback is an explicit dismissible absolute overlay whose presence/dismissal never changes workspace bounds. Existing result footers are not removed. Local validation passed: **151 headless unit tests + one native-wire integration test, 203 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped. Geometry is simulated, not a native visual certification.
+
 ## SQL caret initialization and Cmd-Enter regression
 
 A failing-before/passing-after regression reproduced an editor focused before lazy Kit state creation accepting input without starting its caret blink notifications. The adapter now transfers and restores focus through `EditorState::focus`, not only its `FocusHandle`. It preserves the retained text/selection/history; Run, cached database selection and console activation use the same state-aware focus path. Routine result notifications still do not refocus the editor.

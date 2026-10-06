@@ -538,18 +538,43 @@ fn separator_drag_keyboard_and_compact_resize(cx: &mut TestAppContext) {
 fn system_theme_shell_is_compact_and_flush(cx: &mut TestAppContext) {
     let (_, cx) = fixture(cx);
     let title = cx.debug_bounds("titlebar").unwrap();
-    let status = cx.debug_bounds("shell-status").unwrap();
+    assert!(cx.debug_bounds("shell-status").is_none());
+    assert!(cx.debug_bounds("shell-notice").is_none());
     let pane = cx.debug_bounds("database-pane").unwrap();
     let content = cx.debug_bounds("main-content").unwrap();
     assert_eq!(title.size.height, px(TITLEBAR_HEIGHT));
-    assert_eq!(status.size.height, px(STATUS_HEIGHT));
     assert_eq!(pane.origin.x, px(0.0));
     assert_eq!(pane.origin.y, title.size.height);
     assert_eq!(content.origin.x, pane.size.width + px(PANE_GAP));
     assert_eq!(content.origin.x + content.size.width, px(1280.0));
-    assert_eq!(content.origin.y + content.size.height, status.origin.y);
-    assert_eq!(status.size.height, px(28.0));
+    assert_eq!(content.bottom(), px(800.));
+    assert_eq!(pane.bottom(), px(800.));
+    click(cx, "database-toggle");
+    assert_eq!(cx.debug_bounds("main-content").unwrap().bottom(), px(800.));
+    click(cx, "acp-toggle");
+    assert_eq!(cx.debug_bounds("main-content").unwrap().bottom(), px(800.));
+    assert_eq!(cx.debug_bounds("acp-panel").unwrap().bottom(), px(800.));
     assert_eq!(TITLEBAR_HEIGHT, 34.0);
+}
+
+#[gpui::test]
+fn transient_feedback_overlay_never_reserves_workspace_height(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let model = shell.read_with(cx, |s, _| s.sources.clone());
+    let before = cx.debug_bounds("main-content").unwrap();
+    model.update(cx, |m, cx| {
+        m.connector_feedback = Some("Export cancelled; no file written.".into());
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("shell-notice").is_some());
+    assert_eq!(cx.debug_bounds("main-content").unwrap(), before);
+    click(cx, "dismiss-shell-notice");
+    assert!(cx.debug_bounds("shell-notice").is_none());
+    assert_eq!(cx.debug_bounds("main-content").unwrap(), before);
+    cx.simulate_resize(size(px(720.), px(480.)));
+    cx.run_until_parked();
+    assert_eq!(cx.debug_bounds("main-content").unwrap().bottom(), px(480.));
 }
 
 #[gpui::test]
