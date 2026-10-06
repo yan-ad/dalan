@@ -1,5 +1,13 @@
 # Test strategy and release evidence
 
+## PostgreSQL User & Privileges driver and settings Cmd-W window close routing
+
+Ported DBX's PostgreSQL role administration query and DCL generation logic into native `dalan-drivers` (`postgres_users.rs` and `postgres.rs`). Added `list_roles`, `show_role_grants`, and `execute_role_admin` with safe SQL identifier quoting (`quote_identifier`) and literal escaping (`quote_literal`). The query architecture uses PostgreSQL's `pg_catalog.pg_roles` system catalog, `pg_auth_members`, and a unified CTE evaluating role attributes, parent/child role memberships, database-level privileges (`has_database_privilege`), schema-level privileges (`has_schema_privilege`), and table-level privileges (`information_schema.role_table_grants`). Six unit tests cover quoting, DDL generation (`CREATE ROLE`, `ALTER ROLE PASSWORD`, `ALTER ROLE LOGIN`, `DROP ROLE`), multi-scope grants (`DATABASE`, `SCHEMA`, `TABLE`, `ALL TABLES IN SCHEMA`, `ROLE`), and grant line categorization.
+
+In addition, fixed source settings dialog close routing on `Cmd+W` across focused input and sub-page contexts (`SourceForm`, `SshManager`, `SourceDialog`) by registering `"w"` in the platform key listener and extending `CloseWindow` keybindings.
+
+Local verification passed **243 headless unit tests + one native-wire integration test, 247 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. No private credentials or live servers were contacted. CI remains skipped.
+
 ## Accessible Kit AlertDialog modals for destructive confirmations
 
 Replaced all text-only discard, abort, remove, and close confirmations across Dalan with accessible GPUI Kit `AlertDialog` modal overlays (`super::confirm::open` and `WindowExt::open_alert_dialog`) without breaking safety guards or DataGrip/DBX-inspired workflows. The shared helper sets default initial focus on the safe cancel button, routes Escape to cancellation, disables backdrop dismissal, prevents stacking dialogs on repeated shortcuts, and verifies that stale targets, in-flight operations (`write_busy`, `saving`), or changed revisions reject destructive callbacks.

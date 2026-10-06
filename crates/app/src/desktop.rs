@@ -881,6 +881,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("tab", NextFocus, Some("SourceForm")),
         KeyBinding::new("shift-tab", PreviousFocus, Some("SourceForm")),
         KeyBinding::new("escape", Dismiss, Some("SourceForm")),
+        KeyBinding::new("cmd-w", CloseWindow, Some("SourceForm")),
+        KeyBinding::new("cmd-w", CloseWindow, Some("SshManager")),
         KeyBinding::new("cmd-w", CloseWindow, Some("SourceDialog")),
     ]);
 }

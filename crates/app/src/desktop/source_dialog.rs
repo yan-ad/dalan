@@ -1458,6 +1458,10 @@ impl Render for SourceDialog {
                                 }
                                 cx.stop_propagation();
                             }
+                            "w" => {
+                                this.close(window, cx);
+                                cx.stop_propagation();
+                            }
                             _ => {}
                         }
                     }

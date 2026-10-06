@@ -739,6 +739,66 @@ pub async fn execute_read_only(
     }).await
 }
 
+/// Lists all PostgreSQL roles with login flags and role attributes.
+pub async fn list_roles(
+    profile: &SourceProfile,
+    password: &str,
+) -> Result<Vec<crate::postgres_users::PostgresRole>> {
+    let profile = profile.resolved()?;
+    bounded_with(profile.options.query_timeout_seconds, async {
+        let s = Session::connect(&profile, password, None).await?;
+        let sql = crate::postgres_users::list_roles_sql();
+        let rows = s.client.query(sql, &[]).await.map_err(driver_error)?;
+        s.finish().await?;
+        Ok(crate::postgres_users::parse_roles_rows(&rows))
+    })
+    .await
+}
+
+/// Retrieves the structured grant lines for a specific role.
+pub async fn show_role_grants(
+    profile: &SourceProfile,
+    password: &str,
+    role: &str,
+) -> Result<Vec<crate::postgres_users::PostgresGrantLine>> {
+    let profile = profile.resolved()?;
+    let sql = crate::postgres_users::show_grants_sql(role)?;
+    bounded_with(profile.options.query_timeout_seconds, async {
+        let s = Session::connect(&profile, password, None).await?;
+        let rows = s.client.query(&sql, &[]).await.map_err(driver_error)?;
+        s.finish().await?;
+        let lines = rows
+            .iter()
+            .map(|r| {
+                let text: String = r.get(0);
+                crate::postgres_users::PostgresGrantLine::parse(text)
+            })
+            .collect();
+        Ok(lines)
+    })
+    .await
+}
+
+/// Executes a role administrative DDL/DCL statement (CREATE/ALTER/DROP ROLE, GRANT, REVOKE)
+/// in an explicit transaction block and commits it.
+pub async fn execute_role_admin(
+    profile: &SourceProfile,
+    password: &str,
+    database: Option<&str>,
+    sql: &str,
+) -> Result<()> {
+    let profile = profile.resolved()?;
+    let timeout = profile.options.query_timeout_seconds;
+    bounded_with(timeout, async {
+        let session = Session::connect_mode(&profile, password, database, false).await?;
+        session.client.batch_execute(sql).await.map_err(driver_error)?;
+        session.client.batch_execute("COMMIT").await.map_err(driver_error)?;
+        let _ = session.finish().await;
+        Ok(())
+    })
+    .await
+}
+
 /// Applies a parameter-only staged batch in a separate writable session.
 pub async fn apply_table_changes(
     profile: &SourceProfile,

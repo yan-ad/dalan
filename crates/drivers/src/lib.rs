@@ -12,6 +12,7 @@ pub mod mysql;
 pub use mutations::{RowMutation, WriteFailure, WriteReport, WriteRequest, apply_table_changes};
 mod native;
 pub mod postgres;
+pub mod postgres_users;
 pub mod redis_driver;
 pub use native::{browse, columns, discover_catalog, is_browsable_kind, tables, test_connection};
 pub mod query;
