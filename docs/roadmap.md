@@ -13,4 +13,4 @@ The canonical forward plan is now the root **[ROADMAP.md](../ROADMAP.md)**. It c
 
 ## Completed multi-tab / read-only console slice
 
-The existing multi-table workspace and restricted MySQL/MariaDB query consoles are experimental implementations, not full DataGrip parity. See the [query guide](query-consoles.md), [ADR 0004](adr/0004-workspace-tabs-and-read-only-consoles.md) and [current baseline](../ROADMAP.md#where-we-are-now). This heading preserves earlier decision-record links. Syntax completion/history, scripts, pinned transactions and guarded writes have separate roadmap gates.
+The multi-table/document/key workspace and restricted MySQL/MariaDB/PostgreSQL SQL and MongoDB/Redis JSON consoles are experimental implementations (see the [native support matrix](native-drivers.md)), not full DataGrip parity. See the [query guide](query-consoles.md), [ADR 0004](adr/0004-workspace-tabs-and-read-only-consoles.md) and [current baseline](../ROADMAP.md#where-we-are-now). This heading preserves earlier decision-record links. Syntax completion/history, scripts, pinned transactions and guarded writes have separate roadmap gates.

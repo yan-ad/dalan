@@ -6,23 +6,23 @@ Status: product and technical plan, not a release promise. This is the canonical
 
 - Rust + GPUI Kit database workspace. DataGrip is the workflow reference; compact layout, **Kit standard controls and Kit's default theme** are the visual direction.
 - macOS first, Linux second, Windows third. Portable headless CI does not establish desktop support.
-- MySQL/MariaDB are the first implemented engines. PostgreSQL and Redis remain first-release targets; MongoDB follows the first release, as previously agreed. Other engines enter through tested driver capabilities, not compatibility labels.
+- MySQL/MariaDB were the first implemented engines. PostgreSQL, MongoDB and Redis now have experimental native read-only adapters: the immediate priority was native three-engine support, not JDBC. This brings restricted MongoDB reads forward from the earlier post-first-release plan; full Compass-style workflows remain later. Release support still requires tested driver capabilities and declared server matrices, not compatibility labels.
 - AI connects only through **Agent Client Protocol (ACP)**. No application BYOK, direct provider adapters, provider-specific CLI protocols, or automatic database execution. External agents own model authentication and billing.
 - Plugins extend database workflows, not a generic IDE or infrastructure toolbox. No general file explorer, Git UI, build tools, Kubernetes console, or general-purpose terminal.
-- Preserve optional database scope, Keychain/session credential choices, strict connectivity, offline schema cache, independent table/console tabs, lossless values, bounded results, and working keyboard controls.
+- Preserve optional database scope, session-only credentials with explicit SaveForever local plaintext opt-in, strict connectivity, offline schema cache, independent table/console tabs, lossless values, bounded results, and working keyboard controls.
 
 ## Where we are now
 
 | Area | Implemented in Dalan | Not implemented yet |
 | --- | --- | --- |
-| Drivers | Experimental MySQL/MariaDB through `mysql_async`, direct/Unix socket/URL/SSH/CONNECT routes, verified TLS options | Extensible driver registry, PostgreSQL, Redis, third-party driver workers |
-| Source management | General/Options/SSH-SSL/Schemas, reusable SSH configurations, optional Keychain, per-source menus | Complete authentication/version/topology matrix, release-grade signing |
+| Drivers | Five experimental native engines: MySQL/MariaDB, PostgreSQL, official-driver MongoDB and bounded-RESP2 Redis; engine-specific transport/TLS restrictions | Declared native server/auth/TLS matrices, extensible registry, JDBC and third-party workers |
+| Source management | General/Options/SSH-SSL/Schemas, reusable SSH configurations, session/SaveForever local plaintext auth, per-source menus; imports still MySQL/MariaDB-only | Complete authentication/version/topology matrix, release-grade signing |
 | Catalog | SQLite database/table/view-name cache, offline restoration, selected-source refresh, virtualized tree and cached-only search through collapsed branches | Cached columns/keys/indexes/routines, metadata-aware completion |
-| Workspace | Independent table tabs and restricted read consoles; WHERE/ORDER BY; canvas grid; loaded CSV; result-retention budget | Cell inspection/copy, column resizing, query history, scripts, transactions, staged writes |
+| Workspace | Independent table/document/key tabs and restricted SQL/JSON read consoles; MySQL/MariaDB-only WHERE/ORDER BY fragments; canvas grid; loaded CSV; result-retention budget | Cell inspection/copy, column resizing, query history, scripts, transactions, staged writes |
 | Plugins | No plugin host, SDK, package installer, or marketplace | All plugin milestones below |
 | AI | ACP SDK boundary and disconnected panel | Agent launch, negotiation, authentication, sessions, streaming, permissions |
 
-These are scoped implementations, not DataGrip/Compass parity. The current query console accepts one restricted read statement; this plan does not silently broaden it to arbitrary SQL.
+These are scoped implementations, not DataGrip/Compass parity. SQL consoles accept one restricted SELECT, MongoDB a restricted JSON find object, Redis an allowlisted JSON command array; this plan does not broaden them to arbitrary SQL, shell or write execution. See the [native support matrix](docs/native-drivers.md), including direct-only MongoDB/Redis, MongoDB VerifyCa rejection, and official-driver wire-cap limitations. Owned loopback fixtures are not the unrun actual native multi-database server/TLS matrix; final totals await primary verification.
 
 ## DBX reference and reuse strategy
 
@@ -30,7 +30,7 @@ Cloned [t8y2/dbx](https://github.com/t8y2/dbx) for source inspection at **`38ce7
 
 DBX is a source of reusable database and extension logic, not Dalan's product shell. Its concrete driver pools, generated descriptors, dialect utilities, metadata provenance, query-cancellation registry, plugin RPC, and package lifecycle are useful references. Its Vue/Tauri UI, CodeMirror integration, direct AI providers, proprietary CLI adapters, web deployment, broad middleware tools, and large binary/message budgets are not adopted.
 
-**First adaptation implemented:** `crates/drivers/src/catalog.rs` adapts DBX's descriptor/capability separation and registry lookup/validation patterns to Dalan's four existing engines. It adds stable IDs, dialect/runtime intent, optional capability metadata and validation without importing DBX's full engine list, generated manifests or runtime. No driver executor, plugin host or AI provider was copied. Root/package Apache-2.0 permits adaptation subject to applicable notices and modified-file requirements; third-party/vendor components and external plugin artifacts require separate review. Dalan's own project license remains an owner decision before distribution. See [source-backed reuse notes](docs/dbx-reuse.md).
+**First adaptation implemented:** `crates/drivers/src/catalog.rs` adapts DBX's descriptor/capability separation and registry lookup/validation patterns to Dalan's initial four engine identities (now extended to five with MongoDB). It adds stable IDs, dialect/runtime intent, optional capability metadata and validation without importing DBX's full engine list, generated manifests or runtime. No driver executor, plugin host or AI provider was copied. Root/package Apache-2.0 permits adaptation subject to applicable notices and modified-file requirements; third-party/vendor components and external plugin artifacts require separate review. Dalan's own project license remains an owner decision before distribution. See [source-backed reuse notes](docs/dbx-reuse.md).
 
 ## Now: consolidate the foundation before adding breadth
 
@@ -40,11 +40,11 @@ Production now aliases `gpui` to `gpui-kit = 0.7.1` with `tree-sitter-sql`, on o
 
 Kit inputs/buttons/checkboxes/tabs/dropdown and popup menus/tooltips are implemented; native dropdown alternatives are not claimed Combobox/Select usage. SQL Tree-sitter highlighting is enabled selectively (JSON is also in the graph), not all language bundles. Benchmark Kit DataTable before replacing the specialized shipping canvas; stateless Table is not the wide-result solution. Database-aware completion/history/per-statement execution remain pending Dalan features. See [migration guide](docs/gpui-kit-migration.md) and [ADR 0006](docs/adr/0006-gpui-kit-migration.md).
 
-**Completed foundation:** production Kit adoption, default-theme ownership, password/privacy/editor adapters and coordinated dependencies. The isolated experiment and its job are removed; earlier pilot counts remain historical, not canvas parity. Main-workspace fixes cover multiline-safe canvas previews, visible prefixed tab labels, immediate Run focus restoration, searchable console database choices, cached-only explorer search and top-right ACP/default-theme controls. Final local validation counts await primary confirmation. **Remaining gates:** native visual/accessibility and representative performance evidence; hosted CI is explicitly skipped for this task. Production adoption is implemented, not native certification, history, new drivers or live ACP.
+**Completed foundation:** production Kit adoption, default-theme ownership, password/privacy/editor adapters and coordinated dependencies. The isolated experiment and its job are removed; earlier pilot counts remain historical, not canvas parity. Main-workspace fixes cover multiline-safe canvas previews, visible prefixed tab labels, immediate Run focus restoration, searchable console database choices, cached-only explorer search and top-right ACP/default-theme controls. Final local validation counts await primary confirmation. **Remaining gates:** native visual/accessibility and representative performance evidence; hosted CI is explicitly skipped for this task. Production adoption is implemented, not native certification, history or live ACP. New native adapters are independently implemented; they do not establish release certification.
 
 ### N1. Establish the DBX port boundary
 
-Completed starting point: attributed static catalog, distinct MySQL/MariaDB identities, optional-database/Unix-socket capability metadata for experimental drivers, and duplicate/invalid/planned-capability tests. Planned PostgreSQL/Redis entries expose no implemented capabilities. This descriptive catalog does not change connection behavior or establish a plugin ABI.
+Completed starting point: attributed static catalog, distinct MySQL/MariaDB identities, optional-database/Unix-socket capability metadata for experimental drivers, and duplicate/invalid/planned-capability tests. PostgreSQL/Redis entries and the added MongoDB entry now advertise scoped experimental native connection capabilities; all five preserve distinct identities. The original planned-entry state is historical. This descriptive catalog does not change connection behavior or establish a plugin ABI.
 
 1. Record the exact upstream file, revision, license/notices, intended behavior, Dalan changes, and tests for every port.
 2. Start with descriptor validation, capability categories, metadata availability, and pure identifier/qualification logic. Adapt to Dalan's typed values and explicit catalog identities.
@@ -65,7 +65,7 @@ Completed starting point: attributed static catalog, distinct MySQL/MariaDB iden
 
 ### Staged DBX toolbar parity
 
-Full DBX parity is approved **in stages**, not claimed complete. [The detailed parity plan](docs/dbx-toolbar-parity.md) records implemented Stage 1 safe toolbar/editor tools and remaining gaps: Run/Stop plus retained Cancel, whole-document token-gap Format/Compress, Kit wrap/Unfold, bounded UTF-8 SQL open/new-file save, quoted clipboard IN lists, source/database targeting and persisted source-default controls. Existing loaded CSV export remains an extra. No Fold All placeholder is shipped; compact More uses an 800 px tier, not DBX measured overflow/hysteresis.
+Full DBX parity is approved **in stages**, not claimed complete. [The detailed parity plan](docs/dbx-toolbar-parity.md) records implemented Stage 1 safe toolbar/editor tools and remaining gaps: Run/Stop plus retained Cancel, MySQL/MariaDB-only whole-document token-gap Format/Compress (disabled for PostgreSQL/MongoDB/Redis), Kit wrap/Unfold, bounded UTF-8 SQL open/new-file save, quoted clipboard IN lists, source/database targeting and persisted source-default controls. Existing loaded CSV export remains an extra. No Fold All placeholder is shipped; compact More uses an 800 px tier, not DBX measured overflow/hysteresis.
 
 Next parity stages are **2: results and explain**, **3: archives/script library, diagnostics and folding/LSP**, **4: multi-database execution and cancellation**, and **5: transaction sessions, permissions and confirmation/rollback**. They depend on explicit capability, execution-policy and session-ownership gates; the current console remains restricted read-only. Stage 1 is independently implemented from conceptual upstream references, not copied toolbar code/assets, and is not 1:1 visual/logic parity. Final local validation totals await primary confirmation; hosted CI is skipped.
 
@@ -90,15 +90,15 @@ Use an internal Rust trait/enum appropriate to the first adapters. This is **not
 
 | Order | Milestone | Acceptance gate |
 | --- | --- | --- |
-| D1 | PostgreSQL read vertical slice | Verified TLS/auth matrix; databases/schemas/objects; exact NUMERIC, arrays, UUID, bytea, timestamps and special floats; table/console/cache isolation; real cancel tests |
-| D2 | Redis native workspace | SCAN without KEYS; binary-safe keys; bounded string/hash/list/set/sorted-set/stream inspection; correct TTL states; command policy; no false SQL grid/transaction parity |
-| D3 | First-release native driver set | PostgreSQL/MySQL/MariaDB/Redis pass declared server/OS matrices and release gates, not merely compilation |
-| D4 | MongoDB after first release | Collection/document/aggregation UX, BSON fidelity, indexes, bounded reads/export and explicit later-write policy |
+| D1 | Harden implemented PostgreSQL native read slice | Verified TLS/auth matrix; databases/schemas/objects; exact NUMERIC, arrays, UUID, bytea, timestamps and special floats; table/console/cache isolation; real cancel tests |
+| D2 | Harden implemented Redis native read slice | Actual server/TLS/ACL matrix; SCAN cursor/oversize behavior; binary-key catalog limitations; bounded string/hash/list/set/sorted-set inspection; streams/cluster/RESP3 remain unsupported; no false SQL/transaction parity |
+| D3 | Release-qualified native driver set | All declared engines pass server/OS/auth/TLS matrices and release gates, not merely compilation or framed loopback fixtures |
+| D4 | Harden implemented MongoDB native find slice, then deeper workflows | Direct-only and fixed-admin auth tests; BSON/EJSON fidelity; actual server/TLS matrix before release claims; aggregation/index UX and writes remain later explicit scope |
 | D5 | Additional native engines | Rank SQLite/DuckDB, SQL Server, ClickHouse and others by actual daily need, dependency/license cost and completed conformance tests |
 
-Each driver ships a descriptor, tested capabilities, migration rules and fixtures. Adding a catalog entry does not claim support. PostgreSQL NUMERIC decoding is a promising isolated DBX port; preserve Dalan's native type identity rather than DBX's JavaScript-safe JSON representation.
+The native three-engine implementations already have scoped descriptors, validators and owned loopback fixtures, not completed real-server matrices. PostgreSQL/MongoDB official drivers have no hard message/batch allocation cap here; Redis has an explicit bounded RESP2 decoder. Each release-qualified driver needs a descriptor, tested capabilities, migration rules and fixtures. Adding a catalog entry does not claim support. PostgreSQL NUMERIC decoding is a promising isolated DBX port; preserve Dalan's native type identity rather than DBX's JavaScript-safe JSON representation.
 
-Optional external/JDBC drivers are a later, explicitly installed worker tier. They must not force a JVM, proprietary client, webview, or unrelated native library into the default GPUI build. Database-worker RPC is separate from ACP AI transport.
+**JDBC is not implemented.** Optional external/JDBC drivers are a later, explicitly installed worker tier, after hardening the native PostgreSQL/MongoDB/Redis additions. They must not force a JVM, proprietary client, webview, or unrelated native library into the default GPUI build. Database-worker RPC is separate from ACP AI transport.
 
 ### Plugin ecosystem
 
@@ -136,7 +136,7 @@ Native connection-provider plugins are a separate privileged tier: they may need
 ```text
 DBX provenance + internal capabilities/typed outcomes
     -> MySQL/MariaDB contract migration + richer metadata
-    -> PostgreSQL, Redis and shared conformance fixtures
+    -> harden implemented PostgreSQL/MongoDB/Redis + actual-server conformance matrices
     -> optional driver workers
 
 host boundaries + context/permission model
@@ -150,7 +150,7 @@ ACP transport + fake-agent tests
     -> separately reviewed read-only tool interface
 ```
 
-**Next implementation:** extend the initial catalog into a metadata-availability and typed execution contract, then migrate the existing MySQL/MariaDB executors behind it with conformance tests. PostgreSQL is the next new engine. The first plugin and ACP transport can develop in parallel once their host boundaries are defined.
+**Next implementation:** harden the implemented native PostgreSQL/MongoDB/Redis read slices with owned actual-server authentication/TLS/deadline/cancellation matrices and native UI evidence, then extend metadata availability and typed execution/session contracts without broadening read policy. Retain MySQL/MariaDB-only imports until separately designed. JDBC/worker loading is explicitly later, not an implemented driver option. The first plugin and ACP transport can develop in parallel once their host boundaries are defined.
 
 ## Release evidence and unresolved decisions
 

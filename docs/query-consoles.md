@@ -1,6 +1,6 @@
 # Workspace tabs and read-only query consoles
 
-Status: experimental MySQL/MariaDB database workspace. This is a restricted read console, not arbitrary SQL, a write editor or a full DataGrip replacement. See [ADR 0004](adr/0004-workspace-tabs-and-read-only-consoles.md), [MySQL source setup](mysql-sources.md) and [testing](testing.md#workspace-tabs-and-query-consoles).
+Status: experimental five-engine native database workspace. MySQL/MariaDB/PostgreSQL consoles accept restricted single SELECTs; MongoDB accepts a restricted JSON find object and Redis an allowlisted JSON command array. This is not arbitrary SQL/shell execution, a write editor or a full DataGrip replacement. See the [native support matrix](native-drivers.md) for engine-specific limits and evidence. See [ADR 0004](adr/0004-workspace-tabs-and-read-only-consoles.md), [MySQL source setup](mysql-sources.md) and [testing](testing.md#workspace-tabs-and-query-consoles).
 
 ## Open and switch tabs
 
@@ -28,9 +28,9 @@ The database chooser uses actual Kit `ComboboxState<SearchableVec<DbChoice>>` wi
 | Copy / cut / paste | Native selection/clipboard behavior |
 | Undo / redo | Kit editor history/actions; no inherited 100-state guarantee |
 
-The thin SQL adapter uses Kit's rope-backed EditorState for native selection, clipboard, IME, scrolling, undo/redo and SQL Tree-sitter highlighting. Each tab retains its draft in memory. The application SQL policy remains **64 KiB UTF-8**: oversized programmatic loads are rejected; interactive edit/IME/paste limit enforcement is a current regression gate, not a claimed atomic rejection guarantee. Native IME/accessibility still needs real-session verification.
+The thin SQL adapter uses Kit's rope-backed EditorState for native selection, clipboard, IME, scrolling, undo/redo and engine-selected Tree-sitter highlighting (SQL for SQL engines, JSON for MongoDB/Redis). Each tab retains its draft in memory. The application SQL policy remains **64 KiB UTF-8**: oversized programmatic loads are rejected; interactive edit/IME/paste limit enforcement is a current regression gate, not a claimed atomic rejection guarantee. Native IME/accessibility still needs real-session verification.
 
-Run submits the **selected text**, or the **whole draft if there is no selection**. It does not detect a statement under the cursor, split scripts, run multiple statements or automatically execute on edit. Editing a draft neither executes nor cancels an existing run. SQL highlighting is implemented; database-aware completion, persistent history, a persistent script library and a generic code viewer are not. Explicit bounded SQL file open/new-file save is available as described below. Grammar support does not implement PostgreSQL/MongoDB/Redis executors or broaden the MySQL/MariaDB read-only policy.
+Run submits the **selected text**, or the **whole draft if there is no selection**. It does not detect a statement under the cursor, split scripts, run multiple statements or automatically execute on edit. Editing a draft neither executes nor cancels an existing run. SQL highlighting is implemented; database-aware completion, persistent history, a persistent script library and a generic code viewer are not. Explicit bounded SQL file open/new-file save is available as described below. Native PostgreSQL/MongoDB/Redis executors now exist; syntax highlighting does not broaden any engine’s restricted read policy. SQL formatting tools are disabled for all non-MySQL/MariaDB engines, including PostgreSQL, because the existing tokenizer is dialect-unsafe there.
 
 Run immediately refocuses the actual Kit editor so typing can continue; asynchronous completion does not refocus and steal a deliberately focused result. Regressions exercise actual widget rendering and the native UTF-16 selection interface, not a substitute editor or unsupported text-test API. Preview is rebuild-and-restart, not hot reload: drafts, results and session-only passwords are lost, and server reads may continue until their deadline without a cancellation acknowledgement. See [development caveats](development.md#bacon-live-preview).
 
@@ -55,6 +55,8 @@ Any **nonempty console draft is unsaved**, even if it has already run successful
 Cmd-W closes an active workspace tab. With no workspace tab, Cmd-W closes the window. The native OS window-close control is unchanged; this tab confirmation is not a promise of restored drafts or a new native-window shutdown guard. Closing the application loses in-memory SQL/results.
 
 ## Accepted SQL and rejections
+
+This section’s examples and function list describe the SQL policy. PostgreSQL uses the same conservative bounded visitor with PostgreSqlDialect rather than MySqlDialect; this is not full dialect/function parity. MongoDB/Redis do not parse SQL: see [their JSON commands and restrictions](native-drivers.md#mongodb-read-policy).
 
 The backend uses **sqlparser 0.62.0**, its visitor support and **MySqlDialect**, not prefix matching or manual semicolon splitting. It accepts exactly **one supported SELECT query**, with at most one optional trailing semicolon. Ordinary comments and semicolons inside quoted strings are handled by tokenization. Nested SELECT, CTE and UNION are accepted only if every nested construct passes the same policy.
 
@@ -100,7 +102,7 @@ Rejected before connecting:
 | MariaDB server execution limit | max_statement_time = 20 seconds |
 | Local client timeout | 20 seconds |
 
-Each Run opens a **fresh physical connection**, applies the engine's execution-time limit and starts a **read-only transaction**. It uses the current source profile's existing transport/TLS policy and on-demand credential access. There is no persistent console transaction, cross-run session affinity, autocommit toggle, commit/rollback button or promised parallel-transaction support.
+For MySQL/MariaDB/PostgreSQL, each Run opens a **fresh physical connection**, applies the engine's execution-time limit and starts a **read-only transaction**. It uses the current source profile's existing transport/TLS policy and on-demand credential access. PostgreSQL uses BEGIN READ ONLY and transaction-local statement_timeout; MongoDB uses maxTimeMS and owned-client shutdown, while Redis owns a bounded RESP2 socket. See [native limits](native-drivers.md) for why PostgreSQL/MongoDB previews are not hard wire caps. There is no persistent console transaction, cross-run session affinity, autocommit toggle, commit/rollback button or promised parallel-transaction support.
 
 The submitted SQL is not rewritten with LIMIT/OFFSET. Results are capped locally, with `has_more` and a visible warning when rows/preview bytes are omitted; `next_offset` is always None. There is **no query pagination**. Client caps do not bound total server work, process allocations or malicious server behavior.
 

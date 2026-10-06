@@ -4,7 +4,7 @@ Main-workspace development fixes add **cached-only explorer search**, using a th
 
 Optional Bacon preview rebuilds/restarts the owned native app, not hot reload. Unsaved forms and session-only passwords are lost; SaveForever credentials are local plaintext in `dalan.auth`. Other app instances are not killed by name. Source/profile/cache/credential persistence contracts remain unchanged. See [development lifecycle](development.md#bacon-live-preview) and [current local evidence](testing.md#native-multiline-result-crash-and-development-fixes). The previous development-fix counts are recorded in the linked evidence; hosted CI is explicitly skipped for this task.
 
-Status: implemented experimental MySQL/MariaDB configuration subset, not an exact replica of DataGrip or its native/JDBC properties. Dalan uses Kit standard controls and Kit's default theme with compact app-owned layout. Driver/authentication choices are Kit dropdown menus; saved SSH choices are Kit popup lists, not claimed Combobox/Select usage. Kit InputState owns editing/IME/selection; a thin value adapter and native password surrounding-text privacy handler preserve model/safety contracts alongside Kit masked clipboard protections. Current native/UI validation remains gated. Source-control relocation does not change engine glyphs, provider assets or attribution. See [setup and browsing](mysql-sources.md), [security](security.md) and [migration](gpui-kit-migration.md).
+Status: implemented experimental MySQL/MariaDB/PostgreSQL/MongoDB/Redis native configuration subsets (see the [support matrix](native-drivers.md)), not an exact replica of DataGrip or its native/JDBC properties. Dalan uses Kit standard controls and Kit's default theme with compact app-owned layout. Driver/authentication choices are Kit dropdown menus; saved SSH choices are Kit popup lists, not claimed Combobox/Select usage. Kit InputState owns editing/IME/selection; a thin value adapter and native password surrounding-text privacy handler preserve model/safety contracts alongside Kit masked clipboard protections. Current native/UI validation remains gated. Source-control relocation does not change engine glyphs, provider assets or attribution. See [setup and browsing](mysql-sources.md), [security](security.md) and [migration](gpui-kit-migration.md).
 
 ## Source window and actions
 
@@ -24,9 +24,9 @@ The unified **Data Sources and Drivers** SourceDialog starts at **1160 × 760**,
 
 No new dependencies, branded logo or utility assets are introduced. The 22 px virtual tree, cached projection and viewport-only rendering, including the 300-cell integrated grid fixture, retain their existing contracts; this is not a new native performance measurement. See [UI controls](ui-foundation.md#controls) and [pending verification](testing.md#relocated-source-controls).
 
-The shared header owns Name and optional marker Color; General owns MySQL/MariaDB driver and authentication dropdowns. Tab/Shift-Tab traverses the active form. **Test Connection** tests without storing it. **Apply** commits only the active source, stays open and starts metadata-only discovery, never automatic row browsing. On the SSH page, Apply saves the manager catalog instead; neither operation is a batch-atomic save of all source drafts. **OK** applies the active source, then closes only if no other dirty drafts remain; otherwise an explicit discard/keep prompt protects them. Cancel, Escape, Cmd-W and native close require explicit confirmation before discarding dirty drafts and cancel owned tests on dismissal. Busy saves block switching and close.
+The shared header owns Name and optional marker Color; General owns the five built-in engine and authentication dropdowns. Tab/Shift-Tab traverses the active form. **Test Connection** tests without storing it. **Apply** commits only the active source, stays open and starts metadata-only discovery, never automatic row browsing. On the SSH page, Apply saves the manager catalog instead; neither operation is a batch-atomic save of all source drafts. **OK** applies the active source, then closes only if no other dirty drafts remain; otherwise an explicit discard/keep prompt protects them. Cancel, Escape, Cmd-W and native close require explicit confirmation before discarding dirty drafts and cancel owned tests on dismissal. Busy saves block switching and close.
 
-The **Drivers** page provides built-in MySQL/MariaDB information only. It does not install JDBC drivers or host plugins.
+The **Drivers** page provides built-in MySQL/MariaDB/PostgreSQL/MongoDB/Redis information only. It does not install JDBC drivers or host plugins. **JDBC is not implemented**; the native three-engine additions precede optional worker/JDBC support. Imports still accept only MySQL/MariaDB; driver menu support does not widen import support.
 
 Passwords remain session-only by default, with no credential write. The former **Save in Keychain** option is removed: checking **SaveForever** explicitly opts into local **unencrypted plaintext** password storage, not an OS vault. `dalan.auth` is JSON version 1 with a `credentials` map from source UUID to password, separate from password-free `sources.json`, in the same platform support directory. The backend no longer depends on `keyring` and does not access, migrate or delete old Keychain items. An old remembered-password profile without a local saved credential requires re-entry. No secure memory-erasure guarantee is made.
 
@@ -118,6 +118,8 @@ Encrypted keys must be unlocked externally using `ssh-add` and an external agent
 
 ## SSL: database TLS, not Java truststores
 
+The [native support matrix](native-drivers.md#source-setup-and-tls) is authoritative per engine: PostgreSQL/Redis use native-tls and all four modes; MongoDB uses official-driver rustls and rejects VerifyCa, and its paired identity paths must reference the same combined PEM. MongoDB/Redis are direct-only, without Unix/SSH/CONNECT. The MySQL-specific backend details below are not universal driver properties.
+
 | TLS mode | Guarantee and warning |
 | --- | --- |
 | VerifyIdentity (default) | Encrypts and validates certificate chain and database hostname. |
@@ -125,11 +127,11 @@ Encrypted keys must be unlocked externally using `ssh-add` and an external agent
 | Required | Encrypts **without certificate-chain or hostname validation**; an explicit insecure override vulnerable to impersonation. |
 | Disabled | No database TLS encryption or identity validation; explicit insecure override. |
 
-No verification failure triggers plaintext or weaker-mode retry. The original database hostname remains the identity through a relay. Unix sockets require Disabled because this backend does not upgrade Unix-domain streams to database TLS; this is validated explicitly, not silently selected.
+No verification failure triggers plaintext or weaker-mode retry. The original database hostname remains the identity through a relay. MySQL/MariaDB Unix sockets require Disabled because that backend does not upgrade Unix-domain streams to database TLS; this is validated explicitly, not silently selected.
 
 An optional database CA path is manually editable and has a native file picker. PEM client certificate and private-key paths must be supplied as a pair; their metadata is validated and both are wired to the database driver. There is no encrypted TLS-key passphrase control; encrypted TLS private keys are unsupported. Positive mutual-TLS authentication is **not yet live-tested**: compilation and validation are not a handshake claim.
 
-Database TLS uses the mysql_async Rustls backend's built-in webpki roots, not the macOS system Keychain trust store. The HTTPS CONNECT connector separately uses native/system roots for the proxy. The database CA field does not configure proxy trust. No Java/IDE truststore controls or “use system truststore” checkbox are offered. Positive system-trusted HTTPS CONNECT remains unverified.
+MySQL/MariaDB database TLS uses the mysql_async Rustls backend's built-in webpki roots, not the macOS system Keychain trust store. The HTTPS CONNECT connector separately uses native/system roots for the proxy. The database CA field does not configure proxy trust. No Java/IDE truststore controls or “use system truststore” checkbox are offered. Positive system-trusted HTTPS CONNECT remains unverified.
 
 ## Schemas: explorer visibility only
 

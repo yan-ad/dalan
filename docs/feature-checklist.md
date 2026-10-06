@@ -4,6 +4,18 @@ Status: experimental macOS read-only workspace. Historical Keychain test counts 
 
 ## Confirmed scoped completions
 
+### Native three-engine additions (current)
+
+- [x] Five experimental native built-ins and source driver choices: MySQL/MariaDB plus PostgreSQL, MongoDB and Redis; MongoDB core identity and static catalog entry. No JDBC executor.
+- [x] PostgreSQL actual-database/schema-qualified catalog and typed previews, owned read-only connections/deadlines, bounded SELECT visitor; raw WHERE/ORDER BY unsupported and structured comparison filters lexical.
+- [x] Official MongoDB 3.7 rustls/BSON 2 client, direct-only catalog/document preview and restricted JSON find; VerifyCa rejected, combined PEM identity, fixed admin authSource.
+- [x] Direct Redis bounded RESP2, AUTH/SELECT setup, INFO/SCAN catalog and allowlisted read JSON arrays; opaque scan cursors and explicit oversize-batch errors, no KEYS/scripts/writes/cluster/RESP3/stream inspection.
+- [x] Shared grid for document/key previews, JSON highlighting for non-SQL engines; SQL Format/Compress disabled for non-MySQL/MariaDB including PostgreSQL; MongoDB/Redis header sorting disabled.
+- [x] Owned loopback framed fixtures and validator/typed-preview/deadline/cancellation test coverage; existing imports remain MySQL/MariaDB-only.
+- [ ] Actual native multi-database server/auth/TLS/topology matrix and final primary-verified counts; fixture existence is not a full success claim. Hosted CI and private-server testing not run by this docs update.
+
+See [native driver contracts and support matrix](native-drivers.md). PostgreSQL/MongoDB preview caps are not hard wire allocation caps. Earlier inventories below remain historical where superseded.
+
 ### Main-workspace development fixes
 
 - [x] Shipping Kit foundation lives in the main workspace; isolated experiment and separate pilot job removed. Earlier pilot 328/146 callback metrics and four-test result are historical only, not runnable targets or native-performance parity.
@@ -94,7 +106,7 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 - [x] Thin InputState value adapter and delegating password OS surrounding-text privacy handler, with Kit masked copy/cut protections and native edits/IME/selection.
 - [x] Thin rope EditorState SQL adapter with Tree-sitter highlighting/native selection/undo/IME; specialized two-axis canvas retained, not replaced by pilot DataTable.
 - [ ] Current production test/lint/bundle/CI and native font/shader/window/privacy/menu/accessibility/performance gates; interactive 64 KiB edit/IME/paste regressions. No atomic rejection guarantee claimed until verified.
-- [ ] Database-aware completion, persistent history/scripts and PostgreSQL/MongoDB/Redis executors; enum/menu/grammar presence is not engine support. MySQL/MariaDB remain experimental.
+- [ ] Database-aware completion and persistent history/scripts; all five native adapters remain experimental and require declared real-server matrices.
 
 ## Historical Carbonfox compact foundation (superseded)
 
@@ -140,11 +152,11 @@ The following palette checks/counts apply only to the earlier Carbonfox revision
 - [ ] Verify all five CI jobs on the actual next main push. Historical run 37192402473 failed the Windows fixture; fix `3c4fdae` passed all five jobs in run 37194669634. Compact-tree `8dc3d27` passed run 37198333660 and metadata `4c8af09` passed run 37201696519; theme `0ca0221` passed all five jobs in run 37204370849. Credential fix `9b3d3d8` passed all five jobs in [run 37212641100](https://github.com/yan-ad/dalan/actions/runs/37212641100). The current icon-led revision needs its own run. Live database and generated Keychain reruns are not required for this UI-only change; their historical evidence remains preserved.
 - [ ] Native macOS source/browse/sort/save-picker keyboard and error/cancel interaction, visual review, VoiceOver and scaled text. Simulated tests do not close these gates.
 - [ ] Broader MySQL/MariaDB auth/TLS/server matrix and positive trusted HTTPS proxy fixture.
-- [ ] PostgreSQL adapter and workflow slice; Redis engine-native key/type/TTL/binary workflows. Neither adapter is working yet.
+- [ ] Release-grade PostgreSQL and Redis conformance/workflow depth; native restricted read adapters are implemented, not certified.
 - [ ] Real ACP suggestion/insertion lifecycle and context consent. External agents own authentication/billing; no application BYOK or autonomous database execution.
 - [ ] macOS release packaging, minimum OS/Intel decisions, signing/notarization, measured performance/accessibility gates; light/system support is an unselected future proposal, not a shipped mode.
 - [ ] Linux second, Windows third, each with platform-specific GPUI, credential, input and distribution validation.
-- [ ] MongoDB/Compass-style workflows after the first release.
+- [ ] Full MongoDB/Compass-style workflows (aggregation/index/edit UX); restricted native find/document reads are implemented now.
 - [ ] User-authorized commit and push, with actual revision/remote verification by the primary workflow. Documentation does not claim this has happened.
 
 ## Scope boundary

@@ -13,7 +13,7 @@
 
 Dalan means “ways” in Javanese. It is a native Rust + GPUI Kit database workspace with DataGrip-inspired workflows, compact layout, Kit standard controls and Kit's default theme.
 
-MySQL and MariaDB are experimental: source management, offline schema browsing, table tabs, WHERE/ORDER BY, restricted read-only query consoles, and loaded CSV export are implemented. PostgreSQL, Redis, plugins, and live ACP-only AI integration are planned. No application BYOK or general-purpose IDE tools.
+MySQL, MariaDB, PostgreSQL, MongoDB and Redis have experimental native read-only adapters with source management, cached catalogs, table/document/key previews, restricted consoles and loaded CSV export. WHERE/ORDER BY fragments remain MySQL/MariaDB-only; MongoDB/Redis consoles use restricted JSON. See the [native support matrix](docs/native-drivers.md) for transport/TLS limits and unrun real-server gates. JDBC, plugins and live ACP-only AI integration are not implemented. No application BYOK or general-purpose IDE tools.
 
 Appearance defaults to OS-following **System**, cycling System → Light → Dark with a saved `dalan.config` preference and Kit default colors. Passwords are session-only unless **SaveForever** explicitly saves them as local unencrypted plaintext in `dalan.auth`; Keychain saving is removed. See [security and storage boundaries](docs/security.md#credentials-and-persistence).
 
@@ -50,7 +50,7 @@ Implement one tested database workflow at a time. Preserve credential safety, lo
 ## Reference
 
 - [Roadmap](ROADMAP.md): drivers, plugins, and ACP AI, now through future.
-- [Source management](docs/source-management.md), [table browser](docs/table-browser.md), and [query consoles](docs/query-consoles.md).
+- [Native driver support matrix](docs/native-drivers.md), [source management](docs/source-management.md), [table browser](docs/table-browser.md), and [query consoles](docs/query-consoles.md).
 - [Architecture](docs/architecture.md), [security](docs/security.md), and [feature checklist](docs/feature-checklist.md).
 - [DBX reuse assessment](docs/dbx-reuse.md), [staged DBX toolbar parity](docs/dbx-toolbar-parity.md), and [design direction](DESIGN.md).
 
