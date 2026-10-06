@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/yan-ad/dalan/actions/workflows/ci.yml/badge.svg)](https://github.com/yan-ad/dalan/actions/workflows/ci.yml)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange)
-![macOS first](https://img.shields.io/badge/platform-macOS%20first-lightgrey)
+![Coming soon](https://img.shields.io/badge/release-coming%20soon-lightgrey)
 ![Rust + GPUI](https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-black)
 
 ## Introduction
@@ -19,7 +19,18 @@ Appearance defaults to OS-following **System**, cycling System → Light → Dar
 
 ## Installation
 
-Requires macOS, Rust/rustup, Python 3, and Xcode Command Line Tools. Build and open the local debug app:
+**Dalan is coming soon.** There are no public release installers or mobile packages yet. Platform coverage is planned as follows:
+
+| Platform | Release status | Current coverage |
+| --- | --- | --- |
+| **Mac (macOS)** | Coming soon · first release target | Experimental local native app build; release signing, notarization and native qualification remain pending. |
+| **Linux** | Coming soon · planned | Portable headless tests; native desktop packaging and qualification remain pending. |
+| **Windows** | Coming soon · planned | Portable headless tests; native desktop packaging and qualification remain pending. |
+| **Android** | Coming soon · planned | Mobile feasibility, touch UI, platform integration and packaging have not been implemented or validated. |
+
+These are roadmap targets, not claims of released or certified support. No release dates are announced. See the [platform roadmap](ROADMAP.md#platform-coverage-and-release-plan).
+
+For the current **macOS development build**, install Rust/rustup, Python 3, and Xcode Command Line Tools, then build and open the local debug app:
 
 ```sh
 git clone https://github.com/yan-ad/dalan.git

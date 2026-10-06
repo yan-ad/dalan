@@ -5,7 +5,7 @@ Status: product and technical plan, not a release promise. This is the canonical
 ## Product contract
 
 - Rust + GPUI Kit database workspace. DataGrip is the workflow reference; compact layout, **Kit standard controls and Kit's default theme** are the visual direction.
-- macOS first, Linux second, Windows third. Portable headless CI does not establish desktop support.
+- macOS first, Linux second, Windows third, followed by Android feasibility and mobile implementation. All public platform releases are **coming soon**; portable headless CI does not establish native desktop or mobile support.
 - MySQL/MariaDB were the first implemented engines. PostgreSQL, MongoDB and Redis now have experimental native read-only adapters: the immediate priority was native three-engine support, not JDBC. This brings restricted MongoDB reads forward from the earlier post-first-release plan; full Compass-style workflows remain later. Release support still requires tested driver capabilities and declared server matrices, not compatibility labels.
 - AI connects only through **Agent Client Protocol (ACP)**. No application BYOK, direct provider adapters, provider-specific CLI protocols, or automatic database execution. External agents own model authentication and billing.
 - Plugins extend database workflows, not a generic IDE or infrastructure toolbox. No general file explorer, Git UI, build tools, Kubernetes console, or general-purpose terminal.
@@ -23,6 +23,19 @@ Status: product and technical plan, not a release promise. This is the canonical
 | AI | ACP SDK boundary and disconnected panel | Agent launch, negotiation, authentication, sessions, streaming, permissions |
 
 These are scoped implementations, not DataGrip/Compass parity. SQL consoles accept one restricted SELECT, MongoDB a restricted JSON find object, Redis an allowlisted JSON command array; this plan does not broaden them to arbitrary SQL, shell or write execution. See the [native support matrix](docs/native-drivers.md), including direct-only MongoDB/Redis, MongoDB VerifyCa rejection, and official-driver wire-cap limitations. Owned loopback fixtures are not the unrun actual native multi-database server/TLS matrix; final totals await primary verification.
+
+## Platform coverage and release plan
+
+**Dalan is coming soon on Mac, Linux, Windows and Android.** These are planned release targets, not currently available installers or a promise that every platform will ship together. No delivery dates are committed.
+
+| Order | Platform | Current status | Release gates |
+| --- | --- | --- | --- |
+| 1 | **Mac (macOS)** | Coming soon; experimental local native app build exists | Signed/notarized distribution, declared OS/architecture matrix, native input/accessibility/performance checks, and actual-server driver qualification. |
+| 2 | **Linux** | Coming soon; headless test coverage only | Native desktop builds and packages, declared distributions/display-server matrix, input/accessibility checks, TLS and local-auth permissions, and driver/process lifecycle qualification. |
+| 3 | **Windows** | Coming soon; headless test coverage only | Native desktop builds and signed installer, declared OS/architecture matrix, input/accessibility checks, local-auth ACL enforcement/validation, and driver/process-tree qualification. |
+| 4 | **Android** | Coming soon; planned, not implemented | Confirm the GPUI/native runtime and dependency feasibility; design touch navigation and an on-screen-keyboard-friendly workspace; validate app-private credential storage, lifecycle/background-network behavior, driver compatibility, and signed mobile packaging. |
+
+Keep shared database logic portable, but qualify each native shell independently. Android is a separate mobile milestone—not a claim that the current desktop layout, SSH process model, JDBC worker plans or all native drivers already work on mobile. Update the [README platform table](README.md#installation) only when corresponding build and release evidence exists.
 
 ## DBX reference and reuse strategy
 
@@ -129,7 +142,7 @@ Native connection-provider plugins are a separate privileged tier: they may need
 - **Metadata tools:** view/routine/index/source inspection, estimated plans, explain/lineage, schema diff and database-focused transfer/import/export. Actual plans and DDL execution require separate risk gates.
 - **Plugin registry:** curated, signed database extensions with publisher/key continuity, offline install, revocation, trust review and tested SDK versions. Marketplace breadth follows host quality, not the reverse.
 - **AI tools:** narrowly scoped read-only operations first. Any write tool needs a separate design and fresh exact-operation confirmation; no plugin/agent can bypass Dalan's execution authority.
-- **Platforms:** macOS distribution signing/notarization and accessibility first; Linux desktop/credential/input/packaging matrix second; Windows desktop/signing/credential/process-tree matrix third. Continue headless CI on all three throughout.
+- **Platforms:** follow the [platform release plan](#platform-coverage-and-release-plan): macOS signing/notarization and accessibility first; Linux desktop/credential/input/packaging second; Windows desktop/signing/credential/process-tree third; Android runtime feasibility, touch UX, app-private storage and mobile packaging afterward. Continue headless coverage on the three desktop platforms without treating it as native release certification.
 
 ## Dependency order and concrete next task
 
