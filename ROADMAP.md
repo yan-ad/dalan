@@ -17,7 +17,7 @@ Status: product and technical plan, not a release promise. This is the canonical
 | --- | --- | --- |
 | Drivers | Experimental MySQL/MariaDB through `mysql_async`, direct/Unix socket/URL/SSH/CONNECT routes, verified TLS options | Extensible driver registry, PostgreSQL, Redis, third-party driver workers |
 | Source management | General/Options/SSH-SSL/Schemas, reusable SSH configurations, optional Keychain, per-source menus | Complete authentication/version/topology matrix, release-grade signing |
-| Catalog | SQLite database/table/view-name cache, offline restoration, selected-source refresh, virtualized tree | Cached columns/keys/indexes/routines, metadata-aware completion |
+| Catalog | SQLite database/table/view-name cache, offline restoration, selected-source refresh, virtualized tree and cached-only search through collapsed branches | Cached columns/keys/indexes/routines, metadata-aware completion |
 | Workspace | Independent table tabs and restricted read consoles; WHERE/ORDER BY; canvas grid; loaded CSV; result-retention budget | Cell inspection/copy, column resizing, query history, scripts, transactions, staged writes |
 | Plugins | No plugin host, SDK, package installer, or marketplace | All plugin milestones below |
 | AI | ACP SDK boundary and disconnected panel | Agent launch, negotiation, authentication, sessions, streaming, permissions |
@@ -40,7 +40,7 @@ Production now aliases `gpui` to `gpui-kit = 0.7.1` with `tree-sitter-sql`, on o
 
 Kit inputs/buttons/checkboxes/tabs/dropdown and popup menus/tooltips are implemented; native dropdown alternatives are not claimed Combobox/Select usage. SQL Tree-sitter highlighting is enabled selectively (JSON is also in the graph), not all language bundles. Benchmark Kit DataTable before replacing the specialized shipping canvas; stateless Table is not the wide-result solution. Database-aware completion/history/per-statement execution remain pending Dalan features. See [migration guide](docs/gpui-kit-migration.md) and [ADR 0006](docs/adr/0006-gpui-kit-migration.md).
 
-**Completed gates:** current production tests/bundle, native startup and password/privacy/input regression parity, interactive 64 KiB rollback coverage and dependency alignment. **Remaining gates:** new-revision hosted CI, native visual/accessibility and representative performance evidence. Production adoption is implemented, not native certification. Historical populated-console and pilot tests must be rerun against production; DataTable pilot counts alone are not canvas parity.
+**Completed foundation:** production Kit adoption, default-theme ownership, password/privacy/editor adapters and coordinated dependencies. The isolated experiment and its job are removed; earlier pilot counts remain historical, not canvas parity. Main-workspace fixes cover multiline-safe canvas previews, visible prefixed tab labels, immediate Run focus restoration, searchable console database choices, cached-only explorer search and top-right ACP/default-theme controls. Final local validation counts await primary confirmation. **Remaining gates:** native visual/accessibility and representative performance evidence; hosted CI is explicitly skipped for this task. Production adoption is implemented, not native certification, history, new drivers or live ACP.
 
 ### N1. Establish the DBX port boundary
 

@@ -4,6 +4,20 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 
 ## Confirmed scoped completions
 
+### Main-workspace development fixes
+
+- [x] Shipping Kit foundation lives in the main workspace; isolated experiment and separate pilot job removed. Earlier pilot 328/146 callback metrics and four-test result are historical only, not runnable targets or native-performance parity.
+- [x] Optional external Bacon 3.26.0 configuration: default macOS native rebuild-and-restart preview, `r` preview / `c` check / `t` test / `l` lint / `u` UI tests. Owned process-group stops Cargo and the running foreground app, never unrelated instances by name. No hot reload, draft/password recovery or acknowledged server query cancellation.
+- [x] Top-right ACP beside Kit default Sun/Moon theme switch and Layout; removed status-bar ACP trigger. `Theme::change` without added persistence/custom palette; ACP still Not connected.
+- [x] Visible table/Console N labels via Kit Tab prefix icons, 100–220 px bounds, ellipsis/full tooltips and small ghost close icons with stopped propagation. Inactive close does not activate; nonempty-draft confirmation and 32-tab cap remain.
+- [x] Actual searchable Kit console Combobox, optional-string None sentinel/value-safe selection, virtualized 1,000-name fixture, retained catalog-unchanged state and busy guards. Source-form dropdown/SSH alternatives remain distinct.
+- [x] Cached-only explorer search through collapsed branches with ancestors/engine labels, lazy 50,000-item index, no full-metadata flattening on scroll/network/query-context change; focused Escape clears search.
+- [x] Actual Kit editor rendering/native UTF-16 selection regressions and immediate Run refocus, not completion-time result focus theft.
+- [x] Defensive single-line canvas display sanitization: CRLF/newline separators → `↵`, tab → `⇥`, escaped other controls; 128 graphemes/4,096 bytes, combining clusters dropped atomically. Typed values/CSV unchanged. Native multiline panic root cause recorded, not blamed on fonts/OS renderer.
+- [ ] Final local full-suite/lint/bundle counts await primary confirmation. Native capture/manual/VoiceOver/IME/performance remain separate. Hosted CI explicitly skipped for this task; no new run/check or commit is claimed.
+
+See [current evidence](testing.md#native-multiline-result-crash-and-development-fixes) and [migration guide](gpui-kit-migration.md). Earlier completion counts below are historical snapshots, not this revision's totals.
+
 ### Relocated source controls (current)
 
 - [x] Titlebar Database collapse toggle retained at x = 84 px; immediately adjacent 28 px New Connection plus/text control, pointer/Enter/Space, tooltip and loading/saving guards. Works with sidebar hidden via retained root subscription; no explorer plus or duplicate Dalan label.
@@ -12,7 +26,7 @@ Status: experimental macOS read-only workspace. A checked item means the scoped 
 - [x] Manage reuses existing General/Options/SSH/SSL/Schemas SourceDialog. Copy opens unsaved fresh-UUID draft with UTF-8-safe at-most-256-byte ` copy` name and nonsecret endpoint/auth/schema/Options/TLS/color/SSH reference settings, no password or credential retrieval, `save_password = false`. Original JSON/results/schema caches unchanged; form schema choices memory-only, SQLite not copied and Save starts fresh discovery.
 - [x] Existing drafts preserved with static close-current-draft metadata notice; 100-profile guard. Remove confirms stable captured UUID despite selection changes, never deletes server objects and preserves unrelated results. Test-only selected-edit helper/native SSH manager and cached virtual tree/grid contracts unchanged.
 - [x] Relocated source-control verification: 115 unit tests, one native-wire test, 159 UI and four Python bundle tests passed with formatting, strict lint and signed bundle checks. Hosted CI and native review remain separate gates.
-- [ ] Current-tree hosted CI before push and native screenshot/performance/accessibility review. No new dependencies, utility assets or branded logo; existing provider-icon attribution/commit ancestry retained separately, not a source-icon change claimed for relocation.
+- [ ] Native screenshot/performance/accessibility review; hosted CI explicitly skipped for this task. No new utility assets or branded logo; existing provider-icon attribution/commit ancestry retained separately, not a source-icon change claimed for relocation.
 
 See [source actions](source-management.md#row-actions-and-copy-boundaries) and [verification](testing.md#relocated-source-controls).
 

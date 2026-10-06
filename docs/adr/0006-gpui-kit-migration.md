@@ -22,4 +22,6 @@ The production migration is real, but source adoption does not establish native 
 
 Keep existing distribution notices, including full historical Carbonfox MIT texts and icon/adapted-code notices. Kit software/examples and documentation have different licenses. No upstream feature/performance guarantee becomes a Dalan guarantee without testing; no Shell/JavaScript extension runtime is adopted merely for components.
 
-[Migration guide](../gpui-kit-migration.md) · [Pilot](../../experiments/gpui-kit-pilot/README.md) · [Roadmap](../../ROADMAP.md)
+[Migration guide](../gpui-kit-migration.md) · [Roadmap](../../ROADMAP.md)
+
+The pilot and its separate CI job are removed after adoption into the main shipping workspace. Its earlier measurements remain historical evidence only. The current main-workspace revision adds the searchable console Combobox, cached explorer search, visible prefixed tab labels, immediate Run focus restoration and defensive single-line canvas previews; these do not add executors, history or ACP transport. Local final counts await primary confirmation; hosted CI is explicitly skipped for this task.

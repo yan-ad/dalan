@@ -67,20 +67,3 @@ jobs:
         run: ./scripts/test-databases
       - name: Verified TLS and proxy rejection
         run: ./scripts/test-secure-transports
-
-  kit-pilot-macos:
-    name: GPUI Kit isolated pilot
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - name: Toolchain
-        run: rustup show
-      - name: Pilot format
-        run: cargo fmt --manifest-path experiments/gpui-kit-pilot/Cargo.toml --all --check
-      - name: Pilot tests
-        run: cargo test --manifest-path experiments/gpui-kit-pilot/Cargo.toml --locked -- --nocapture
-      - name: Pilot lint
-        run: cargo clippy --manifest-path experiments/gpui-kit-pilot/Cargo.toml --locked --all-targets -- -D warnings
-      - name: Pilot build
-        run: cargo build --manifest-path experiments/gpui-kit-pilot/Cargo.toml --locked

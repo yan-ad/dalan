@@ -6,11 +6,13 @@ Implemented scope: macOS desktop shell using **GPUI Kit for all standard control
 
 Root `gpui` aliases Kit 0.7.1 with `tree-sitter-sql`, coordinated with `gpui-pre 0.3.8`; old GPUI 0.2 is removed. `gpui::application`, `gpui::init` and Kit `open_window`/Base Root cover main/source/About/SSH windows. Button, Input, Checkbox, tabs, dropdown/popup menus and tooltips are Kit controls. Driver/authentication dropdowns and saved SSH popup choices are functional native alternatives, not claimed Combobox/Select use.
 
-`desktop/theme.rs` maps active semantic `Hsla` colors and layout metrics; no fixed app palette or Carbonfox override is installed. Kit owns initial theme selection. InputState's thin window-less adapter preserves form synchronization; password native surrounding-text extraction is suppressed while Kit owns masked clipboard protections, editing, selection and IME. The thin rope EditorState adapter provides SQL Tree-sitter highlighting/native editing/undo; completion/history/scripts remain pending. The 64 KiB interactive SQL guard needs current regression validation, not inherited atomicity claims.
+`desktop/theme.rs` maps active semantic `Hsla` colors and layout metrics; no fixed app palette or Carbonfox override is installed. Kit owns initial theme selection. The top-right Sun/Moon toggle uses registered Kit default assets and `Theme::change` for default light/dark modes; no application theme persistence is added. InputState's thin window-less adapter preserves form synchronization; password native surrounding-text extraction is suppressed while Kit owns masked clipboard protections, editing, selection and IME. The thin rope EditorState adapter provides SQL Tree-sitter highlighting/native editing/undo; completion/history/scripts remain pending. The 64 KiB interactive SQL guard needs current regression validation, not inherited atomicity claims.
 
 The specialized two-axis canvas result body remains shipping app-owned paint; best-effort 16 MiB/eight-page inactive retention and worker limits are unchanged. DataTable's 100 × 512 pilot (328 initial/146 last-column callbacks) does not prove parity. See [migration](gpui-kit-migration.md) for current native/test gates.
 
-**Historical record below:** earlier Carbonfox palette/status-tooltip/contrast and bespoke-editor geometry/undo/indent descriptions are superseded by this production section. Old validation counts apply to their own revisions only. Historical assets and full MIT notices remain provenance, not runtime theme configuration.
+The main-workspace fixes use actual Kit controls/default styling, not manual standard-control lookalikes: searchable console Combobox with optional-string choices/virtual list; cached-only explorer Input search; visible prefix-icon tab labels (100–220 px, ellipsis/full tooltips) and small ghost close buttons with stopped propagation; immediate editor focus after Run without completion-time focus theft. Explorer search preserves ancestors/finds collapsed branches with a lazy 50,000-item index, no network, and no full-metadata flattening on scroll. Escape clears focused search without closing an unrelated menu; the 256-character matching cap is not a new Input byte-size cap. Result previews sanitize controls/newlines and preserve typed/export values. See [current regressions](testing.md#native-multiline-result-crash-and-development-fixes).
+
+**Historical record below:** earlier Carbonfox palette/status-tooltip/contrast and bespoke-editor geometry/undo/indent descriptions are superseded by this production section. Old validation counts apply to their own revisions only. Historical assets and full MIT notices remain provenance, not runtime theme configuration. The pilot experiment/job is removed; final local development-fix totals await primary confirmation and hosted CI is explicitly skipped for this task.
 
 ## Rich table controls (current)
 
@@ -25,9 +27,9 @@ The current icon inventory is 36 (28 plus eight), at the existing Lucide pin wit
 ## Composition and purpose
 
 ```text
-[ native window controls | Database | + New Connection | Layout icon ]
+[ native window controls | Database | + New Connection | ACP | Sun/Moon | Layout ]
 [ Database Explorer ][ database browser / table view ][ optional ACP ]
-[ spacer (Carbonfox - opaque tooltip) | bot-message-square ]
+[ status strip (no ACP trigger) ]
 ```
 
 - Native macOS traffic lights remain real OS controls. The native titlebar is integrated with the custom top bar; every GPUI window explicitly has an opaque background (no blur/transparency); its empty titlebar region drags the window, and double-click requests the native zoom behavior.
@@ -36,9 +38,9 @@ The current icon inventory is 36 (28 plus eight), at the existing Lucide pin wit
 - System UI typography is a calm, dense 13 px, with 12 px secondary copy and an 11 px status strip. No font assets or logo are introduced.
 - Twenty-four pinned Lucide SVGs provide utility glyphs: database, database-zap, plus, settings-2, refresh-cw, trash-2, panel-left, chevron-down, minus, bot-message-square, arrow-up, arrow-down, download, check, chevron-right, folder, table, list-tree, chevrons-down-up, hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. Local trash-2.svg is the unchanged upstream trash.svg alias from the same pin; see the [asset README](../crates/app/assets/README.md). Source-control relocation adds no artwork, decorative AI sparkle or icon-font dependency; existing provider assets retain their separate provenance.
 - Database Explorer shows real saved sources and discovered databases/tables. No fabricated sources or results.
-- The status strip has an empty spacer with a Carbonfox - opaque tooltip, not persistent theme/focus-help text or an extra Theme control. It does not imply a connected database or agent and offers no theme switch. Its bottom-right 28 px bot-message-square icon button, with AI · ACP tooltip, toggles the right panel. The panel says **Not connected**, with no ACP transport or agent launch implemented, no text prompt input yet, and no BYOK/provider settings.
+- The status strip no longer contains ACP. The top-right 28 px AI · ACP trigger sits alongside the Kit-default Sun/Moon theme control and Layout. The panel says **Not connected**, with no ACP transport or agent launch implemented, no text prompt input yet, and no BYOK/provider settings. Theme switching adds no saved preference contract or custom palette.
 
-Database Explorer has exactly three 28 px toolbar icons: Refresh selected source, combined Expand Loaded / Collapse All and the existing New Query Console action. No explorer plus button remains. The titlebar Database collapse toggle stays at x = 84 px after native traffic lights, immediately followed by the same-height **New Connection** plus-and-text control. The duplicate Dalan label and bottom-left toggle stay removed; Cmd-B, retained visibility preference and View/Layout alternatives remain. Carbonfox - opaque is tooltip-only. Source names, engine tooltips and optional marker colors remain independently readable. This relocation changes no provider assets or existing attribution.
+Database Explorer has exactly three 28 px toolbar icons: Refresh selected source, combined Expand Loaded / Collapse All and the existing New Query Console action, plus cached-only search. No explorer plus button remains. The titlebar Database collapse toggle stays at x = 84 px after native traffic lights, immediately followed by the same-height **New Connection** plus-and-text control. The duplicate Dalan label and bottom-left toggle stay removed; Cmd-B, retained visibility preference and View/Layout alternatives remain. Source names, engine tooltips and optional marker colors remain independently readable. This relocation changes no provider assets or existing attribution.
 
 Each source row has an 18 px Manage gear (`source-actions-{id}`), opening a Manage / Copy / Remove popover near the row using real model/layout bounds. It targets the exact captured UUID, not explorer selection. Pointer and Enter/Space activation, Tab/Shift-Tab/Up/Down traversal, Escape/outside dismissal and focus restoration are supported; saving disables actions. See [copy and removal boundaries](source-management.md#row-actions-and-copy-boundaries). The retained root source subscription opens the same tabbed SourceDialog even when the sidebar is hidden. Virtual tree, cached projection and grid caches are unchanged; no native performance claim follows.
 
@@ -57,6 +59,8 @@ With no sources, the main area centers a working Connect to a Source action, not
 | Row menu Manage / Copy | Reuse tabbed SourceDialog; Copy is an unsaved fresh-UUID nonsecret draft, no Keychain retrieval or SQLite cache clone; existing draft and 100-profile guards |
 | Main Connect to a Source | With no sources, open/reuse the dedicated source dialog window by mouse or Enter/Space, even with explorer hidden |
 | Top-bar 28 px Layout / panel-left icon | Open/close the existing four-row layout popover; titlebar keeps the database toggle and native controls rather than duplicate branding |
+| Top-right Kit Sun/Moon | Switch Kit default light/dark through `Theme::change`; no added saved theme preference |
+| Explorer search / Kit Input wrapper | Filter cached names/engine labels, including collapsed branches and ancestors; Escape clears, no network or query-context change |
 | Menu toggle row | Toggle Database Explorer; show requested Shown/Hidden preference |
 | Menu narrow/widen rows | Adjust Database Explorer preference by 32 px, bounded to 200–480 px |
 | Reset layout | Show Database Explorer, restore its 320 px width, close ACP |
@@ -118,7 +122,7 @@ cargo test -p dalan-app --bin dalan --features runtime-shaders,ui-tests --locked
 ./scripts/macos --open
 ```
 
-`ui-tests` enables GPUI's own `test-support` dependency graph and stays off by default. Simulated event tests are separate from real macOS/VoiceOver/manual rendering evidence. Standard desktop builds still require full Xcode/Metal.
+`ui-tests` enables GPUI's own `test-support` dependency graph and stays off by default. Simulated event tests are separate from real macOS/VoiceOver/manual rendering evidence. Kit debug/release desktop builds use runtime shaders; Command Line Tools and a working native Metal runtime suffice. Full Xcode is optional for Icon Composer.
 
 ## Historical validation: initial two-sidebar iteration
 

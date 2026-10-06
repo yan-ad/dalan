@@ -29,6 +29,9 @@ Output: `target/debug/bundles/Dalan.app`. This is a local ad-hoc signed build, n
 
 ## Development
 
+Optionally install `cargo install bacon --version 3.26.0 --locked`, then run `bacon` for native macOS rebuild-and-restart preview (not hot reload).
+See [Bacon setup and restart caveats](docs/development.md#bacon-live-preview); `bacon check`/`test`/`lint` run headless jobs.
+
 ```sh
 cargo fmt --all --check
 cargo test --workspace --locked

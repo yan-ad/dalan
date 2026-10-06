@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Foreground, process-group-owned native preview for Bacon (macOS/Unix)."""
+
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+
+
+def stop(pid_text):
+    """Bacon appends its owned child's PID; never kill by application name."""
+    pid = int(pid_text)
+    if pid <= 1 or pid == os.getpid():
+        raise ValueError("refusing an unsafe process ID")
+    try:
+        if os.getpgid(pid) != pid:
+            raise ValueError("preview process is not its own process-group leader")
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # Already exited; there is nothing left to stop.
+
+
+def main(argv):
+    if len(argv) == 2 and argv[0] == "--stop":
+        stop(argv[1])
+        return
+    if argv:
+        raise ValueError("usage: dev-preview [--stop PID]")
+    if sys.platform != "darwin":
+        raise ValueError("the native Dalan preview requires macOS")
+    # This ID survives both execs and the bundle helper's exec into Dalan.
+    # Cargo and bundling subprocesses inherit it, so interrupted builds stop too.
+    if os.getpgrp() != os.getpid():
+        os.setpgid(0, 0)
+    os.environ.setdefault("RUST_BACKTRACE", "1")
+    # The bundle helper consumes Cargo JSON artifact messages. A regular check
+    # first keeps compiler diagnostics visible to Bacon's Cargo analyzer.
+    subprocess.run([
+        "cargo", "check", "-p", "dalan-app", "--bin", "dalan",
+        "--features", "desktop", "--locked",
+    ], cwd=Path(__file__).resolve().parent.parent, check=True)
+    helper = Path(__file__).resolve().parent / "macos"
+    os.execv(str(helper), [str(helper), "--run"])
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"Preview failed: {error}", file=sys.stderr)
+        sys.exit(1)

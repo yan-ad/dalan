@@ -16,7 +16,7 @@ use super::{
 
 use gpui::component::{
     ActiveTheme, Disableable, Icon, Sizable,
-    button::Button as KitButton,
+    button::{Button as KitButton, ButtonVariants},
     tab::{Tab, TabBar},
 };
 
@@ -437,12 +437,17 @@ impl Render for SourceWorkspace {
                     let selector = format!("workspace-tab-{id}");
                     Tab::new()
                         .label(label)
-                        .icon(Icon::empty().path(glyph))
+                        // Kit's `icon` selects its icon-only rendering branch,
+                        // which deliberately ignores `label` and the width cap.
+                        // A prefix keeps the native label/ellipsis layout active.
+                        .prefix(Icon::empty().path(glyph).size(px(14.)))
+                        .min_w(px(100.))
                         .debug_selector(move || selector.clone())
                         .suffix(
                             KitButton::new(SharedString::from(format!("workspace-close-{id}")))
                                 .debug_selector(move || format!("workspace-close-{close_id}"))
                                 .xsmall()
+                                .ghost()
                                 .icon(Icon::empty().path("icons/x.svg"))
                                 .tooltip("Close tab (Cmd-W)")
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -537,6 +542,7 @@ mod tests {
     use dalan_drivers::{
         CellValue, ColumnInfo, FilterOperator, SourceProfile, TableFilter, TableInfo, TablePage,
     };
+    use gpui::test::TestWindowExt;
     use gpui::{
         Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext, point,
     };
@@ -677,6 +683,92 @@ mod tests {
         cx.simulate_click(bounds.center(), Modifiers::default());
         pump_workers(cx);
         cx.refresh().unwrap();
+    }
+
+    #[gpui::test]
+    fn table_and_console_tabs_keep_labels_and_close_controls_visible(cx: &mut TestAppContext) {
+        let (workspace, root, _listener, cx) = fixture(cx);
+        let (table, _) = open_table(&workspace, &root, "items", cx);
+        let (first, _) = console(&workspace, cx);
+        let (second, _) = console(&workspace, cx);
+        cx.refresh().unwrap();
+
+        cx.update(|window, _| {
+            // Kit snapshots expose accessibility labels, not rendered text.
+            // Pair them with real production tab geometry below: the old
+            // icon-only branch had correct accessibility labels but 28px tabs.
+            let tabs = window.within("workspace-tabs");
+            for (index, label) in ["items", "Console 1", "Console 2"].into_iter().enumerate() {
+                let tab = tabs.find(index);
+                assert_eq!(tab.label(), Some(label));
+                assert!(tab.visible());
+            }
+        });
+        for id in [&table, &first, &second] {
+            let tab = cx
+                .debug_bounds(Box::leak(format!("workspace-tab-{id}").into_boxed_str()))
+                .unwrap();
+            let close = cx
+                .debug_bounds(Box::leak(format!("workspace-close-{id}").into_boxed_str()))
+                .unwrap();
+            assert!(tab.size.width >= px(100.) && tab.size.width <= px(220.));
+            assert_eq!(tab.size.height, px(24.), "keep Kit's native small height");
+            assert!(close.size.width > px(0.));
+            assert!(close.origin.x >= tab.origin.x);
+            assert!(close.right() <= tab.right());
+            // Reserve visible horizontal space for text beyond the 14px icon
+            // and native close control, not merely an entity registry label.
+            assert!(tab.size.width - close.size.width - px(14.) >= px(50.));
+        }
+
+        // Closing an inactive tab must not bubble into tab activation.
+        let close = cx
+            .debug_bounds(Box::leak(
+                format!("workspace-close-{first}").into_boxed_str(),
+            ))
+            .unwrap();
+        cx.simulate_click(close.center(), Modifiers::default());
+        pump_workers(cx);
+        assert_eq!(active(&workspace, cx).0, second);
+        assert_eq!(
+            workspace.read_with(cx, |workspace, _| workspace.tab_count()),
+            2
+        );
+    }
+
+    #[gpui::test]
+    fn long_table_tab_labels_are_capped_without_clipping_the_close_control(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, root, _listener, cx) = fixture(cx);
+        let name = "a_very_long_table_name_that_must_be_ellipsized_in_the_workspace_tab";
+        root.update(cx, |root, _| {
+            root.tree
+                .tables
+                .get_mut(&(root.profiles[0].id.clone(), "inventory".into()))
+                .unwrap()
+                .push(TableInfo {
+                    name: name.into(),
+                    kind: "BASE TABLE".into(),
+                });
+        });
+        let (id, _) = open_table(&workspace, &root, name, cx);
+        cx.refresh().unwrap();
+        let tab = cx
+            .debug_bounds(Box::leak(format!("workspace-tab-{id}").into_boxed_str()))
+            .unwrap();
+        let close = cx
+            .debug_bounds(Box::leak(format!("workspace-close-{id}").into_boxed_str()))
+            .unwrap();
+        assert_eq!(tab.size.width, px(220.));
+        assert!(close.right() <= tab.right());
+        assert!(close.size.width > px(0.));
+        cx.update(|window, _| {
+            assert_eq!(
+                window.within("workspace-tabs").find(0usize).label(),
+                Some(name)
+            );
+        });
     }
 
     #[gpui::test]

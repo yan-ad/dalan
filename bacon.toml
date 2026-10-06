@@ -1,0 +1,41 @@
+# Bacon is an optional development tool, not an application dependency.
+default_job = "preview"
+
+[jobs.preview]
+command = ["./scripts/dev-preview"]
+need_stdout = true
+background = false
+allow_warnings = true
+show_command_error_code = true
+scroll_anchor = "auto"
+on_change_strategy = "kill_then_restart"
+# Stop this job's process group, including Cargo while a build is in progress.
+kill = ["./scripts/dev-preview", "--stop"]
+watch = ["crates", "scripts", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "bacon.toml"]
+
+[jobs.check]
+command = ["cargo", "check", "--workspace", "--locked"]
+need_stdout = false
+watch = ["crates"]
+
+[jobs.test]
+command = ["cargo", "test", "--workspace", "--locked"]
+need_stdout = true
+watch = ["crates"]
+
+[jobs.lint]
+command = ["cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"]
+need_stdout = false
+watch = ["crates"]
+
+[jobs.ui-tests]
+command = ["cargo", "test", "-p", "dalan-app", "--bin", "dalan", "--features", "desktop,ui-tests", "--locked"]
+need_stdout = true
+watch = ["crates"]
+
+[keybindings]
+r = "job:preview"
+c = "job:check"
+t = "job:test"
+l = "job:lint"
+u = "job:ui-tests"

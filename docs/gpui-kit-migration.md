@@ -1,6 +1,6 @@
 # GPUI Kit migration
 
-Status: **production component migration implemented; validation gates remain open**. The root workspace aliases `gpui` to `gpui-kit = 0.7.1` with `tree-sitter-sql`. Its coordinated `gpui-pre = 0.3.8` core/platform family replaces the old GPUI 0.2 dependency; production controls share one UI type family. This is no longer only an isolated pilot.
+Status: **production component migration implemented; validation gates remain open**. The root workspace aliases `gpui` to `gpui-kit = 0.7.1` with `tree-sitter-sql`. Its coordinated `gpui-pre = 0.3.8` core/platform family replaces the old GPUI 0.2 dependency; production controls share one UI type family. Kit ships from the main workspace; the earlier experiment and its separate CI job have been removed.
 
 ## Production ownership
 
@@ -22,13 +22,7 @@ The application SQL policy remains 64 KiB. Programmatic oversized loads are reje
 
 The two-axis canvas result grid is essential app-owned specialized paint, not a standard control awaiting cosmetic replacement. It retains exact typed values, viewport shaping, pinned gutter and best-effort inactive-result retention of **16 MiB/eight pages**, excluding metadata/drafts/GPU/export temporary memory. Worker/admission limits are unchanged.
 
-Kit DataTable remains a benchmark candidate, not the shipping result renderer. Stateless Table is not the wide-result solution. The isolated [pilot](../experiments/gpui-kit-pilot/README.md) passed four tests with a 100 × 512 fixture and positive last-column bounds. Delegate callbacks were **328 initially and 146 at column 511** at 1040 × 760: render/measurement counts, not unique cells, elapsed time, FPS or parity with the canvas. Compare memory, fixed columns, long values, NULL/binary/decimal fidelity, selection/copy and resizing before replacement.
-
-```sh
-cargo check --locked --manifest-path experiments/gpui-kit-pilot/Cargo.toml
-cargo test --locked --manifest-path experiments/gpui-kit-pilot/Cargo.toml -- --nocapture
-cargo run --locked --manifest-path experiments/gpui-kit-pilot/Cargo.toml
-```
+Kit DataTable remains a benchmark candidate, not the shipping result renderer. Stateless Table is not the wide-result solution. The removed isolated pilot historically passed four tests with a 100 × 512 fixture and positive last-column bounds. Delegate callbacks were **328 initially and 146 at column 511** at 1040 × 760: render/measurement counts, not unique cells, elapsed time, FPS or parity with the canvas. These are archived proof-of-concept results, not a runnable local target. Compare memory, fixed columns, long values, NULL/binary/decimal fidelity, selection/copy and resizing before replacement. Validate the shipping workspace using [development commands](development.md) and [test gates](testing.md).
 
 ## Validation and remaining work
 
@@ -52,6 +46,14 @@ Kit software/examples are Apache-2.0; eligible upstream documentation prose/illu
 [Roadmap](../ROADMAP.md) · [ADR 0006](adr/0006-gpui-kit-migration.md) · [Test evidence](testing.md)
 
 
-Current verification: 121 unit tests plus one native-wire test, 160 production UI tests, seven Python bundle tests, four isolated pilot tests and 29 live MySQL/MariaDB transport cases passed. Formatting, strict Clippy, production dependency-tree checks and signed-bundle checks passed. Only the coordinated GPUI pre-release 0.3.8 family appears in the shipping graph; GPUI 0.2.2 is absent. The migrated app launched and was left open. Current hosted CI remains a separate gate until the new commit's run completes.
+Historical migration verification: 121 unit tests plus one native-wire test, 160 production UI tests, seven Python bundle tests, four tests in the now-removed isolated pilot and 29 live MySQL/MariaDB transport cases passed. Formatting, strict Clippy, production dependency-tree checks and signed-bundle checks passed at that revision. Only the coordinated GPUI pre-release 0.3.8 family appears in the shipping graph; GPUI 0.2.2 is absent. The migrated app launched; launch is not pixel/interaction certification. Current development-fix local validation passed **121 headless unit tests** (4 ACP, 54 app, 5 core, 58 drivers), **one native-wire integration test**, **174 simulated production UI tests**, and **14 Python tests** (seven bundle + seven preview). `cargo fmt`, strict Clippy for both the workspace and desktop/UI with all targets, signed debug bundle checks, plist lint and signature verification passed. Bacon 3.26.0 is installed; `bacon --list-jobs` successfully parsed the default preview job. Actual native preview lifecycle smoke is not claimed here. Hosted CI is explicitly skipped for this task: do not trigger, poll or infer a new hosted result.
 
-Tokio completion is handed back through a scheduler-owned polling bridge: it tests JoinHandle readiness on 10 ms Kit timers and awaits only completed handles. This avoids waking deterministic/local GPUI tasks from Tokio worker threads while retaining abort and generation checks. It adds approximately up to one polling interval to observed completion, not a new database timeout.
+## Main-workspace interaction fixes
+
+The titlebar groups ACP, a Kit-default light/dark toggle and Layout at the top right; ACP no longer lives in the status bar and still reports **Not connected**. The theme control uses Kit's registered default Sun/Moon assets and `Theme::change`, without a custom palette or added persistence contract. Tab icons use `Tab.prefix` rather than `Tab.icon`, which suppresses the label in this Kit version: table names and Console N remain visible within 100–220 px widths, with ellipsis/full tooltips. Small ghost close buttons stop propagation; closing an inactive tab does not activate it and nonempty-draft confirmation is unchanged.
+
+The console database picker is an actual searchable Kit `ComboboxState<SearchableVec<DbChoice>>`, not the source form's dropdown alternative. Optional-string values distinguish None from a database literally named “No default database”. Its virtual list supports the 1,000-name fixture; stable catalog state survives busy/result notifications, and guarded changes restore selection while running. Cached-only explorer search uses a thin Kit Input wrapper, preserves ancestors and finds collapsed branches; it does not fetch or change database/query state. Its lazy index covers the 50,000-item fixture without flattening the full catalog on scroll.
+
+SQL regressions exercise the actual rendered Kit editor and native UTF-16 selection interface. Run immediately returns focus to the editor, enabling subsequent typing; completion does not refocus and steal a deliberately focused result. Canvas display previews defensively sanitize multiline/control text before native single-line shaping; see [root cause and regression boundary](testing.md#native-multiline-result-crash-and-development-fixes).
+
+Tokio completion is handed back through a scheduler-owned polling bridge, awaiting only completed handles rather than waking deterministic/local GPUI tasks from Tokio worker threads. Abort and generation checks remain. The existing production bridge uses 10 ms executor timers; test harnesses advance scheduler-owned clocks explicitly; no production polling or database deadline was changed by this UI fix. These scheduling intervals are not database deadlines or frame-performance measurements.

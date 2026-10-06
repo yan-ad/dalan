@@ -52,6 +52,7 @@ impl RenderOnce for GridHeaderButton {
 type Selection = (Option<String>, Option<String>, Option<String>);
 
 const DISPLAY_GRAPHEME_LIMIT: usize = 128;
+const DISPLAY_BYTE_LIMIT: usize = 4096;
 const ROW_GUTTER_WIDTH: f32 = 44.;
 const CELL_PADDING: f32 = 8.;
 const CELL_FONT_SIZE: f32 = 12.;
@@ -67,12 +68,51 @@ fn display_preview(value: Option<&CellValue>) -> SharedString {
             | CellValue::Temporal(text),
         ) => text,
     };
-    let mut graphemes = text.graphemes(true);
-    let mut preview: String = graphemes.by_ref().take(DISPLAY_GRAPHEME_LIMIT).collect();
-    if graphemes.next().is_some() {
-        preview.push('…');
+    single_line_preview(text).into()
+}
+
+fn display_control(ch: char) -> bool {
+    ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')
+}
+
+/// Only the rendered preview is escaped. SQL values, exports and the page's
+/// truncation metadata remain untouched. GPUI's shape_line requires no LF.
+/// The byte cap also bounds a single pathological combining-mark grapheme.
+fn single_line_preview(text: &str) -> String {
+    let mut preview = String::new();
+    for (index, grapheme) in text.graphemes(true).enumerate() {
+        if index == DISPLAY_GRAPHEME_LIMIT {
+            preview.push('…');
+            break;
+        }
+        if grapheme == "\r\n" {
+            if preview.len() + '↵'.len_utf8() > DISPLAY_BYTE_LIMIT - '…'.len_utf8() {
+                preview.push('…');
+                break;
+            }
+            preview.push('↵');
+            continue;
+        }
+        let grapheme_start = preview.len();
+        for ch in grapheme.chars() {
+            match ch {
+                '\n' | '\r' | '\u{2028}' | '\u{2029}' => preview.push('↵'),
+                '\t' => preview.push('⇥'),
+                ch if ch.is_control() => {
+                    use std::fmt::Write as _;
+                    let _ = write!(preview, "\\u{{{:x}}}", ch as u32);
+                }
+                ch => preview.push(ch),
+            }
+            if preview.len() > DISPLAY_BYTE_LIMIT - '…'.len_utf8() {
+                // Do not display a partial extended grapheme.
+                preview.truncate(grapheme_start);
+                preview.push('…');
+                return preview;
+            }
+        }
     }
-    preview.into()
+    preview
 }
 
 /// Small, stable type glyphs keep column names readable without embedding
@@ -110,6 +150,13 @@ fn shape_cell(
     window: &mut Window,
     truncate: bool,
 ) -> ShapedLine {
+    // Defend the single-line API boundary even if a future caller bypasses
+    // display_preview. Keep the cached SharedString for ordinary cell text.
+    let text = if text.len() > DISPLAY_BYTE_LIMIT || text.chars().any(display_control) {
+        single_line_preview(&text).into()
+    } else {
+        text
+    };
     let shape = |text: SharedString| {
         let run = TextRun {
             len: text.len(),
@@ -999,6 +1046,74 @@ mod tests {
             ..Default::default()
         });
         cx.run_until_parked();
+    }
+
+    #[test]
+    fn previews_escape_controls_and_bound_graphemes_and_bytes() {
+        assert_eq!(
+            single_line_preview("a\r\nb\rc\nd\te\u{2028}f\u{2029}\0\u{1b}"),
+            "a↵b↵c↵d⇥e↵f↵\\u{0}\\u{1b}"
+        );
+        let family = "👨‍👩‍👧‍👦";
+        assert_eq!(single_line_preview(&family.repeat(128)), family.repeat(128));
+        assert_eq!(
+            single_line_preview(&family.repeat(129)),
+            format!("{}…", family.repeat(128))
+        );
+        assert_eq!(
+            single_line_preview(&format!("a{}", "\u{301}".repeat(8192))),
+            "…"
+        );
+        assert_eq!(display_preview(None).as_ref(), "");
+        assert_eq!(display_preview(Some(&CellValue::Null)).as_ref(), "NULL");
+    }
+
+    #[gpui::test]
+    fn shape_cell_defensively_escapes_raw_multiline_text(cx: &mut TestAppContext) {
+        let (_, _, visual) = fixture(cx);
+        visual.update(|window, _| {
+            let font = window.text_style().font();
+            let line = shape_cell("raw\n\t文".into(), &font, gpui::black(), window, false);
+            assert_eq!(line.text.as_ref(), "raw↵⇥文");
+        });
+    }
+
+    #[gpui::test]
+    fn multiline_query_results_render_without_changing_typed_values(cx: &mut TestAppContext) {
+        let (model, grid, cx) = fixture(cx);
+        let values = [
+            CellValue::Text("中文\nHTML\r\nJSON\t👨‍👩‍👧‍👦".into()),
+            CellValue::Binary("bytes\0\n\u{1b}".into()),
+            CellValue::Number("1\n2".into()),
+            CellValue::Temporal("date\rtime\u{2028}end".into()),
+        ];
+        let mut page = model.read_with(cx, |m, _| (**m.page.as_ref().unwrap()).clone());
+        page.rows = (0..100)
+            .map(|_| (0..128).map(|i| values[i % values.len()].clone()).collect())
+            .collect();
+        page.columns.truncate(128);
+        model.update(cx, |m, cx| {
+            m.page = Some(Arc::new(page));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        grid.read_with(cx, |grid, _| {
+            assert!(!grid.visible_lines.is_empty());
+            assert_eq!(grid.visible_text[&(0, 0)].as_ref(), "中文↵HTML↵JSON⇥👨‍👩‍👧‍👦");
+            assert!(
+                grid.visible_lines
+                    .values()
+                    .all(|line| !line.text.contains('\n'))
+            );
+        });
+        model.read_with(cx, |model, _| {
+            for (i, value) in values.iter().enumerate() {
+                assert_eq!(&model.page.as_ref().unwrap().rows[0][i], value);
+            }
+            assert!(!model.page.as_ref().unwrap().truncated);
+        });
     }
 
     #[gpui::test]

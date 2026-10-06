@@ -10,7 +10,9 @@ Use **New Query Console** (query icon) in the explorer toolbar or **Cmd-Shift-N*
 
 All table/console tabs share a **32-tab maximum**. At capacity, opening another table/console reports an error; activating an existing table still works. Consoles have unique session identities and monotonically numbered **Console N** labels; closing one does not recycle its name in the current workspace.
 
-The compact Kit tab strip uses table/query icons, names, close x, a nonempty-draft dot and a real running indicator, with overflow scrolling. The explorer has three toolbar icons and horizontal scrolling at its 200 px minimum width. Kit's default theme replaces Carbonfox runtime styling. This is database-only chrome, not Files/Git/version-control UI or a visual copy of DataGrip.
+The compact Kit tab strip uses prefix table/query icons so table names and Console N labels remain visible (Kit `Tab.icon` suppresses labels). Tabs share 100–220 px bounds with ellipsis/full tooltips, a nonempty-draft dot and a real running indicator, with overflow scrolling. Small ghost close buttons stop propagation, so closing an inactive tab does not activate it. The explorer has three toolbar icons and horizontal scrolling at its 200 px minimum width. Kit's default theme replaces Carbonfox runtime styling. This is database-only chrome, not Files/Git/version-control UI or a visual copy of DataGrip.
+
+The database chooser uses actual Kit `ComboboxState<SearchableVec<DbChoice>>` with search and a virtual list, including the 1,000-name fixture. `Option<String>` values distinguish no default from a real database named “No default database”; selection uses values rather than stale indices. Catalog-unchanged busy/result notifications retain the same state and menu. Running guards restore selection rather than change execution context. Search is cached-only and never discovers databases.
 
 ## Shortcuts and editing
 
@@ -29,6 +31,8 @@ The compact Kit tab strip uses table/query icons, names, close x, a nonempty-dra
 The thin SQL adapter uses Kit's rope-backed EditorState for native selection, clipboard, IME, scrolling, undo/redo and SQL Tree-sitter highlighting. Each tab retains its draft in memory. The application SQL policy remains **64 KiB UTF-8**: oversized programmatic loads are rejected; interactive edit/IME/paste limit enforcement is a current regression gate, not a claimed atomic rejection guarantee. Native IME/accessibility still needs real-session verification.
 
 Run submits the **selected text**, or the **whole draft if there is no selection**. It does not detect a statement under the cursor, split scripts, run multiple statements or automatically execute on edit. Editing a draft neither executes nor cancels an existing run. SQL highlighting is implemented; database-aware completion, persistent history, saved script/file workflows and a generic code viewer are not. Grammar support does not implement PostgreSQL/MongoDB/Redis executors or broaden the MySQL/MariaDB read-only policy.
+
+Run immediately refocuses the actual Kit editor so typing can continue; asynchronous completion does not refocus and steal a deliberately focused result. Regressions exercise actual widget rendering and the native UTF-16 selection interface, not a substitute editor or unsupported text-test API. Preview is rebuild-and-restart, not hot reload: drafts, results and session-only passwords are lost, and server reads may continue until their deadline without a cancellation acknowledgement. See [development caveats](development.md#bacon-live-preview).
 
 ## Close and discard
 
@@ -110,9 +114,9 @@ Profiles remain password-free version 1 JSON; opt-in macOS Keychain and the shar
 
 ## Evidence and remaining scope
 
-Current verification passed 93 headless, 132 simulated UI and four bundle tests, plus 23 unique live database/transport cases and strict lint/build checks. See [testing](testing.md#workspace-tabs-and-query-consoles) for evidence and the pending hosted/native gates. Positive query protocol fixtures use owned disposable MySQL/MariaDB containers on existing direct/TLS/CONNECT/SSH routes; rejected writes are never executed. Structural virtual-editor/grid tests do not establish native FPS, IME or accessibility quality.
+Historical console verification passed 93 headless, 132 simulated UI and four bundle tests, plus 23 unique live database/transport cases and strict lint/build checks. Final local development-fix totals await primary confirmation; hosted CI is explicitly skipped for this task. See [current evidence boundary](testing.md#native-multiline-result-crash-and-development-fixes). Positive query protocol fixtures use owned disposable MySQL/MariaDB containers on existing direct/TLS/CONNECT/SSH routes; rejected writes are never executed. Structural editor/grid tests do not establish native FPS, IME or accessibility quality.
 
-Syntax highlighting, completion, history retention/deletion, saved scripts, current-statement execution, dedicated transaction sessions, guarded writes, full-query streaming export, column resizing and cell inspection/copy remain separately scoped. There is no fake completion/history/transaction support in this slice.
+SQL syntax highlighting is implemented. Completion, history retention/deletion, saved scripts, current-statement execution, dedicated transaction sessions, guarded writes, full-query streaming export, column resizing and cell inspection/copy remain separately scoped. There is no fake completion/history/transaction support in this slice.
 
 
 Changing a source’s connection settings invalidates its affected tabs and cancels their work. Reopening an invalidated table rebuilds it from the updated source while keeping its tab ID; healthy duplicate opens retain their filters/results/scroll state. An invalidated console keeps its SQL draft but refuses execution until the draft is copied into a new console with the new source context. Removing a source invalidates its tabs without changing another source’s tabs.

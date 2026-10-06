@@ -1,6 +1,7 @@
 //! Read-only source explorer and bounded table browser.
-use dalan_app::explorer_tree::{TreeKey, TreeRow};
+use dalan_app::explorer_tree::{ExplorerTree, TreeKey, TreeRow};
 use dalan_drivers::DbEngine;
+use dalan_drivers::{SchemaSelection, SourceProfile};
 use gpui::{
     Context, Div, Entity, Hsla, KeyBinding, Stateful, Subscription, Window, actions, div,
     prelude::*, px, rgb,
@@ -22,11 +23,15 @@ use super::{
     theme::*,
 };
 
-/// Only the flattened projection is retained by the view. Wheel/keyboard repaint
-/// never clones a catalog or rebuilds the projection.
+/// Retains display rows and a lazily materialized cached-metadata search index.
+/// Wheel/keyboard repaint never clones a catalog or rebuilds either projection.
 pub(super) struct SourceExplorer {
     model: Entity<SourceModel>,
     rows: Vec<TreeRow>,
+    search: Entity<TextInput>,
+    search_query: String,
+    search_index: Option<Vec<TreeRow>>,
+    _search_subscription: Subscription,
     active_key: Option<TreeKey>,
     tree_focus: gpui::FocusHandle,
     scroll: gpui::UniformListScrollHandle,
@@ -36,6 +41,158 @@ pub(super) struct SourceExplorer {
     #[cfg(test)]
     projection_rebuilds: usize,
     _subscription: Subscription,
+}
+
+/// Build a fully expanded, read-only projection of materialized metadata. Unlike
+/// cloning/expanding the tree this never duplicates the catalog or changes its
+/// expansion sets. Constructed lazily, once per model notification while searching.
+fn build_search_projection(tree: &ExplorerTree, profiles: &[SourceProfile]) -> Vec<TreeRow> {
+    fn label(name: &str) -> String {
+        if name.is_empty() {
+            "(unnamed)".into()
+        } else {
+            name.into()
+        }
+    }
+    let mut rows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push = |key: TreeKey, name: String, depth, count| {
+        let status = if tree.loading.contains(&key) {
+            Some("Loading…".into())
+        } else {
+            tree.errors.get(&key).cloned()
+        };
+        rows.push(TreeRow {
+            key,
+            label: name,
+            depth,
+            count,
+            status,
+            expandable: depth < 3,
+            expanded: depth < 3,
+        });
+    };
+    for profile in profiles.iter().take(100) {
+        if !seen.insert(&profile.id) {
+            continue;
+        }
+        let source = &profile.id;
+        let visible = |database: &&String| match &profile.schemas {
+            SchemaSelection::All => true,
+            SchemaSelection::Selected(names) => names.contains(database),
+        };
+        let databases = tree.databases.get(source);
+        push(
+            TreeKey::Source(source.clone()),
+            label(&profile.name),
+            0,
+            databases.map(|dbs| dbs.iter().filter(visible).count()),
+        );
+        let Some(databases) = databases else {
+            continue;
+        };
+        for database in databases.iter().filter(visible).take(1000) {
+            let tables = tree.tables.get(&(source.clone(), database.clone()));
+            push(
+                TreeKey::Database {
+                    source: source.clone(),
+                    database: database.clone(),
+                },
+                label(database),
+                1,
+                tables.map(Vec::len),
+            );
+            for views in [false, true] {
+                push(
+                    TreeKey::Group {
+                        source: source.clone(),
+                        database: database.clone(),
+                        views,
+                    },
+                    if views { "Views" } else { "Tables" }.into(),
+                    2,
+                    tables.map(|items| {
+                        items
+                            .iter()
+                            .filter(|t| (t.kind != "BASE TABLE") == views)
+                            .count()
+                    }),
+                );
+                if let Some(tables) = tables {
+                    for table in tables.iter().filter(|t| (t.kind != "BASE TABLE") == views) {
+                        push(
+                            TreeKey::Table {
+                                source: source.clone(),
+                                database: database.clone(),
+                                table: table.name.clone(),
+                                view: views,
+                            },
+                            label(&table.name),
+                            3,
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    rows
+}
+
+/// Include matching branches and each matching descendant's ancestors. Only
+/// output rows are cloned; typing neither clones metadata nor performs I/O.
+fn filter_search_projection(
+    index: &[TreeRow],
+    query: &str,
+    profiles: &[SourceProfile],
+) -> Vec<TreeRow> {
+    let query = query
+        .chars()
+        .take(256)
+        .collect::<String>()
+        .trim()
+        .to_lowercase();
+    let mut keep = vec![false; index.len()];
+    let mut ancestors = Vec::<usize>::with_capacity(4);
+    let mut matching_depth = None;
+    for (i, row) in index.iter().enumerate() {
+        while ancestors
+            .last()
+            .is_some_and(|&parent| index[parent].depth >= row.depth)
+        {
+            ancestors.pop();
+        }
+        if matching_depth.is_some_and(|depth| row.depth <= depth) {
+            matching_depth = None;
+        }
+        let engine_match = matches!(row.key, TreeKey::Source(_))
+            && profiles
+                .iter()
+                .find(|profile| profile.id == row.key.source())
+                .is_some_and(|profile| {
+                    profile
+                        .engine
+                        .display_name()
+                        .to_lowercase()
+                        .contains(&query)
+                });
+        if row.label.to_lowercase().contains(&query) || engine_match || matching_depth.is_some() {
+            keep[i] = true;
+            for &parent in &ancestors {
+                keep[parent] = true;
+            }
+            if matching_depth.is_none() {
+                matching_depth = Some(row.depth);
+            }
+        }
+        ancestors.push(i);
+    }
+    index
+        .iter()
+        .zip(keep)
+        .filter(|(_, keep)| *keep)
+        .map(|(row, _)| row.clone())
+        .collect()
 }
 
 /// Hex-encoded components avoid collisions between sources and names,
@@ -112,28 +269,51 @@ impl SourceExplorer {
             let model = model.read(cx);
             model.tree.flatten(&model.profiles)
         };
+        let search = cx.new(|cx| {
+            let mut input = TextInput::new("", "Search sources and objects", false, cx);
+            input.set_tab_order(19);
+            input
+        });
+        let search_subscription = cx.observe(&search, |this, search, cx| {
+            let query = search
+                .read(cx)
+                .value()
+                .chars()
+                .take(256)
+                .collect::<String>();
+            if this.search_query == query {
+                return;
+            }
+            this.search_query = query;
+            let model = this.model.read(cx);
+            let rows = if this.search_query.trim().is_empty() {
+                model.tree.flatten(&model.profiles)
+            } else {
+                let index = this
+                    .search_index
+                    .get_or_insert_with(|| build_search_projection(&model.tree, &model.profiles));
+                filter_search_projection(index, &this.search_query, &model.profiles)
+            };
+            this.replace_rows(rows);
+            this.scroll
+                .scroll_to_item_strict(0, gpui::ScrollStrategy::Top);
+            cx.notify();
+        });
         let subscription = cx.observe(&model, |this, model, cx| {
             #[cfg(test)]
             {
                 this.projection_rebuilds += 1;
             }
             let model = model.read(cx);
-            let rows = model.tree.flatten(&model.profiles);
-            // If a selected descendant disappeared through collapse, keep focus
-            // on its closest still-visible ancestor instead of losing selection.
-            if let Some(key) = &this.active_key
-                && !rows.iter().any(|row| &row.key == key)
-                && let Some(index) = this.rows.iter().position(|row| &row.key == key)
-            {
-                this.active_key = this.rows[..index]
-                    .iter()
-                    .rev()
-                    .find(|old| {
-                        old.depth < this.rows[index].depth
-                            && rows.iter().any(|row| row.key == old.key)
-                    })
-                    .map(|row| row.key.clone());
-            }
+            this.search_index = None;
+            let rows = if this.search_query.trim().is_empty() {
+                model.tree.flatten(&model.profiles)
+            } else {
+                let index = build_search_projection(&model.tree, &model.profiles);
+                let rows = filter_search_projection(&index, &this.search_query, &model.profiles);
+                this.search_index = Some(index);
+                rows
+            };
             if this
                 .menu_source
                 .as_ref()
@@ -141,12 +321,16 @@ impl SourceExplorer {
             {
                 this.menu_source = None;
             }
-            this.rows = rows;
+            this.replace_rows(rows);
             cx.notify();
         });
         Self {
             model,
             rows,
+            search,
+            search_query: String::new(),
+            search_index: None,
+            _search_subscription: search_subscription,
             active_key: None,
             tree_focus: cx.focus_handle().tab_stop(true).tab_index(20),
             scroll: gpui::UniformListScrollHandle::new(),
@@ -157,6 +341,23 @@ impl SourceExplorer {
             projection_rebuilds: 0,
             _subscription: subscription,
         }
+    }
+
+    fn replace_rows(&mut self, rows: Vec<TreeRow>) {
+        // Retain the closest visible ancestor without changing model selection.
+        if let Some(key) = &self.active_key
+            && !rows.iter().any(|row| &row.key == key)
+            && let Some(index) = self.rows.iter().position(|row| &row.key == key)
+        {
+            self.active_key = self.rows[..index]
+                .iter()
+                .rev()
+                .find(|old| {
+                    old.depth < self.rows[index].depth && rows.iter().any(|row| row.key == old.key)
+                })
+                .map(|row| row.key.clone());
+        }
+        self.rows = rows;
     }
 
     fn select_key(&mut self, key: TreeKey, cx: &mut Context<Self>) {
@@ -668,14 +869,36 @@ impl Render for SourceExplorer {
             .border_1()
             .border_color(palette.panel)
             .focus(|style| style.border_color(palette.focus))
-            .child(toolbar);
-        if self.rows.is_empty() {
-            root = root.child(
+            .child(toolbar)
+            .child(
                 div()
-                    .p(px(8.))
-                    .text_color(palette.muted)
-                    .child("No data sources yet. Add a source to begin."),
+                    .id("source-explorer-search")
+                    .debug_selector(|| "source-explorer-search".into())
+                    .flex_shrink_0()
+                    .h(px(32.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape"
+                            && this.menu_source.is_none()
+                            && !this.search_query.is_empty()
+                        {
+                            this.search.update(cx, |input, cx| input.set_value("", cx));
+                            this.tree_focus.focus(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(self.search.clone()),
             );
+        if self.rows.is_empty() {
+            root = root.child(div().p(px(8.)).text_color(palette.muted).child(
+                if self.search_query.trim().is_empty() {
+                    "No data sources yet. Add a source to begin."
+                } else {
+                    "No matching cached sources or objects."
+                },
+            ));
         }
         root = root.child(entries);
         if confirm {
@@ -1314,6 +1537,163 @@ mod tests {
         mysql::{CellValue, ColumnInfo, SortDirection},
     };
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
+
+    fn search_fixture() -> (ExplorerTree, Vec<SourceProfile>) {
+        let profiles = vec![SourceProfile {
+            id: "cached".into(),
+            name: "Production warehouse".into(),
+            ..SourceProfile::default()
+        }];
+        let mut tree = ExplorerTree::default();
+        tree.databases
+            .insert("cached".into(), vec!["Analytics".into(), "Other".into()]);
+        tree.tables.insert(
+            ("cached".into(), "Analytics".into()),
+            vec![
+                dalan_drivers::TableInfo {
+                    name: "Événements名字".into(),
+                    kind: "BASE TABLE".into(),
+                },
+                dalan_drivers::TableInfo {
+                    name: "Daily summary".into(),
+                    kind: "VIEW".into(),
+                },
+            ],
+        );
+        tree.tables.insert(
+            ("cached".into(), "Other".into()),
+            vec![dalan_drivers::TableInfo {
+                name: "unrelated".into(),
+                kind: "BASE TABLE".into(),
+            }],
+        );
+        (tree, profiles)
+    }
+
+    #[test]
+    fn search_cached_collapsed_unicode_objects_preserves_ancestors_and_expansion() {
+        let (tree, profiles) = search_fixture();
+        let index = build_search_projection(&tree, &profiles);
+        let matches = filter_search_projection(&index, "ÉVÉNEMENTS名字", &profiles);
+        assert_eq!(
+            matches
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Production warehouse",
+                "Analytics",
+                "Tables",
+                "Événements名字"
+            ]
+        );
+        assert_eq!(
+            matches.iter().map(|row| row.depth).collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        let views = filter_search_projection(&index, "SUMMARY", &profiles);
+        assert_eq!(views[2].label, "Views");
+        assert!(matches[0].expanded && matches[1].expanded && matches[2].expanded);
+        assert!(tree.expanded_sources.is_empty());
+        assert!(tree.expanded_databases.is_empty());
+        assert!(tree.expanded_groups.is_empty());
+        assert!(tree.loading.is_empty());
+        assert_eq!(tree.flatten(&profiles).len(), 1);
+        assert!(filter_search_projection(&index, "not cached", &profiles).is_empty());
+    }
+
+    #[test]
+    fn search_parent_and_engine_matches_include_cached_branches_and_respect_schema_selection() {
+        let (tree, mut profiles) = search_fixture();
+        let index = build_search_projection(&tree, &profiles);
+        assert_eq!(
+            filter_search_projection(&index, "WAREHOUSE", &profiles).len(),
+            index.len()
+        );
+        assert_eq!(
+            filter_search_projection(&index, profiles[0].engine.display_name(), &profiles).len(),
+            index.len()
+        );
+        let branch = filter_search_projection(&index, "ANALYTICS", &profiles);
+        assert_eq!(branch.len(), 6);
+        assert!(!branch.iter().any(|row| row.label == "Other"));
+        profiles[0].schemas = SchemaSelection::Selected(vec!["Other".into()]);
+        let restricted = build_search_projection(&tree, &profiles);
+        assert!(filter_search_projection(&restricted, "Événements", &profiles).is_empty());
+        assert_eq!(tree.tables.len(), 2);
+        assert_eq!(
+            filter_search_projection(&index, &"名".repeat(257), &profiles).len(),
+            0
+        );
+    }
+
+    #[gpui::test]
+    fn native_sidebar_search_reuses_index_virtualizes_and_escape_restores_tree(
+        cx: &mut TestAppContext,
+    ) {
+        let (mut tree, profiles) = search_fixture();
+        tree.tables
+            .get_mut(&("cached".into(), "Analytics".into()))
+            .unwrap()
+            .extend((0..50_000).map(|i| dalan_drivers::TableInfo {
+                name: format!("object{i:05}"),
+                kind: "BASE TABLE".into(),
+            }));
+        let model = cx.new(|_| {
+            let mut model = SourceModel::for_tests(profiles);
+            model.tree = tree;
+            model.page = Some(std::sync::Arc::new(page()));
+            model.cached_offline.insert("cached".into());
+            model
+        });
+        let page = model.read_with(cx, |model, _| model.page.as_ref().unwrap().clone());
+        let (explorer, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
+        cx.simulate_resize(gpui::size(px(320.), px(570.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        let search = explorer.read_with(cx, |view, _| view.search.clone());
+        assert!(explorer.read_with(cx, |view, _| view.search_index.is_none()));
+        let focus = search.read_with(cx, |input, _| input.focus_handle());
+        cx.update(|window, cx| focus.focus(window, cx));
+        cx.simulate_input("object49999");
+        cx.run_until_parked();
+        let index_address = explorer.read_with(cx, |view, _| {
+            assert_eq!(view.rows.len(), 4);
+            assert_eq!(view.rows.last().unwrap().label, "object49999");
+            assert!(view.last_rendered_row_count <= 40);
+            assert!(view.search_index.as_ref().unwrap().len() > 50_000);
+            view.search_index.as_ref().unwrap().as_ptr() as usize
+        });
+        // Native replacement triggers the same Kit Change observer, without a
+        // model notification or rebuilding the materialized metadata index.
+        cx.simulate_keystrokes("cmd-a");
+        cx.simulate_input("warehouse");
+        cx.run_until_parked();
+        explorer.read_with(cx, |view, _| {
+            assert!(view.rows.len() > 50_000);
+            assert_eq!(
+                view.search_index.as_ref().unwrap().as_ptr() as usize,
+                index_address
+            );
+            assert_eq!(view.projection_rebuilds, 0);
+            assert!(view.last_rendered_row_count > 0 && view.last_rendered_row_count <= 40);
+        });
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        explorer.read_with(cx, |view, cx| {
+            assert_eq!(view.search_query, "");
+            assert_eq!(view.search.read(cx).value(), "");
+            assert_eq!(view.rows.len(), 1);
+        });
+        model.read_with(cx, |model, _| {
+            assert!(model.tree.expanded_sources.is_empty());
+            assert!(model.tree.expanded_databases.is_empty());
+            assert!(model.tree.expanded_groups.is_empty());
+            assert!(model.tree.loading.is_empty());
+            assert!(model.selected_source.is_none());
+            assert!(std::sync::Arc::ptr_eq(model.page.as_ref().unwrap(), &page));
+        });
+    }
 
     /// Production Kit popovers render through the window's component Root.
     fn kit_window<T: Render + 'static>(

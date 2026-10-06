@@ -22,7 +22,7 @@ use gpui::{
 };
 
 use gpui::component::{
-    Disableable, Icon as KitIcon, Selectable, Sizable,
+    ActiveTheme, Disableable, Icon as KitIcon, Selectable, Sizable,
     button::{Button as KitButton, ButtonVariants},
     menu::{DropdownMenu, PopupMenuItem},
 };
@@ -36,6 +36,7 @@ actions!(
         Dismiss,
         ToggleDatabase,
         ToggleAcp,
+        ToggleTheme,
         ShowAbout,
         ResetLayout,
         CloseWindow,
@@ -66,6 +67,7 @@ fn control_label(id: &str) -> &'static str {
         "reset-layout" => "Reset layout (Cmd-Alt-0)",
         "acp-toggle" => "Toggle AI panel (ACP only, Cmd-Shift-A)",
         "acp-close" => "Close AI panel",
+        "theme-toggle" => "Toggle light and dark appearance",
         _ => "UI foundation",
     }
 }
@@ -274,6 +276,35 @@ impl Shell {
                         }
                     }),
             )
+            .child(self.button(
+                "acp-toggle",
+                Control::ToggleAcp,
+                self.state.acp_visible,
+                "icons/bot-message-square.svg",
+                cx,
+            ))
+            .child(
+                self.tracked_button(
+                    "theme-toggle",
+                    self.kit_button("theme-toggle")
+                        .icon(KitIcon::new(if cx.theme().mode.is_dark() {
+                            gpui::assets::IconName::Sun
+                        } else {
+                            gpui::assets::IconName::Moon
+                        }))
+                        .tooltip("Toggle light and dark appearance")
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            let next = if cx.theme().mode.is_dark() {
+                                gpui::component::ThemeMode::Light
+                            } else {
+                                gpui::component::ThemeMode::Dark
+                            };
+                            gpui::component::Theme::change(next, None, cx);
+                            cx.refresh_windows();
+                        })),
+                    cx,
+                ),
+            )
             .child(self.layout_menu(cx))
             .child(div().w(px(8.0)))
     }
@@ -423,6 +454,15 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ToggleAcp, window, cx| {
                 this.apply(Control::ToggleAcp, window, cx)
             }))
+            .on_action(|_: &ToggleTheme, _, cx| {
+                let next = if cx.theme().mode.is_dark() {
+                    gpui::component::ThemeMode::Light
+                } else {
+                    gpui::component::ThemeMode::Dark
+                };
+                gpui::component::Theme::change(next, None, cx);
+                cx.refresh_windows();
+            })
             .on_action(cx.listener(|this, _: &ResetLayout, window, cx| {
                 this.apply(Control::ResetLayout, window, cx)
             }))
@@ -514,14 +554,7 @@ impl Render for Shell {
                                 )
                                 .build(window, cx)
                             }),
-                    )
-                    .child(self.button(
-                        "acp-toggle",
-                        Control::ToggleAcp,
-                        self.state.acp_visible,
-                        "icons/bot-message-square.svg",
-                        cx,
-                    )),
+                    ),
             )
     }
 }

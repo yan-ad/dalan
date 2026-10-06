@@ -299,6 +299,33 @@ mod tests {
     }
 
     #[gpui::test]
+    fn repaint_notifications_preserve_native_focus_selection_and_caret(cx: &mut TestAppContext) {
+        let (editor, visual) = fixture(cx, "SELECT 1;");
+        let state = editor.read_with(visual, |editor, _| editor.state.as_ref().unwrap().clone());
+        visual.update(|window, cx| {
+            window.press("secondary-a", cx);
+        });
+        visual.run_until_parked();
+        // Query/result updates must not recreate Kit state or reset its selection.
+        for _ in 0..3 {
+            editor.update(visual, |_, cx| cx.notify());
+            visual.refresh().unwrap();
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                let editor = editor.read(cx);
+                assert_eq!(editor.state.as_ref().unwrap(), &state);
+                assert!(editor.focus_handle().is_focused(window));
+                assert_eq!(state.read(cx).selected_text().to_string(), "SELECT 1;");
+            });
+        }
+        visual.update(|window, cx| {
+            window.press("right", cx);
+            window.input(" -- caret", cx);
+            assert_eq!(state.read(cx).value(), "SELECT 1; -- caret");
+        });
+    }
+
+    #[gpui::test]
     fn focus_requested_before_lazy_initialization_transfers_to_kit(cx: &mut TestAppContext) {
         cx.update(gpui::init);
         let editor = cx.new(|cx| SqlEditor::new("", cx));

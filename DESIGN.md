@@ -6,7 +6,7 @@ Status: production GPUI Kit standard-control/default-theme foundation with an ex
 
 The user now requires **all standard controls from GPUI Kit and Kit's default theme**. This supersedes the earlier Carbonfox - opaque runtime direction. DataGrip informs database workflows, not styling; compact database-only layout remains application-owned. Kit Button, Input, Checkbox, tabs, dropdown/popup menus and tooltips supply standard interaction rather than custom lookalikes. Driver/authentication menus and saved SSH popup choices are functional native dropdown alternatives, not claimed Combobox/Select usage.
 
-`desktop/theme.rs` retains compact layout metrics and maps active Kit semantic `Hsla` values for shell and specialized grid paint. It does not install a fixed palette or Carbonfox override. Theme initialization/selection belongs to Kit; no app-specific theme toggle or exact initial light/dark appearance is promised. Old Carbonfox contrast numbers do not validate this theme. Native screenshots, high-DPI/text scaling, VoiceOver and performance remain separate gates.
+`desktop/theme.rs` retains compact layout metrics and maps active Kit semantic `Hsla` values for shell and specialized grid paint. It does not install a fixed palette or Carbonfox override. Theme initialization belongs to Kit; a top-right Sun/Moon control invokes `Theme::change` between Kit default light/dark modes alongside ACP and Layout. No added persistence or exact initial appearance is promised. Old Carbonfox contrast numbers do not validate this theme. Native screenshots, high-DPI/text scaling, VoiceOver and performance remain separate gates.
 
 ## Supplied application artwork and historical provenance
 
@@ -16,7 +16,7 @@ Historical [Carbonfox JSON](crates/app/assets/themes/carbonfox-opaque.json) and 
 
 ## Compact database workspace
 
-One collapsible/resizable Database Explorer, retained table/query-console tabs, a separate source window and an optional disconnected ACP panel define the workspace. Generic Files, Git, build tools, terminal and plugin/toolbox chrome are excluded. ACP honestly says **Not connected**; no transport, agent launch or provider settings exist.
+One collapsible/resizable Database Explorer, retained table/query-console tabs, a separate source window and an optional disconnected ACP panel define the workspace. ACP's trigger is now top-right, not in the status bar. Generic Files, Git, build tools, terminal and plugin/toolbox chrome are excluded. ACP honestly says **Not connected**; no transport, agent launch or provider settings exist. Cached-only explorer search finds collapsed branches and preserves ancestors without database queries; searchable console database choices use a real Kit Combobox, while source-form choices remain dropdown alternatives.
 
 App layout metrics remain 34 px titlebar, 28 px headers/status/controls, 22 px tree/grid rows, flush panes and a 4 px divider hit area with a 1 px visible line. Explorer prefers 320 px within 200–480 px, reserving 240 px main content. ACP starts closed and prefers 300 px; compact layouts may temporarily suppress explorer without changing retained preferences. Actual standard-control styling comes from Kit rather than independently copied palette/radius behavior.
 
@@ -24,7 +24,7 @@ Source setup is a normal independent window, initially 1040 × 760 with 780 × 5
 
 ## Rich canvas table contract
 
-The shipping result body remains specialized direct canvas paint with cached shaped text and row/grid quads, **zero per-cell Divs**, two-axis viewport virtualization and native interactive header controls. This is an intentional app-owned rendering exception, not a standard Table replacement. The pinned 44 px row gutter uses body y only and stays at x = 0; numbering is `offset + row + 1`. Grapheme-safe 128-grapheme previews do not alter typed/export values.
+The shipping result body remains specialized direct canvas paint with cached shaped text and row/grid quads, **zero per-cell Divs**, two-axis viewport virtualization and native interactive header controls. This is an intentional app-owned rendering exception, not a standard Table replacement. The pinned 44 px row gutter uses body y only and stays at x = 0; numbering is `offset + row + 1`. Display previews sanitize newline/control text and cap at 128 graphemes/4,096 bytes without splitting combining clusters or altering typed/export values. Native single-line shaping previously panicked on multiline data; this is not a font/OS-renderer diagnosis.
 
 WHERE/ORDER BY are single-line drafts: typing never fetches; Apply/Enter validates and submits both. Invalid conditions retain visibly stale rows. Name-only headers expose type/key metadata in tooltips and separate sort targets; query result headers remain nonsortable. Refresh/owned Cancel, loaded CSV, paging and range feedback are functional, with no placeholder mutation/DDL/history menus.
 
@@ -32,7 +32,7 @@ Best-effort inactive-result retention remains **16 MiB/eight pages**, protecting
 
 ## Tabs and SQL editing
 
-Up to 32 tabs retain independent model/view/request/result state. Tables deduplicate source/database/table identity; consoles have unique sessions and monotonic Console N names. Kit tab controls expose meaningful draft/running indicators and guarded close actions. Nonempty console drafts require confirmation even after successful Run; closing affects only that tab's owned work.
+Up to 32 tabs retain independent model/view/request/result state. Tables deduplicate source/database/table identity; consoles have unique sessions and monotonic Console N names. Kit tab controls use prefix icons so labels remain visible, with 100–220 px bounds, ellipsis/full tooltips, meaningful draft/running indicators and small ghost close actions that stop propagation. Nonempty console drafts require confirmation even after successful Run; closing affects only that tab's owned work and closing an inactive tab does not activate it.
 
 The custom SQL editing engine is replaced by a thin adapter around Kit's rope EditorState. Kit owns native selection, clipboard, IME, scrolling, undo/redo and SQL Tree-sitter highlighting. Dalan owns source/database context, validation and selected-or-whole Run/Cancel. The SQL policy remains 64 KiB; interactive limit rejection is a current regression gate, not an inherited atomicity guarantee. Do not carry forward the bespoke editor's exact undo-count/indent/geometry promises without current tests.
 

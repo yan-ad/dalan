@@ -9,4 +9,4 @@ Records separate user constraints from provisional engineering choices. Change a
 | [0003: Engine adapters](0003-engine-adapters.md) | First-release scope required; dependency choices proposed |
 | [0004: Workspace tabs and read-only consoles](0004-workspace-tabs-and-read-only-consoles.md) | Accepted; implemented experimental MySQL/MariaDB slice, validation gates remain |
 | [0005: Selective DBX reuse and ecosystem boundaries](0005-selective-dbx-reuse-and-ecosystem-boundaries.md) | Initial catalog adopted; further ecosystem contracts proposed |
-| [0006: GPUI Kit migration boundary](0006-gpui-kit-migration.md) | Isolated pilot verified; production migration gated |
+| [0006: GPUI Kit migration boundary](0006-gpui-kit-migration.md) | Production Kit components/default theme implemented; native validation gated |

@@ -103,14 +103,14 @@ fn source_dialog_context(cx: &VisualTestContext) -> VisualTestContext {
 }
 
 #[gpui::test]
-fn acp_button_is_bottom_right_and_panel_close_restores_focus(cx: &mut TestAppContext) {
+fn acp_button_is_top_right_and_panel_close_restores_focus(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
     assert!(!state(&view, cx).acp_visible);
     let trigger = cx.debug_bounds("acp-toggle").unwrap();
     assert_eq!(trigger.size.width, px(28.0));
     assert!(cx.debug_bounds("acp-ai-icon").is_some());
     assert!(trigger.origin.x > px(1_100.0));
-    assert!(trigger.origin.y >= px(768.0));
+    assert!(trigger.origin.y < px(TITLEBAR_HEIGHT));
     click(cx, "acp-toggle");
     assert!(state(&view, cx).acp_visible);
     assert!(cx.debug_bounds("acp-empty").is_some());
@@ -146,7 +146,7 @@ fn acp_compact_layout_keeps_content_and_restores_database(cx: &mut TestAppContex
     assert!(state(&view, cx).database_visible);
     assert_eq!(cx.debug_bounds("acp-panel").unwrap().size.width, px(300.0));
     assert!(cx.debug_bounds("main-content").unwrap().size.width >= px(240.0));
-    assert!(cx.debug_bounds("acp-toggle").unwrap().origin.y >= px(448.0));
+    assert!(cx.debug_bounds("acp-toggle").unwrap().origin.y < px(TITLEBAR_HEIGHT));
     cx.update(|window, app| view.read(app).root_focus.clone().focus(window, app));
     cx.simulate_keystrokes("escape");
     assert!(
@@ -212,9 +212,10 @@ fn tab_order_reaches_every_visible_control_in_both_directions(cx: &mut TestAppCo
     let order = [
         "database-toggle",
         "new-connection",
+        "acp-toggle",
+        "theme-toggle",
         "layout-menu",
         "database-resize",
-        "acp-toggle",
     ];
     let mut handles = Vec::new();
     for id in order {
@@ -327,7 +328,8 @@ fn menu_trigger_escape_and_outside_click_dismiss(cx: &mut TestAppContext) {
 #[gpui::test]
 fn keyboard_activation_native_menu_navigation_and_shortcuts(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
-    cx.simulate_keystrokes("tab tab tab enter");
+    cx.simulate_keystrokes("tab tab tab tab tab");
+    press(cx, "enter");
     cx.run_until_parked();
     assert!(state(&view, cx).menu_open);
     select_layout_item(cx, Control::ToggleDatabase);
@@ -423,7 +425,7 @@ fn layout_trigger_is_icon_sized_and_popover_still_operates(cx: &mut TestAppConte
     click(cx, "layout-menu");
     assert!(!state(&view, cx).menu_open);
     cx.update(|window, app| view.read(app).root_focus.clone().focus(window, app));
-    cx.simulate_keystrokes("tab tab tab");
+    cx.simulate_keystrokes("tab tab tab tab tab");
     press(cx, "enter");
     assert!(state(&view, cx).menu_open);
     cx.simulate_keystrokes("escape");
@@ -482,4 +484,21 @@ fn select_layout_item(cx: &mut VisualTestContext, control: Control) {
     }
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
+}
+
+#[gpui::test]
+fn titlebar_theme_control_switches_kit_modes_without_changing_workspace(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let before = state(&shell, cx);
+    let mode = cx.cx.read(|app| app.theme().mode);
+    let theme = cx.debug_bounds("theme-toggle").unwrap();
+    let ai = cx.debug_bounds("acp-toggle").unwrap();
+    let layout = cx.debug_bounds("layout-menu").unwrap();
+    assert!(ai.origin.y < px(TITLEBAR_HEIGHT));
+    assert!(ai.right() <= theme.left() && theme.right() <= layout.left());
+    click(cx, "theme-toggle");
+    assert_ne!(cx.cx.read(|app| app.theme().mode), mode);
+    assert_eq!(state(&shell, cx), before);
+    click(cx, "theme-toggle");
+    assert_eq!(cx.cx.read(|app| app.theme().mode), mode);
 }
