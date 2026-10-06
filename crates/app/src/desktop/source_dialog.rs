@@ -45,6 +45,17 @@ pub(super) struct SourceDialog {
     page: SettingsPage,
     ssh: Option<Entity<SshManager>>,
     driver: DbEngine,
+    jdbc_catalog: Vec<dalan_app::jdbc_catalog::CatalogEntry>,
+    jdbc_installed: Vec<dalan_app::jdbc_catalog::InstalledDriver>,
+    jdbc_selected: Option<String>,
+    jdbc_version: Option<String>,
+    jdbc_busy: bool,
+    jdbc_loaded: bool,
+    jdbc_confirm: bool,
+    jdbc_filter: u8,
+    jdbc_search: Entity<super::input::TextInput>,
+    jdbc_java: Entity<super::input::TextInput>,
+    jdbc_runtime: Option<String>,
     driver_choices: std::collections::BTreeMap<String, String>,
     driver_choices_saved: std::collections::BTreeMap<String, String>,
     confirm_close: bool,
@@ -127,7 +138,35 @@ impl SourceDialog {
             order: vec![active.clone()],
             page: SettingsPage::Sources,
             ssh: None,
-            driver: profile.engine,
+            driver: if profile.engine == DbEngine::Jdbc {
+                DbEngine::MySql
+            } else {
+                profile.engine
+            },
+            jdbc_catalog: dalan_app::jdbc_catalog::curated_catalog(),
+            jdbc_installed: vec![],
+            jdbc_selected: None,
+            jdbc_version: None,
+            jdbc_busy: false,
+            jdbc_loaded: false,
+            jdbc_confirm: false,
+            jdbc_filter: 0,
+            jdbc_search: cx.new(|cx| {
+                super::input::TextInput::new("", "Search built-in and JDBC drivers", false, cx)
+            }),
+            jdbc_java: cx.new(|cx| {
+                super::input::TextInput::new(
+                    profile
+                        .jdbc
+                        .as_ref()
+                        .map(|j| j.java_path.as_str())
+                        .unwrap_or(""),
+                    "Absolute path to Java 17+ executable",
+                    false,
+                    cx,
+                )
+            }),
+            jdbc_runtime: None,
             driver_choices_saved: driver_choices.clone(),
             driver_choices,
             confirm_close: false,
@@ -145,6 +184,8 @@ impl SourceDialog {
                 databases: model.read(cx).form_databases.clone(),
             },
         );
+        this._subscriptions
+            .push(cx.observe(&this.jdbc_search, |_, _, cx| cx.notify()));
         this.attach_form(&form, window, cx);
         model.update(cx, |m, _| m.form_keep_open = true);
         form.read(cx).preferred_first_focus(cx).focus(window, cx);
@@ -285,7 +326,8 @@ impl SourceDialog {
         cx.notify();
     }
     fn blocked(&self, cx: &App) -> bool {
-        self.model.read(cx).saving
+        self.jdbc_busy
+            || self.model.read(cx).saving
             || self.model.read(cx).connector_busy
             || self
                 .ssh
@@ -319,6 +361,11 @@ impl SourceDialog {
             );
         }
         self.form = self.drafts[&profile.id].form.clone();
+        if self.jdbc_loaded && !self.jdbc_busy {
+            self.form.update(cx, |f, cx| {
+                f.set_installed_jdbc(self.jdbc_installed.clone(), cx)
+            });
+        }
         if let Some(ssh) = &self.ssh {
             ssh.update(cx, |ssh, cx| ssh.set_owner(self.form.clone(), cx));
         }
@@ -574,6 +621,307 @@ impl SourceDialog {
         cx.notify();
         true
     }
+    fn load_jdbc(&mut self, _cx: &mut Context<Self>) {
+        if self.jdbc_loaded || self.jdbc_busy {
+            return;
+        }
+        self.jdbc_loaded = true;
+        #[cfg(not(feature = "ui-tests"))]
+        {
+            self.jdbc_busy = true;
+            let task = _cx.background_executor().spawn(async {
+                let repo = dalan_app::jdbc_catalog::CatalogRepository::new(
+                    dalan_app::jdbc_catalog::CatalogRepository::default_path()?,
+                );
+                repo.load()
+            });
+            _cx.spawn(async move |this, cx| {
+                let result = task.await;
+                let _ = this.update(cx, |d, cx| {
+                    d.jdbc_busy = false;
+                    match result {
+                        Ok(installed) => d.publish_jdbc(installed, cx),
+                        Err(_) => d.notice = Some(
+                            "Could not verify local JDBC installations; catalog remains available."
+                                .into(),
+                        ),
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+    fn publish_jdbc(
+        &mut self,
+        installed: Vec<dalan_app::jdbc_catalog::InstalledDriver>,
+        cx: &mut Context<Self>,
+    ) {
+        self.jdbc_installed = installed;
+        for draft in self.drafts.values() {
+            draft.form.update(cx, |f, cx| {
+                f.set_installed_jdbc(self.jdbc_installed.clone(), cx)
+            });
+        }
+    }
+    fn refresh_jdbc(&mut self, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
+            return;
+        }
+        self.jdbc_busy = true;
+        self.notice = Some("Fetching JetBrains discovery and Maven Central versions…".into());
+        let task = cx
+            .background_executor()
+            .spawn(async { dalan_app::jdbc_catalog::fetch_catalog() });
+        cx.spawn(async move|this,cx|{let result=task.await;let _=this.update(cx,|d,cx|{d.jdbc_busy=false;match result{Ok(catalog)=>{d.jdbc_catalog=catalog;d.notice=Some("JDBC versions refreshed. Installation executes no Java; connecting executes trusted third-party code.".into());},Err(_)=>d.notice=Some("Catalog refresh failed; cached/curated entries remain. Check connectivity or service availability.".into())}cx.notify();});}).detach();
+        cx.notify();
+    }
+    fn install_jdbc(&mut self, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
+            return;
+        }
+        if !self.jdbc_confirm {
+            self.jdbc_confirm = true;
+            cx.notify();
+            return;
+        }
+        self.jdbc_confirm = false;
+        let Some(id) = self.jdbc_selected.clone() else {
+            return;
+        };
+        let Some(entry) = self.jdbc_catalog.iter().find(|e| e.id == id).cloned() else {
+            return;
+        };
+        let Some(version) = self
+            .jdbc_version
+            .clone()
+            .or_else(|| entry.versions.first().cloned())
+        else {
+            self.notice = Some("Refresh the catalog to discover installable versions.".into());
+            cx.notify();
+            return;
+        };
+        let root = match dalan_app::jdbc_catalog::CatalogRepository::default_path() {
+            Ok(root) => root,
+            Err(_) => {
+                self.notice = Some("JDBC storage is unavailable.".into());
+                cx.notify();
+                return;
+            }
+        };
+        self.jdbc_busy = true;
+        self.notice = Some("Downloading and verifying approved JDBC artifacts…".into());
+        let task = cx.background_executor().spawn(async move {
+            let repo = dalan_app::jdbc_catalog::CatalogRepository::new(root);
+            repo.install(&entry, &version)?;
+            repo.load()
+        });
+        cx.spawn(async move|this,cx|{let result=task.await;let _=this.update(cx,|d,cx|{d.jdbc_busy=false;match result{Ok(installed)=>{d.publish_jdbc(installed,cx);d.notice=Some("JDBC installed and verified. Choose its installed version and configure Java to create a source.".into());},Err(_)=>d.notice=Some("JDBC installation failed; no installation published. SHA-256 sidecars and all declared dependencies must be available; check service/access or an already installed version.".into())}cx.notify();});}).detach();
+        cx.notify();
+    }
+    fn check_java(&mut self, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
+            return;
+        }
+        let path = self.jdbc_java.read(cx).value();
+        self.jdbc_busy = true;
+        let task = cx.background_executor().spawn(async move {
+            super::source_model::runtime().block_on(dalan_drivers::jdbc::runtime_info(&path))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |d, cx| {
+                d.jdbc_busy = false;
+                d.jdbc_runtime = Some(match result {
+                    Ok(r) => format!("Java {} · verified executable", r.major),
+                    Err(_) => {
+                        "Java unavailable or unsupported; choose an absolute Java 17+ executable."
+                            .into()
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn create_jdbc_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(cx) {
+            return;
+        }
+        let Some(id) = self.jdbc_selected.clone() else {
+            return;
+        };
+        let Some(installed) = self
+            .jdbc_installed
+            .iter()
+            .find(|d| d.id == id && self.jdbc_version.as_ref().is_none_or(|v| v == &d.version))
+            .cloned()
+        else {
+            self.notice = Some("Install and select the JDBC version first.".into());
+            cx.notify();
+            return;
+        };
+        let java = self.jdbc_java.read(cx).value();
+        if !std::path::Path::new(&java).is_absolute() {
+            self.notice = Some("Configure an absolute Java 17+ executable first.".into());
+            cx.notify();
+            return;
+        }
+        let pending = self
+            .drafts
+            .keys()
+            .filter(|id| !self.model.read(cx).profiles.iter().any(|p| &p.id == *id))
+            .count();
+        if self.model.read(cx).profiles.len() + pending >= 100 {
+            self.notice = Some("Source limit reached.".into());
+            cx.notify();
+            return;
+        }
+        let profile = SourceProfile {
+            name: format!("{} JDBC", installed.name),
+            engine: DbEngine::Jdbc,
+            tls: dalan_drivers::TlsMode::Disabled,
+            jdbc: Some(dalan_drivers::JdbcOptions {
+                java_path: java,
+                driver_id: installed.id.clone(),
+                driver_class: installed.driver_class,
+                jars: installed
+                    .jars
+                    .into_iter()
+                    .zip(installed.sha256)
+                    .map(|(path, sha256)| dalan_drivers::JdbcJar {
+                        path: path.to_string_lossy().into_owned(),
+                        sha256,
+                    })
+                    .collect(),
+                url: installed.url_prefix,
+            }),
+            ..SourceProfile::default()
+        };
+        self.snapshot_active(cx);
+        self.model
+            .update(cx, |m, cx| m.navigate_form(profile.clone(), cx));
+        self.generation = self.model.read(cx).form_generation;
+        self.install(profile, window, cx);
+        self.form.update(cx, |f, cx| {
+            f.set_installed_jdbc(self.jdbc_installed.clone(), cx);
+            f.mark_new();
+        });
+        self.page = SettingsPage::Sources;
+        cx.notify();
+    }
+    fn jdbc_details(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui::component::{
+            menu::{DropdownMenu, PopupMenuItem},
+            table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
+        };
+        let Some(entry) = self
+            .jdbc_selected
+            .as_ref()
+            .and_then(|id| self.jdbc_catalog.iter().find(|e| &e.id == id))
+        else {
+            return div()
+                .p_4()
+                .child("Select a JDBC catalog entry.")
+                .into_any_element();
+        };
+        let entry = entry.clone();
+        let installed = self
+            .jdbc_installed
+            .iter()
+            .filter(|d| d.id == entry.id)
+            .collect::<Vec<_>>();
+        let mut versions = entry.versions.clone();
+        for d in &installed {
+            if !versions.contains(&d.version) {
+                versions.push(d.version.clone());
+            }
+        }
+        let chosen = self
+            .jdbc_version
+            .clone()
+            .or_else(|| versions.first().cloned());
+        let is_installed = chosen
+            .as_ref()
+            .is_some_and(|v| installed.iter().any(|d| &d.version == v));
+        let owner = cx.entity().downgrade();
+        let disabled = self.blocked(cx);
+        let selector = Button::new("jdbc-version")
+            .debug_selector(|| "jdbc-version".into())
+            .small()
+            .label(
+                chosen
+                    .clone()
+                    .unwrap_or_else(|| "Refresh to load versions".into()),
+            )
+            .dropdown_caret(true)
+            .disabled(disabled || versions.is_empty())
+            .dropdown_menu(move |mut menu, _, _| {
+                for version in &versions {
+                    let owner = owner.clone();
+                    let version = version.clone();
+                    let label = version.clone();
+                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                        let _ = owner.update(cx, |d, cx| {
+                            if d.blocked(cx) {
+                                return;
+                            }
+                            d.jdbc_version = Some(version.clone());
+                            d.jdbc_confirm = false;
+                            cx.notify();
+                        });
+                    }));
+                }
+                menu
+            });
+        let mut body = TableBody::new();
+        for (name, value) in [
+            (
+                "Origin",
+                "Curated coordinates; JetBrains discovery + Maven Central versions".to_owned(),
+            ),
+            ("Coordinates", format!("{}:{}", entry.group, entry.artifact)),
+            ("Driver class", entry.driver_class.clone()),
+            ("URL prefix", entry.url_prefix.clone()),
+            (
+                "Install state",
+                if is_installed {
+                    "Installed · verified"
+                } else {
+                    "Not installed"
+                }
+                .into(),
+            ),
+            (
+                "Runtime",
+                "Explicit local Java 17+ (no automatic Java download)".into(),
+            ),
+            (
+                "Operations",
+                "Restricted SELECT / metadata / browse; JDBC writes disabled".into(),
+            ),
+        ] {
+            body = body.child(
+                TableRow::new()
+                    .child(TableCell::new().child(name))
+                    .child(TableCell::new().child(value)),
+            );
+        }
+        div().id("jdbc-driver-details").debug_selector(||"jdbc-driver-details".into()).flex_1().min_w_0().min_h_0().p_4().overflow_y_scroll().flex().flex_col().gap_3()
+            .child(div().text_xl().child(entry.name)).child(entry.description)
+            .child(div().flex().items_center().gap_2().child("Version").child(selector)
+                .child(Button::new("jdbc-install").debug_selector(||"jdbc-install".into()).label(if is_installed{"Installed"}else{"Install"}).primary().small().disabled(disabled||is_installed||chosen.is_none()).on_click(cx.listener(|d,_,_,cx|d.install_jdbc(cx))))
+                .child(Button::new("jdbc-new-source").debug_selector(||"jdbc-new-source".into()).label("Create connection").small().disabled(disabled||!is_installed).on_click(cx.listener(|d,_,window,cx|d.create_jdbc_source(window,cx)))))
+            .child(Table::new().small().accessibility_label("JDBC driver package details").child(TableHeader::new().child(TableRow::new().child(TableHead::new().child("Field")).child(TableHead::new().child("Details")))).child(body))
+            .child("Java executable (absolute path)").child(self.jdbc_java.clone())
+            .child(Button::new("jdbc-check-java").debug_selector(||"jdbc-check-java".into()).label("Check Java runtime").small().disabled(disabled).on_click(cx.listener(|d,_,_,cx|d.check_java(cx))))
+            .when_some(self.jdbc_runtime.clone(),|body,status|body.child(status))
+            .children(dalan_app::jdbc_catalog::catalog_notices().iter().map(|notice|div().text_sm().text_color(cx.theme().muted_foreground).child(*notice)))
+            .when(self.jdbc_confirm,|body|body.child(div().id("jdbc-trust-confirm").debug_selector(||"jdbc-trust-confirm".into()).p_3().border_1().border_color(cx.theme().border).child("Trust this publisher’s executable code? Connecting runs its JARs with your local user permissions. SHA-256 verifies transport integrity, not publisher safety.").child(Button::new("jdbc-confirm-install").debug_selector(||"jdbc-confirm-install".into()).label("Trust and install").small().disabled(disabled).on_click(cx.listener(|d,_,_,cx|d.install_jdbc(cx)))).child(Button::new("jdbc-cancel-install").label("Cancel").small().on_click(cx.listener(|d,_,_,cx|{d.jdbc_confirm=false;cx.notify();})))))
+            .into_any_element()
+    }
+
     fn drivers(&self, cx: &mut Context<Self>) -> impl IntoElement {
         use dalan_drivers::versions::{bundled, engine_id, resolve};
         use gpui::component::{
@@ -581,12 +929,34 @@ impl SourceDialog {
             table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
         };
         let mut list = div()
-            .w(px(210.))
+            .id("driver-catalog-list")
+            .min_h_0()
+            .overflow_y_scroll()
+            .w(px(240.))
             .flex_shrink_0()
             .p_3()
             .flex()
             .flex_col()
             .gap_1();
+        let search = self.jdbc_search.read(cx).value().to_lowercase();
+        list = list.child(self.jdbc_search.clone()).child(
+            div().flex().gap_1().children(
+                [(0, "All"), (1, "Installed"), (2, "Available")]
+                    .into_iter()
+                    .map(|(mode, label)| {
+                        Button::new(gpui::SharedString::from(format!("jdbc-filter-{mode}")))
+                            .debug_selector(move || format!("jdbc-filter-{mode}"))
+                            .label(label)
+                            .xsmall()
+                            .selected(self.jdbc_filter == mode)
+                            .on_click(cx.listener(move |d, _, _, cx| {
+                                d.jdbc_filter = mode;
+                                cx.notify();
+                            }))
+                    }),
+            ),
+        );
+        list = list.child("Built-in");
         for (index, engine) in [
             DbEngine::MySql,
             DbEngine::MariaDb,
@@ -597,6 +967,9 @@ impl SourceDialog {
         .into_iter()
         .enumerate()
         {
+            if self.jdbc_filter == 2 || !engine.display_name().to_lowercase().contains(&search) {
+                continue;
+            }
             list = list.child(
                 ListItem::new(index)
                     .debug_selector(move || format!("settings-driver-{index}"))
@@ -635,9 +1008,71 @@ impl SourceDialog {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.driver = engine;
+                        this.jdbc_selected = None;
+                        this.jdbc_confirm = false;
                         cx.notify();
                     })),
             );
+        }
+        list = list.child("JDBC catalog");
+        for (index, entry) in self.jdbc_catalog.iter().enumerate() {
+            let installed = self.jdbc_installed.iter().any(|d| d.id == entry.id);
+            if (self.jdbc_filter == 1 && !installed)
+                || (self.jdbc_filter == 2 && installed)
+                || !format!("{} {} {}", entry.name, entry.group, entry.artifact)
+                    .to_lowercase()
+                    .contains(&search)
+            {
+                continue;
+            }
+            let id = entry.id.clone();
+            let version = entry.versions.first().cloned().or_else(|| {
+                self.jdbc_installed
+                    .iter()
+                    .find(|d| d.id == id)
+                    .map(|d| d.version.clone())
+            });
+            list = list.child(
+                ListItem::new(index + 10)
+                    .debug_selector(move || format!("jdbc-catalog-{index}"))
+                    .selected(self.jdbc_selected.as_ref() == Some(&id))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                gpui::component::Icon::new(gpui::assets::IconName::Database)
+                                    .size(px(16.)),
+                            )
+                            .child(div().flex_1().child(entry.name.clone()))
+                            .child(if installed { "✓" } else { "" }),
+                    )
+                    .on_click(cx.listener(move |d, _, _, cx| {
+                        d.jdbc_selected = Some(id.clone());
+                        d.jdbc_version = version.clone();
+                        d.jdbc_confirm = false;
+                        cx.notify();
+                    })),
+            );
+        }
+        list = list.child(
+            Button::new("jdbc-refresh-catalog")
+                .debug_selector(|| "jdbc-refresh-catalog".into())
+                .label("Refresh remote catalog")
+                .small()
+                .disabled(self.blocked(cx))
+                .on_click(cx.listener(|d, _, _, cx| d.refresh_jdbc(cx))),
+        );
+        if self.jdbc_selected.is_some() {
+            return div()
+                .id("settings-drivers")
+                .debug_selector(|| "settings-drivers".into())
+                .size_full()
+                .flex()
+                .child(list)
+                .child(self.jdbc_details(cx))
+                .into_any_element();
         }
         let choice = self
             .driver_choices
@@ -749,6 +1184,12 @@ impl SourceDialog {
                 "Direct TCP; TLS Verify Identity / Required / Disabled",
                 "MongoDB driver compatibility must be verified against actual servers",
             ),
+            DbEngine::Jdbc => (
+                "Restricted JDBC SELECT",
+                "Unavailable",
+                "Vendor JDBC URL",
+                "Per-driver unqualified server compatibility",
+            ),
             DbEngine::Redis => (
                 "Read-only JSON command arrays + key browsing",
                 "Unavailable",
@@ -792,11 +1233,14 @@ impl SourceDialog {
                 .child("One backend version is bundled for this engine. Latest bundled and its exact pin currently execute the same native backend; no other versions are downloadable in this build.")
                 .child(div().id("driver-version-table").debug_selector(||"driver-version-table".into()).child(library_table))
                 .child(div().id("driver-capability-table").debug_selector(||"driver-capability-table".into()).child(capability_table))
-                .child("Library versions are not server versions. No certified server-version range is claimed. Choices persist in dalan.config only on Apply/OK; Cancel discards unapplied choices."))
+                .child("Library versions are not server versions. No certified server-version range is claimed. Choices persist in dalan.config only on Apply/OK; Cancel discards unapplied choices.")).into_any_element()
     }
 }
 impl Render for SourceDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.page == SettingsPage::Drivers {
+            self.load_jdbc(cx);
+        }
         if self.page == SettingsPage::Ssh {
             self.ensure_ssh(window, cx);
         }
@@ -1617,6 +2061,90 @@ mod tests {
                     d.form.read(app).draft_identity(app).0,
                     "Unrelated retained draft"
                 )
+            })
+            .unwrap();
+        click(&mut visual, "source-cancel");
+        click(&mut visual, "settings-discard-close");
+        assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn jdbc_catalog_filters_and_install_trust_are_local_until_explicit_approval(
+        cx: &mut TestAppContext,
+    ) {
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        click(&mut visual, "settings-driver-page");
+        click(&mut visual, "jdbc-catalog-0");
+        assert!(visual.debug_bounds("jdbc-driver-details").is_some());
+        assert!(visual.debug_bounds("jdbc-install").is_some());
+        handle
+            .update(cx, |d, _, cx| {
+                d.jdbc_catalog[0].versions = vec!["2.3.232".into(), "2.2.224".into()];
+                d.jdbc_version = Some("2.3.232".into());
+                cx.notify();
+            })
+            .unwrap();
+        click(&mut visual, "jdbc-install");
+        assert!(visual.debug_bounds("jdbc-trust-confirm").is_some());
+        handle
+            .update(cx, |d, _, _| {
+                assert!(!d.jdbc_busy && d.jdbc_installed.is_empty())
+            })
+            .unwrap();
+        click(&mut visual, "jdbc-filter-1");
+        assert!(visual.debug_bounds("jdbc-catalog-0").is_none());
+        click(&mut visual, "jdbc-filter-2");
+        assert!(visual.debug_bounds("jdbc-catalog-0").is_some());
+        handle
+            .update(cx, |d, _, cx| {
+                d.jdbc_search.update(cx, |i, cx| i.set_value("SQLite", cx));
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("jdbc-catalog-0").is_none());
+        assert!(visual.debug_bounds("jdbc-catalog-1").is_some());
+        click(&mut visual, "source-cancel");
+        assert_closed(&model, cx);
+    }
+    #[gpui::test]
+    fn jdbc_create_connection_uses_selected_installed_metadata_without_credentials(
+        cx: &mut TestAppContext,
+    ) {
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        click(&mut visual, "settings-driver-page");
+        handle
+            .update(cx, |d, _, cx| {
+                let e = &d.jdbc_catalog[0];
+                d.jdbc_installed = vec![dalan_app::jdbc_catalog::InstalledDriver {
+                    id: e.id.clone(),
+                    name: e.name.clone(),
+                    group: e.group.clone(),
+                    artifact: e.artifact.clone(),
+                    version: "2.3.232".into(),
+                    driver_class: e.driver_class.clone(),
+                    url_prefix: e.url_prefix.clone(),
+                    jars: vec!["/fixture/h2.jar".into()],
+                    sha256: vec!["a".repeat(64)],
+                }];
+                d.jdbc_java
+                    .update(cx, |i, cx| i.set_value("/fixture/java", cx));
+                d.jdbc_selected = Some(e.id.clone());
+                d.jdbc_version = Some("2.3.232".into());
+                cx.notify();
+            })
+            .unwrap();
+        visual.run_until_parked();
+        click(&mut visual, "jdbc-new-source");
+        assert!(visual.debug_bounds("source-jdbc-url").is_some());
+        assert!(visual.debug_bounds("source-host").is_none());
+        handle
+            .update(cx, |d, _, app| {
+                let profile = d.form.read(app).profile(app).unwrap();
+                assert_eq!(profile.engine, DbEngine::Jdbc);
+                assert_eq!(profile.jdbc.unwrap().driver_class, "org.h2.Driver");
+                assert!(d.form.read(app).password(app).is_empty());
             })
             .unwrap();
         click(&mut visual, "source-cancel");

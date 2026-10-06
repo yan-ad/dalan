@@ -7,6 +7,7 @@ pub enum DbEngine {
     PostgreSql,
     MongoDb,
     Redis,
+    Jdbc,
     #[default]
     MySql,
     MariaDb,
@@ -25,6 +26,7 @@ impl DbEngine {
             Self::PostgreSql => "postgresql",
             Self::MongoDb => "mongodb",
             Self::Redis => "redis",
+            Self::Jdbc => "jdbc",
             Self::MariaDb => "mariadb",
             Self::MySql => "mysql",
         }
@@ -34,6 +36,7 @@ impl DbEngine {
             Self::PostgreSql => "PostgreSQL",
             Self::MongoDb => "MongoDB",
             Self::Redis => "Redis",
+            Self::Jdbc => "JDBC",
             Self::MySql => "MySQL",
             Self::MariaDb => "MariaDB",
         }
@@ -140,6 +143,74 @@ pub enum ConnectionTarget {
     },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JdbcJar {
+    pub path: String,
+    pub sha256: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JdbcOptions {
+    pub java_path: String,
+    pub driver_id: String,
+    pub driver_class: String,
+    pub jars: Vec<JdbcJar>,
+    pub url: String,
+}
+pub fn validate_jdbc_url(url: &str) -> Result<()> {
+    ensure!(
+        url.starts_with("jdbc:") && url.len() <= 65536 && !url.chars().any(char::is_control),
+        "Invalid JDBC URL"
+    );
+    let decoded = percent_encoding::percent_decode_str(url)
+        .decode_utf8()
+        .map_err(|_| anyhow::anyhow!("Invalid JDBC URL encoding"))?;
+    let lower = decoded.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("jdbc:oracle:thin:") {
+        ensure!(
+            rest.starts_with('@'),
+            "Oracle JDBC URLs must omit user/password before @"
+        );
+    }
+    if let Some((_, rest)) = decoded.split_once("://") {
+        let authority = rest.split(['/', '?', ';']).next().unwrap_or("");
+        ensure!(
+            !authority.contains('@'),
+            "Credentials are not permitted in JDBC URLs"
+        );
+    }
+
+    ensure!(
+        ![
+            "password",
+            "passwd",
+            "pwd=",
+            "user=",
+            "username=",
+            "token",
+            "secret",
+            "credential",
+            "init=",
+            r"init\=",
+            "runscript",
+            "auto_server",
+            "trace_level_file",
+            "createschema"
+        ]
+        .iter()
+        .any(|s| lower.contains(s)),
+        "Credentials and executable initialization options are not permitted in JDBC URLs"
+    );
+    if let Some((_, rest)) = url.split_once("://") {
+        let authority = rest.split(['/', '?', ';']).next().unwrap_or("");
+        ensure!(
+            !authority.contains('@'),
+            "Credentials are not permitted in JDBC URLs"
+        );
+    }
+    Ok(())
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceProfile {
     pub id: String,
     pub name: String,
@@ -170,6 +241,8 @@ pub struct SourceProfile {
     /// Metadata reference only; callers must materialize Transport before connecting.
     #[serde(default)]
     pub ssh_configuration_id: Option<String>,
+    #[serde(default)]
+    pub jdbc: Option<JdbcOptions>,
 }
 impl Default for SourceProfile {
     fn default() -> Self {
@@ -193,6 +266,7 @@ impl Default for SourceProfile {
             ssl_client_cert: None,
             ssl_client_key: None,
             ssh_configuration_id: None,
+            jdbc: None,
         }
     }
 }
@@ -279,6 +353,7 @@ impl SourceProfile {
                         DbEngine::PostgreSql =>
                             raw.starts_with("postgres://") || raw.starts_with("postgresql://"),
                         DbEngine::MongoDb => raw.starts_with("mongodb://"),
+                        DbEngine::Jdbc => false,
                         DbEngine::Redis =>
                             raw.starts_with("redis://") || raw.starts_with("rediss://"),
                     },
@@ -373,6 +448,9 @@ impl SourceProfile {
     /// Credential-free URL. Socket endpoints have no equivalent TCP URL.
     pub fn canonical_url(&self) -> Result<String> {
         self.validate()?;
+        if self.engine == DbEngine::Jdbc {
+            return Ok(self.jdbc.as_ref().unwrap().url.clone());
+        }
         if let ConnectionMode::UrlOnly { url } = &self.endpoint {
             return Ok(url.clone());
         }
@@ -415,6 +493,53 @@ impl SourceProfile {
                     && color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit),
                 "Invalid source color (use #RRGGBB)"
             );
+        }
+        if self.engine == DbEngine::Jdbc {
+            let jdbc = self
+                .jdbc
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Install a JDBC driver and configure Java first"))?;
+            validate_jdbc_url(&jdbc.url)?;
+            ensure!(
+                std::path::Path::new(&jdbc.java_path).is_absolute()
+                    && !jdbc.java_path.chars().any(char::is_control),
+                "Java executable must use an absolute path"
+            );
+            ensure!(
+                (1..=16).contains(&jdbc.jars.len())
+                    && jdbc.driver_id.len() <= 128
+                    && !jdbc.driver_id.is_empty(),
+                "Invalid JDBC driver configuration"
+            );
+            ensure!(
+                jdbc.driver_class.len() <= 512
+                    && !jdbc.driver_class.is_empty()
+                    && jdbc.driver_class.split('.').all(|s| !s.is_empty()
+                        && s.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')),
+                "Invalid JDBC class"
+            );
+            for jar in &jdbc.jars {
+                ensure!(
+                    std::path::Path::new(&jar.path).is_absolute()
+                        && !jar.path.chars().any(char::is_control)
+                        && jar.sha256.len() == 64
+                        && jar.sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+                    "Invalid JDBC artifact path or digest"
+                );
+            }
+            ensure!(
+                self.transport == Transport::Direct
+                    && self.endpoint == ConnectionMode::Default
+                    && self.tls == TlsMode::Disabled
+                    && self.ca_path.is_none()
+                    && self.ssl_client_cert.is_none()
+                    && self.ssl_client_key.is_none()
+                    && self.ssh_configuration_id.is_none(),
+                "JDBC uses its vendor URL for transport/TLS; native transport controls are unsupported"
+            );
+        } else {
+            ensure!(self.jdbc.is_none(), "JDBC settings require the JDBC engine");
         }
         self.connection_target()?;
         if self.engine == DbEngine::Redis
@@ -524,6 +649,25 @@ impl SourceProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn jdbc_url_policy_rejects_encoded_credentials_or_executable_initialization() {
+        for url in [
+            "jdbc:oracle:thin:alice/secret@//host:1521/service",
+            "jdbc:mysql://user:secret@host/db",
+            "jdbc:mysql://host/db?%70assword=secret",
+            "jdbc:h2:mem:test;INIT=RUNSCRIPT FROM 'x'",
+            "jdbc:sqlserver://host;user=alice",
+        ] {
+            assert!(validate_jdbc_url(url).is_err(), "{url}");
+        }
+        for url in [
+            "jdbc:oracle:thin:@//host:1521/service",
+            "jdbc:h2:mem:test",
+            "jdbc:sqlserver://host;encrypt=true",
+        ] {
+            assert!(validate_jdbc_url(url).is_ok(), "{url}");
+        }
+    }
     #[test]
     fn jdbc_prefixed_rediss_never_permits_plaintext_auth() {
         let p = SourceProfile {

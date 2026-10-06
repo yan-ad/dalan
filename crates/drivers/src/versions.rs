@@ -49,6 +49,7 @@ pub fn engine_id(engine: DbEngine) -> &'static str {
         DbEngine::PostgreSql => "postgresql",
         DbEngine::MongoDb => "mongodb",
         DbEngine::Redis => "redis",
+        DbEngine::Jdbc => "jdbc",
     }
 }
 pub fn bundled(engine: DbEngine) -> &'static [BundledDriver] {
@@ -57,10 +58,15 @@ pub fn bundled(engine: DbEngine) -> &'static [BundledDriver] {
         DbEngine::PostgreSql => std::slice::from_ref(&POSTGRES),
         DbEngine::MongoDb => std::slice::from_ref(&MONGO),
         DbEngine::Redis => std::slice::from_ref(&REDIS),
+        DbEngine::Jdbc => &[],
     }
 }
 pub fn resolve(engine: DbEngine, choice: &str) -> Result<BundledDriver> {
     let available = bundled(engine);
+    ensure!(
+        !available.is_empty(),
+        "JDBC drivers use their installed artifact version, not native preferences"
+    );
     if choice == "latest" {
         return Ok(available[0]);
     }

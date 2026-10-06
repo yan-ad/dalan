@@ -5,6 +5,7 @@ pub use catalog::{
 };
 mod table_clauses;
 pub use table_clauses::validate_table_clauses;
+pub mod jdbc;
 pub mod mongo;
 pub mod mutations;
 pub mod mysql;
@@ -26,8 +27,8 @@ pub use mysql::{
     FilterOperator, SortDirection, TableFilter, TableInfo, TablePage, TableSort,
 };
 pub use sources::{
-    Authentication, ConnectionMode, ConnectionTarget, DbEngine, SchemaSelection, SourceOptions,
-    SourceProfile, TlsMode, Transport,
+    Authentication, ConnectionMode, ConnectionTarget, DbEngine, JdbcJar, JdbcOptions,
+    SchemaSelection, SourceOptions, SourceProfile, TlsMode, Transport,
 };
 
 use dalan_core::Engine;

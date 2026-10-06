@@ -212,16 +212,23 @@ pub fn provider_icon(engine: dalan_drivers::DbEngine) -> impl IntoElement {
         })
         .collect()
     });
+    if engine == dalan_drivers::DbEngine::Jdbc {
+        return gpui::component::Icon::new(KitIconName::Database)
+            .size(px(16.))
+            .into_any_element();
+    }
     let index = match engine {
         dalan_drivers::DbEngine::MySql => 0,
         dalan_drivers::DbEngine::MariaDb => 1,
         dalan_drivers::DbEngine::PostgreSql => 2,
         dalan_drivers::DbEngine::MongoDb => 3,
         dalan_drivers::DbEngine::Redis => 4,
+        dalan_drivers::DbEngine::Jdbc => unreachable!(),
     };
     gpui::img(images[index].clone())
         .size(px(16.))
         .flex_shrink_0()
+        .into_any_element()
 }
 
 /// Kit renders tinted SVG masks with the requested semantic theme color.

@@ -2,6 +2,7 @@ pub mod app_config;
 pub mod connector_transfer;
 pub mod explorer_tree;
 pub mod grid_viewport;
+pub mod jdbc_catalog;
 pub mod result_budget;
 pub mod schema_cache;
 pub mod shell_state;

@@ -17,7 +17,7 @@ use mysql_async::{
 use serde::{Deserialize, Serialize};
 use sqlparser::{
     ast::{BinaryOperator, Expr, Query, Select, SetExpr, Statement, TableFactor, Visit, Visitor},
-    dialect::{MySqlDialect, PostgreSqlDialect},
+    dialect::{GenericDialect, MySqlDialect, PostgreSqlDialect},
     keywords::Keyword,
     parser::Parser,
     tokenizer::{Token, Tokenizer},
@@ -393,7 +393,48 @@ pub fn validate_for_engine(engine: DbEngine, text: &str) -> Result<()> {
         DbEngine::PostgreSql => validate_postgres_read_only(text),
         DbEngine::MongoDb => crate::mongo::validate_read_only(text),
         DbEngine::Redis => crate::redis_driver::validate_read_only(text),
+        DbEngine::Jdbc => validate_jdbc_read_only(text),
     }
+}
+pub fn validate_jdbc_read_only(sql: &str) -> Result<()> {
+    check_comments(sql)?;
+    ensure!(
+        !sql.is_empty() && sql.len() <= SQL_CAP,
+        "Query must contain 1 through 65536 bytes"
+    );
+    let dialect = GenericDialect {};
+    let tokens = Tokenizer::new(&dialect, sql)
+        .tokenize()
+        .map_err(|_| anyhow!("Invalid JDBC SQL syntax"))?;
+    check_complexity(&tokens)?;
+    let statements =
+        Parser::parse_sql(&dialect, sql).map_err(|_| anyhow!("Invalid JDBC SQL syntax"))?;
+    ensure!(statements.len() == 1, "Provide exactly one SELECT query");
+    // Generic remote functions can mutate even in SELECT; permit only literals,
+    // operators, trusted tables and a minimal portable aggregate allowlist.
+    struct NoFunctions;
+    impl Visitor for NoFunctions {
+        type Break = &'static str;
+        fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<Self::Break> {
+            if let Expr::Function(f) = e {
+                let name = f.name.to_string().to_ascii_uppercase();
+                if !matches!(
+                    name.as_str(),
+                    "COUNT" | "SUM" | "MIN" | "MAX" | "AVG" | "COALESCE" | "NULLIF"
+                ) {
+                    return ControlFlow::Break("Unsupported JDBC SELECT function");
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    if let ControlFlow::Break(reason) = statements[0].visit(&mut ReadOnly) {
+        return Err(anyhow!(reason));
+    }
+    if let ControlFlow::Break(reason) = statements[0].visit(&mut NoFunctions) {
+        return Err(anyhow!(reason));
+    }
+    Ok(())
 }
 pub fn validate_postgres_read_only(sql: &str) -> Result<()> {
     ensure!(
@@ -438,7 +479,9 @@ pub async fn execute_read_only(
     password: &str,
     request: &QueryRequest,
 ) -> Result<QueryResult> {
-    crate::versions::selected(profile.engine)?;
+    if profile.engine != DbEngine::Jdbc {
+        crate::versions::selected(profile.engine)?;
+    }
     match profile.engine {
         DbEngine::PostgreSql => {
             return crate::postgres::execute_read_only(profile, password, request).await;
@@ -449,6 +492,7 @@ pub async fn execute_read_only(
         DbEngine::Redis => {
             return crate::redis_driver::execute_read_only(profile, password, request).await;
         }
+        DbEngine::Jdbc => return crate::jdbc::execute_read_only(profile, password, request).await,
         _ => {}
     }
     ensure!(
@@ -566,6 +610,19 @@ fn data_type(t: ColumnType) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn jdbc_validation_rejects_hidden_commands_and_accepts_portable_select() {
+        for sql in [
+            "SELECT 1 /*!50000 + SLEEP(30) */",
+            "SELECT 1 /*M! + SLEEP(30) */",
+            "DELETE FROM t",
+            "SELECT MY_FUNCTION()",
+            "SELECT 1; SELECT 2",
+        ] {
+            assert!(validate_jdbc_read_only(sql).is_err(), "{sql}");
+        }
+        assert!(validate_jdbc_read_only("SELECT COUNT(*) FROM items WHERE id=1").is_ok());
+    }
     #[test]
     fn postgres_native_dialect_is_read_only_and_bounded_before_connection() {
         for sql in [

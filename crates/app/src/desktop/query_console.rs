@@ -325,7 +325,9 @@ impl QueryConsole {
             "query-open-sql" => self.sql_file(false, window, cx),
             "query-save-sql" => self.sql_file(true, window, cx),
             "query-clear-database" => self.choose_database(None, window, cx),
-            "query-set-default" => {
+            "query-set-default"
+                if self.model.read(cx).selected_engine() != dalan_drivers::DbEngine::Jdbc =>
+            {
                 let model = self.model.read(cx);
                 let id = model.selected_source.clone();
                 let database = model.selected_database.clone();

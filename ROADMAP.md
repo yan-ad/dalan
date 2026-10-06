@@ -6,7 +6,7 @@ Status: product and technical plan, not a release promise. This is the canonical
 
 - Rust + GPUI Kit database workspace. DataGrip is the workflow reference; compact layout, **Kit standard controls and Kit's default theme** are the visual direction.
 - macOS first, Linux second, Windows third, followed by Android feasibility and mobile implementation. All public platform releases are **coming soon**; portable headless CI does not establish native desktop or mobile support.
-- MySQL/MariaDB were the first implemented engines. PostgreSQL, MongoDB and Redis now have experimental native read-only adapters: the immediate priority was native three-engine support, not JDBC. This brings restricted MongoDB reads forward from the earlier post-first-release plan; full Compass-style workflows remain later. Release support still requires tested driver capabilities and declared server matrices, not compatibility labels.
+- MySQL/MariaDB were the first implemented engines. PostgreSQL, MongoDB and Redis now have experimental native read-only adapters: the earlier immediate priority was native three-engine support; a first optional JDBC bridge and curated installer now follows. This brings restricted MongoDB reads forward from the earlier post-first-release plan; full Compass-style workflows remain later. Release support still requires tested driver capabilities and declared server matrices, not compatibility labels.
 - AI connects only through **Agent Client Protocol (ACP)**. No application BYOK, direct provider adapters, provider-specific CLI protocols, or automatic database execution. External agents own model authentication and billing.
 - Plugins extend database workflows, not a generic IDE or infrastructure toolbox. No general file explorer, Git UI, build tools, Kubernetes console, or general-purpose terminal.
 - Preserve optional database scope, session-only credentials with explicit SaveForever local plaintext opt-in, strict connectivity, offline schema cache, independent table/console tabs, lossless values, bounded results, and working keyboard controls.
@@ -15,7 +15,7 @@ Status: product and technical plan, not a release promise. This is the canonical
 
 | Area | Implemented in Dalan | Not implemented yet |
 | --- | --- | --- |
-| Drivers | Five experimental native engines: MySQL/MariaDB, PostgreSQL, official-driver MongoDB and bounded-RESP2 Redis; engine-specific transport/TLS restrictions | Declared native server/auth/TLS matrices, extensible registry, JDBC and third-party workers |
+| Drivers | Five experimental native engines: MySQL/MariaDB, PostgreSQL, official-driver MongoDB and bounded-RESP2 Redis; engine-specific transport/TLS restrictions; first opt-in Java 17+ JDBC bridge and curated installer | Declared native/JDBC server/auth/TLS matrices, general extensible registry and broader third-party workers |
 | Source management | General/Options/SSH-SSL/Schemas, reusable SSH configurations, session/SaveForever local plaintext auth, per-source menus; imports still MySQL/MariaDB-only | Complete authentication/version/topology matrix, release-grade signing |
 | Catalog | SQLite database/table/view-name cache, offline restoration, selected-source refresh, virtualized tree and cached-only search through collapsed branches | Cached columns/keys/indexes/routines, metadata-aware completion |
 | Workspace | Independent table/document/key tabs and restricted SQL/JSON read consoles; MySQL/MariaDB-only WHERE/ORDER BY fragments; canvas grid with cell selection/copy; loaded CSV; result-retention budget; bounded staged SQL base-table writes | Details drawer, column resizing, query history, scripts, reusable transactions and full DBX editing parity |
@@ -35,7 +35,7 @@ These are scoped implementations, not DataGrip/Compass parity. SQL consoles acce
 | 3 | **Windows** | Coming soon; headless test coverage only | Native desktop builds and signed installer, declared OS/architecture matrix, input/accessibility checks, local-auth ACL enforcement/validation, and driver/process-tree qualification. |
 | 4 | **Android** | Coming soon; planned, not implemented | Confirm the GPUI/native runtime and dependency feasibility; design touch navigation and an on-screen-keyboard-friendly workspace; validate app-private credential storage, lifecycle/background-network behavior, driver compatibility, and signed mobile packaging. |
 
-Keep shared database logic portable, but qualify each native shell independently. Android is a separate mobile milestone—not a claim that the current desktop layout, SSH process model, JDBC worker plans or all native drivers already work on mobile. Update the [README platform table](README.md#installation) only when corresponding build and release evidence exists.
+Keep shared database logic portable, but qualify each native shell independently. Android is a separate mobile milestone—not a claim that the current desktop layout, SSH process model, experimental JDBC bridge or all native drivers already work on mobile. Update the [README platform table](README.md#installation) only when corresponding build and release evidence exists.
 
 ## DBX reference and reuse strategy
 
@@ -111,7 +111,7 @@ Use an internal Rust trait/enum appropriate to the first adapters. This is **not
 
 The native three-engine implementations already have scoped descriptors, validators and owned loopback fixtures, not completed real-server matrices. PostgreSQL/MongoDB official drivers have no hard message/batch allocation cap here; Redis has an explicit bounded RESP2 decoder. Each release-qualified driver needs a descriptor, tested capabilities, migration rules and fixtures. Adding a catalog entry does not claim support. PostgreSQL NUMERIC decoding is a promising isolated DBX port; preserve Dalan's native type identity rather than DBX's JavaScript-safe JSON representation.
 
-**JDBC is not implemented.** Optional external/JDBC drivers are a later, explicitly installed worker tier, after hardening the native PostgreSQL/MongoDB/Redis additions. They must not force a JVM, proprietary client, webview, or unrelated native library into the default GPUI build. Database-worker RPC is separate from ACP AI transport.
+**First JDBC slice implemented:** optional Java 17+ source-launched child per operation, restricted read policy, curated seven-entry discovery/version feed, mandatory-checksum installer and installed-driver source selection. Java remains explicitly supplied, not bundled or managed; JARs are arbitrary trusted user code, not sandboxed. Vendor/server and complete downloaded-JAR install/execution qualification remain unrun. General dependency resolution, arbitrary JAR import, uninstall, publisher signatures and broader worker contracts are later gates. See [JDBC contract and trust limits](docs/jdbc-drivers.md). Database-worker transport remains separate from ACP AI transport.
 
 ### Plugin ecosystem
 
@@ -163,7 +163,7 @@ ACP transport + fake-agent tests
     -> separately reviewed read-only tool interface
 ```
 
-**Next implementation:** harden the implemented native PostgreSQL/MongoDB/Redis read slices with owned actual-server authentication/TLS/deadline/cancellation matrices and native UI evidence, then extend metadata availability and typed execution/session contracts without broadening read policy. Retain MySQL/MariaDB-only imports until separately designed. JDBC/worker loading is explicitly later, not an implemented driver option. The first plugin and ACP transport can develop in parallel once their host boundaries are defined.
+**Next implementation:** harden the implemented native PostgreSQL/MongoDB/Redis read slices with owned actual-server authentication/TLS/deadline/cancellation matrices and native UI evidence, then extend metadata availability and typed execution/session contracts without broadening read policy. Retain MySQL/MariaDB-only imports until separately designed. Harden the implemented first JDBC bridge/installer with vendor/server and full artifact-install evidence before extending its capabilities; broader worker loading remains later. The first plugin and ACP transport can develop in parallel once their host boundaries are defined.
 
 ## Release evidence and unresolved decisions
 
@@ -177,4 +177,4 @@ Reusable SSH sessions now have an explicit Enable SSH / session picker / Manage 
 
 ### Native driver version management
 
-Implemented: exact bundled version inventory, Latest bundled/exact-pin preferences in `dalan.config`, validation before native routing, and driver-page tables separating library versions/capabilities from unqualified server-version ranges. Each engine currently has one executable bundled backend; selections are not package downloads. Next: compile and route independently tested alternate versions or provide versioned external workers/JDBC after the runtime milestone, with dependency/TLS matrix qualification and safe operation-bound switching. Never advertise a version that cannot execute.
+Implemented: exact bundled version inventory, Latest bundled/exact-pin preferences in `dalan.config`, validation before native routing, and driver-page tables separating library versions/capabilities from unqualified server-version ranges. Each engine currently has one executable bundled backend; selections are not package downloads. Next: compile and route independently tested alternate versions or qualify the first separately installed JDBC tier or provide broader versioned external workers, with dependency/TLS matrix qualification and safe operation-bound switching. Never advertise a version that cannot execute.

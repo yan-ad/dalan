@@ -55,6 +55,7 @@ pub fn connection_identity(profile: &SourceProfile) -> Result<String> {
         authentication: &'a dalan_drivers::Authentication,
         ssl_client_cert: &'a Option<String>,
         ssl_client_key: &'a Option<String>,
+        jdbc: &'a Option<dalan_drivers::JdbcOptions>,
         connect_timeout_seconds: u64,
         query_timeout_seconds: u64,
     }
@@ -71,6 +72,7 @@ pub fn connection_identity(profile: &SourceProfile) -> Result<String> {
         authentication: &profile.authentication,
         ssl_client_cert: &profile.ssl_client_cert,
         ssl_client_key: &profile.ssl_client_key,
+        jdbc: &profile.jdbc,
         connect_timeout_seconds: profile.options.connect_timeout_seconds,
         query_timeout_seconds: profile.options.query_timeout_seconds,
     })
@@ -530,6 +532,35 @@ mod tests {
         let ticket = cache.begin_refresh(profile).unwrap();
         assert!(cache.replace(&ticket, &snapshot(), 123).unwrap());
     }
+    #[test]
+    fn jdbc_artifact_url_and_runtime_change_metadata_identity() {
+        let profile = SourceProfile {
+            engine: dalan_drivers::DbEngine::Jdbc,
+            tls: dalan_drivers::TlsMode::Disabled,
+            jdbc: Some(dalan_drivers::JdbcOptions {
+                java_path: "/fixture/java".into(),
+                driver_id: "h2".into(),
+                driver_class: "org.h2.Driver".into(),
+                jars: vec![dalan_drivers::JdbcJar {
+                    path: "/fixture/h2.jar".into(),
+                    sha256: "a".repeat(64),
+                }],
+                url: "jdbc:h2:mem:fixture".into(),
+            }),
+            ..SourceProfile::default()
+        };
+        let original = connection_identity(&profile).unwrap();
+        let mut other = profile.clone();
+        other.jdbc.as_mut().unwrap().url = "jdbc:h2:mem:other".into();
+        assert_ne!(original, connection_identity(&other).unwrap());
+        let mut other = profile.clone();
+        other.jdbc.as_mut().unwrap().jars[0].sha256 = "b".repeat(64);
+        assert_ne!(original, connection_identity(&other).unwrap());
+        let mut other = profile;
+        other.jdbc.as_mut().unwrap().java_path = "/fixture/other-java".into();
+        assert_ne!(original, connection_identity(&other).unwrap());
+    }
+
     #[test]
     fn restart_roundtrip_and_private_files() {
         let sandbox = Sandbox::new();

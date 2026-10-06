@@ -54,6 +54,10 @@ pub async fn apply_table_changes(
     request: &WriteRequest,
 ) -> Result<WriteReport> {
     validate_request(request)?;
+    ensure!(
+        profile.engine != DbEngine::Jdbc,
+        "JDBC writes are not implemented"
+    );
     crate::versions::selected(profile.engine)?;
     match profile.engine {
         DbEngine::MySql | DbEngine::MariaDb => {

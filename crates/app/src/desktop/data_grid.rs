@@ -263,7 +263,9 @@ impl DataGrid {
                 || model.write_busy
                 || matches!(
                     model.selected_engine(),
-                    dalan_drivers::DbEngine::MongoDb | dalan_drivers::DbEngine::Redis
+                    dalan_drivers::DbEngine::MongoDb
+                        | dalan_drivers::DbEngine::Redis
+                        | dalan_drivers::DbEngine::Jdbc
                 );
             if selection == this.selection
                 && !page_changed
@@ -311,7 +313,9 @@ impl DataGrid {
                 || model.write_busy
                 || matches!(
                     model.selected_engine(),
-                    dalan_drivers::DbEngine::MongoDb | dalan_drivers::DbEngine::Redis
+                    dalan_drivers::DbEngine::MongoDb
+                        | dalan_drivers::DbEngine::Redis
+                        | dalan_drivers::DbEngine::Jdbc
                 );
             let (rows, columns) = this.dimensions();
             this.viewport.clamp(rows, columns);
@@ -338,7 +342,9 @@ impl DataGrid {
                 || snapshot.write_busy
                 || matches!(
                     snapshot.selected_engine(),
-                    dalan_drivers::DbEngine::MongoDb | dalan_drivers::DbEngine::Redis
+                    dalan_drivers::DbEngine::MongoDb
+                        | dalan_drivers::DbEngine::Redis
+                        | dalan_drivers::DbEngine::Jdbc
                 ),
             selection: Self::selection(snapshot),
             model,

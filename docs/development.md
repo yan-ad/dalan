@@ -1,5 +1,17 @@
 # Development setup
 
+## Optional JDBC runtime and local fixture
+
+Built-in native adapters and normal Rust builds do not require a JVM. The first [JDBC bridge](jdbc-drivers.md) uses an explicitly supplied absolute Java 17+ executable path and the source-file launcher; Dalan does not bundle or install a managed JRE. Install curated drivers only through explicit trust-confirmed Drivers actions, not arbitrary local JAR import.
+
+The local synthetic fixture needs a **JDK** (including `javac` and `jar`), not just a Java executable:
+
+```sh
+./scripts/test-jdbc-bridge --jdk /absolute/path/to/jdk
+```
+
+This opt-in helper compiles owned temporary fixture files, runs the Java helper through source launch, checks successful JDBC loading and verifies secret/log redaction on failure. It does not download Java/artifacts or contact real databases. The actual temporary-JDK fixture run succeeded; exact current full-suite/lint/bundle totals remain [pending primary verification](testing.md#first-jdbc-bridge-and-installer). No vendor/server qualification or complete downloaded-JAR installation test is claimed. Never treat JAR process isolation as sandboxing; see [security](security.md#optional-jdbc-trust-and-process-boundary).
+
 ## Current workspace
 
 Rust 1.98.1 is pinned in `rust-toolchain.toml`; edition 2024 and workspace minimum Rust 1.98. The `gpui` alias pins `gpui-kit = 0.7.1` with `tree-sitter-sql`, coordinated with `gpui-pre = 0.3.8`; the old GPUI 0.2 family is removed. ACP SDK 2.2.0 remains pinned. Commit `Cargo.lock` with this application workspace. No project license is selected yet.

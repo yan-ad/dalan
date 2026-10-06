@@ -1,10 +1,10 @@
 # Native drivers and support matrix
 
-Status: experimental read-only implementations, not release certification. Dalan now exposes five built-in engines: MySQL, MariaDB, PostgreSQL, MongoDB and Redis. PostgreSQL/MongoDB/Redis are native protocol adapters; **JDBC is not implemented**. A JDBC-shaped URL prefix does not install a JVM or Java driver. Native adapters come first; optional external workers remain later work.
+Status: experimental read-only implementations, not release certification. Dalan now exposes five built-in engines: MySQL, MariaDB, PostgreSQL, MongoDB and Redis. PostgreSQL/MongoDB/Redis are native protocol adapters. A separate [optional JDBC bridge and curated installer](jdbc-drivers.md) is now implemented; it requires an explicitly supplied Java 17+ executable and trusted installed JARs, with vendor/server qualification unrun. A JDBC-shaped native URL prefix alone does not select that bridge or install Java. Broader external workers remain later work.
 
 ## Bundled library versions and selection
 
-The Drivers page distinguishes **driver library versions** from **database server versions**. It offers **Latest bundled** and an exact pin for each available backend, persisted in `dalan.config` through Apply/OK. Latest means the newest backend **included in this Dalan build**, not an upstream download. There is currently **one bundled version per engine**, so the two choices execute the same backend. Older alternatives, package installation and JDBC version management are not implemented; adding another version requires an independently compiled, routed and tested adapter, not just another dropdown entry.
+The Drivers page distinguishes **driver library versions** from **database server versions**. It offers **Latest bundled** and an exact pin for each available backend, persisted in `dalan.config` through Apply/OK. Latest means the newest backend **included in this Dalan build**, not an upstream download. There is currently **one bundled version per engine**, so the two choices execute the same backend. Older alternate native backends and native package installation are not implemented; JDBC versions are managed separately by the opt-in curated installer, not these native preferences; adding another version requires an independently compiled, routed and tested adapter, not just another dropdown entry.
 
 | Engine | Bundled implementation | Exact selection ID | Server-version qualification |
 | --- | --- | --- | --- |

@@ -17,7 +17,7 @@ use dalan_drivers::{
 use gpui::Context;
 use tokio::{runtime::Runtime, sync::Mutex, task::AbortHandle};
 
-fn runtime() -> &'static Runtime {
+pub(super) fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -639,10 +639,12 @@ impl SourceModel {
         {
             return;
         }
-        if matches!(
-            profile.endpoint,
-            dalan_drivers::ConnectionMode::UrlOnly { .. }
-        ) {
+        if profile.engine == dalan_drivers::DbEngine::Jdbc
+            || matches!(
+                profile.endpoint,
+                dalan_drivers::ConnectionMode::UrlOnly { .. }
+            )
+        {
             self.metadata_notice=Some("URL-only connections own their database in the URL; edit source settings to change its default.".into());
             cx.notify();
             return;

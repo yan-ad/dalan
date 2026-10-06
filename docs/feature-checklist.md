@@ -4,6 +4,19 @@ Status: experimental macOS database workspace with restricted read consoles and 
 
 ## Confirmed scoped completions
 
+### First optional JDBC bridge and installer (current)
+
+- [x] Explicit local Java 17+ source launcher; fresh child per operation, cleared environment, `-Xmx256m`, bounded stdin JSON/password isolation, static errors/output redaction and checked 2 MiB responses.
+- [x] Per-operation JAR hashes and verified temporary snapshots; reject manifest Class-Path. Process isolation is **not sandboxing**; descendant termination and hard driver-wire allocation bounds are not provided.
+- [x] Curated H2/SQLite/DuckDB/SQL Server/Oracle/MariaDB/MySQL discovery and Maven versions, explicit Refresh only, in-memory catalog; trusted coordinate/class mapping, mandatory SHA-256 sidecars, HTTPS/no redirects, archive checks/no extraction and private atomic no-overwrite installation.
+- [x] Searchable built-in/JDBC list, All / Installed / Available filters, version list, trust-confirmed Install, Check Java and Create connection; installed-driver selection with read-only class/paths and explicit absolute Java/vendor URL.
+- [x] Credential/unsafe URL property rejection; native transport/TLS controls disabled, vendor URL owns TLS; verified read-only connection, autocommit off/rollback, conservative SELECT/safe aggregates, executable comments blocked; quoted catalog/schema browsing with offset ≤10,000, no filtering/sorting/clause fragments or writes.
+- [x] Actual temporary-JDK synthetic driver compile/source-launch success and secret/log redaction check; no vendor execution implied.
+- [ ] Real vendor/server/auth/TLS qualification, complete downloaded-JAR installation/execution, exact primary-verified suite/lint/bundle totals and native OS/UI lifecycle gates.
+- [ ] Managed JRE, arbitrary JAR import, uninstall, general dependency resolution, publisher signatures, sandboxing and broader worker contracts. Missing sidecars fail closed; catalog availability does not guarantee installation.
+
+See [JDBC details](jdbc-drivers.md) and [current test boundary](testing.md#first-jdbc-bridge-and-installer).
+
 ### Bounded staged SQL table writes (current)
 
 - [x] Local cell/NULL staging, insert/clone with omitted PK/default fields, delete/restore/discard and explicit confirmed Apply for eligible SQL base tables; no autosave or arbitrary SQL write command.
@@ -17,7 +30,7 @@ See [current editing contract](table-editing.md). Historical counts/inventories 
 
 ### Native three-engine additions (current)
 
-- [x] Five experimental native built-ins and source driver choices: MySQL/MariaDB plus PostgreSQL, MongoDB and Redis; MongoDB core identity and static catalog entry. No JDBC executor.
+- [x] Five experimental native built-ins and source driver choices: MySQL/MariaDB plus PostgreSQL, MongoDB and Redis; MongoDB core identity and static catalog entry. These are native adapters; the separate first JDBC executor is described above.
 - [x] PostgreSQL actual-database/schema-qualified catalog and typed previews, owned read-only connections/deadlines, bounded SELECT visitor; raw WHERE/ORDER BY unsupported and structured comparison filters lexical.
 - [x] Official MongoDB 3.7 rustls/BSON 2 client, direct-only catalog/document preview and restricted JSON find; VerifyCa rejected, combined PEM identity, fixed admin authSource.
 - [x] Direct Redis bounded RESP2, AUTH/SELECT setup, INFO/SCAN catalog and allowlisted read JSON arrays; opaque scan cursors and explicit oversize-batch errors, no KEYS/scripts/writes/cluster/RESP3/stream inspection.

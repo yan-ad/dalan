@@ -1,5 +1,11 @@
 # Security and privacy design
 
+## Optional JDBC trust and process boundary
+
+The [first JDBC bridge and installer](jdbc-drivers.md) is explicit opt-in. An installed JAR is arbitrary third-party user code, **not sandboxed**: it has user OS privileges and can access files/network or spawn descendants. A fresh cleared-environment Java 17+ child per operation, `-Xmx256m`, bounded stdin JSON, static categorized errors, discarded stderr, redirected driver stdout and disabled DriverManager logging reduce accidental disclosure; they do not constrain malicious driver behavior. Passwords are never arguments/environment/error logs. Timeout/cancellation kills only the owned child, not descendants; driver wire/native allocation and server work are not hard bounded by preview/response caps.
+
+Install uses curated trusted coordinates/classes, HTTPS without redirects, mandatory SHA-256 sidecars, archive checks without extraction, private atomic manifests and no overwrite. Missing sidecars fail closed. Per-operation hashes and copied verified snapshots plus manifest Class-Path rejection prevent silent classpath expansion/mutable-path execution. Repository digests are not publisher signatures or a safety guarantee; there is no general dependency resolver. JDBC vendor URLs reject credentials (including Oracle and percent-encoded bypasses) and dangerous initialization properties; native TLS controls do not govern JDBC, whose vendor URL owns TLS. Read-only verification, autocommit-off/rollback and conservative SELECT validation are defensive policy, not a server/OS sandbox. Vendor/server and full downloaded-JAR install qualification remain unrun.
+
 Status: experimental MySQL/MariaDB/PostgreSQL/MongoDB/Redis native reads (see the [support matrix](native-drivers.md)), versioned source settings and opt-in local plaintext credential persistence exist; native Keychain saving is removed. Eligible SQL base tables also have [bounded staged writes](table-editing.md); arbitrary write SQL and broader execution/agent controls remain planned. No telemetry, agent process or ACP transport is implemented. See [MySQL sources](mysql-sources.md) for setup and the scope/evidence matrix.
 
 ## Trust boundaries

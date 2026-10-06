@@ -1,3 +1,6 @@
+#[cfg(not(feature = "ui-tests"))]
+use dalan_app::jdbc_catalog::CatalogRepository;
+use dalan_app::jdbc_catalog::InstalledDriver;
 use dalan_app::ssh_config_store::SshProfile;
 #[cfg(not(feature = "ui-tests"))]
 use dalan_app::ssh_config_store::SshRepository;
@@ -5,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context as _, Result, ensure};
 use dalan_drivers::sources::{
-    Authentication, ConnectionMode, DbEngine, SchemaSelection, SourceProfile, TlsMode, Transport,
+    Authentication, ConnectionMode, DbEngine, JdbcJar, JdbcOptions, SchemaSelection, SourceProfile,
+    TlsMode, Transport,
 };
 use gpui::{
     App, Context, Div, Entity, FocusHandle, Subscription, Window, div, prelude::*, px, rgb,
@@ -65,6 +69,11 @@ pub(super) struct SourceForm {
     authentication: Authentication,
     schemas_all: bool,
     driver_open: bool,
+    installed_jdbc: Vec<InstalledDriver>,
+    jdbc_selected: Option<usize>,
+    jdbc_catalog_loaded: bool,
+    jdbc_catalog_revision: u64,
+    jdbc_load_error: Option<String>,
     authentication_open: bool,
     tls_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -173,6 +182,28 @@ impl SourceForm {
                 false,
             ),
         ]);
+        fields.extend([
+            (
+                "source-jdbc-java",
+                profile
+                    .jdbc
+                    .as_ref()
+                    .map(|j| j.java_path.clone())
+                    .unwrap_or_default(),
+                "Absolute path to Java executable",
+                false,
+            ),
+            (
+                "source-jdbc-url",
+                profile
+                    .jdbc
+                    .as_ref()
+                    .map(|j| j.url.clone())
+                    .unwrap_or_default(),
+                "jdbc:vendor:…",
+                false,
+            ),
+        ]);
         let mut inputs = HashMap::new();
         let mut last_values = HashMap::new();
         let mut subscriptions = Vec::new();
@@ -249,6 +280,32 @@ impl SourceForm {
             })
             .detach();
         }
+        #[cfg(not(feature = "ui-tests"))]
+        {
+            // Catalog verification reads and hashes artifacts: keep it off the UI thread.
+            let task = cx.background_executor().spawn(async {
+                CatalogRepository::default_path()
+                    .map(CatalogRepository::new)?
+                    .load()
+            });
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.jdbc_catalog_revision != 0 {
+                        return;
+                    }
+                    match result {
+                        Ok(drivers) => this.set_installed_jdbc(drivers, cx),
+                        Err(error) => {
+                            this.jdbc_catalog_loaded = true;
+                            this.jdbc_load_error = Some(error.to_string());
+                            cx.notify();
+                        }
+                    }
+                });
+            })
+            .detach();
+        }
         Self {
             embedded: false,
             dirty: false,
@@ -271,6 +328,11 @@ impl SourceForm {
             authentication: profile.authentication,
             schemas_all: matches!(profile.schemas, SchemaSelection::All),
             driver_open: false,
+            installed_jdbc: Vec::new(),
+            jdbc_selected: None,
+            jdbc_catalog_loaded: false,
+            jdbc_catalog_revision: 0,
+            jdbc_load_error: None,
             authentication_open: false,
             tls_open: false,
             original: profile,
@@ -282,6 +344,154 @@ impl SourceForm {
             ca_picker_open: false,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Supply a worker-verified installed catalog (also used by the Drivers page and tests).
+    pub(super) fn set_installed_jdbc(
+        &mut self,
+        drivers: Vec<InstalledDriver>,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = self
+            .jdbc_selected
+            .and_then(|i| self.installed_jdbc.get(i))
+            .cloned();
+        self.jdbc_selected = drivers.iter().position(|driver| {
+            if let Some(previous) = &previous {
+                return driver == previous;
+            }
+            self.original.jdbc.as_ref().is_some_and(|jdbc| {
+                driver.id == jdbc.driver_id
+                    && driver.driver_class == jdbc.driver_class
+                    && driver.jars.len() == jdbc.jars.len()
+                    && driver.sha256.len() == jdbc.jars.len()
+                    && driver.jars.iter().zip(&driver.sha256).zip(&jdbc.jars).all(
+                        |((path, hash), jar)| {
+                            path.to_string_lossy() == jar.path && hash == &jar.sha256
+                        },
+                    )
+            })
+        });
+        self.installed_jdbc = drivers;
+        self.jdbc_catalog_loaded = true;
+        self.jdbc_catalog_revision += 1;
+        self.jdbc_load_error = None;
+        if self.engine == DbEngine::Jdbc && !self.model.read(cx).saving {
+            self.model.update(cx, |model, cx| model.edit_form(cx));
+        }
+        cx.notify();
+    }
+
+    fn jdbc_options(&self, cx: &App) -> Result<JdbcOptions> {
+        let mut options =
+            if let Some(driver) = self.jdbc_selected.and_then(|i| self.installed_jdbc.get(i)) {
+                ensure!(
+                    driver.jars.len() == driver.sha256.len(),
+                    "Installed JDBC libraries are incomplete; reinstall in Drivers"
+                );
+                JdbcOptions {
+                    java_path: String::new(),
+                    url: String::new(),
+                    driver_id: driver.id.clone(),
+                    driver_class: driver.driver_class.clone(),
+                    jars: driver
+                        .jars
+                        .iter()
+                        .zip(&driver.sha256)
+                        .map(|(path, sha256)| JdbcJar {
+                            path: path.to_string_lossy().into_owned(),
+                            sha256: sha256.clone(),
+                        })
+                        .collect(),
+                }
+            } else {
+                // Preserve an existing draft while the worker is loading, never invent library paths.
+                ensure!(
+                    !self.jdbc_catalog_loaded,
+                    "Select an installed JDBC driver; use Drivers to install one"
+                );
+                self.original
+                    .jdbc
+                    .clone()
+                    .context("Select an installed JDBC driver; use Drivers to install one")?
+            };
+        options.java_path = self.value("source-jdbc-java", cx);
+        options.url = self.value("source-jdbc-url", cx);
+        Ok(options)
+    }
+
+    fn jdbc_driver_control(&self, cx: &mut Context<Self>) -> Div {
+        let selected = self.jdbc_selected;
+        let driver = selected.and_then(|i| self.installed_jdbc.get(i));
+        let label = driver
+            .map(|d| format!("{} · {}", d.name, d.version))
+            .unwrap_or_else(|| {
+                if !self.jdbc_catalog_loaded
+                    && let Some(original) = &self.original.jdbc
+                {
+                    return format!("{} · awaiting installed catalog", original.driver_id);
+                }
+                "Select installed JDBC driver…".into()
+            });
+        let drivers = self.installed_jdbc.clone();
+        let entity = cx.entity().downgrade();
+        let disabled = self.model.read(cx).saving;
+        let trigger = Button::new("source-jdbc-driver")
+            .debug_selector(|| "source-jdbc-driver".into())
+            .label(label)
+            .small()
+            .disabled(disabled)
+            .dropdown_caret(true)
+            .dropdown_menu(move |mut menu, _, _| {
+                for (index, driver) in drivers.iter().enumerate() {
+                    let label = format!(
+                        "{} · {} · {}",
+                        driver.name, driver.version, driver.driver_class
+                    );
+                    let entity = entity.clone();
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            div()
+                                .debug_selector(move || format!("source-jdbc-driver-{index}"))
+                                .child(label.clone())
+                        })
+                        .checked(selected == Some(index))
+                        .disabled(disabled)
+                        .on_click(move |_, _, cx| {
+                            let _ = entity.update(cx, |this, cx| {
+                                if this.model.read(cx).saving {
+                                    return;
+                                }
+                                this.jdbc_selected = Some(index);
+                                this.dirty = true;
+                                this.model.update(cx, |model, cx| model.edit_form(cx));
+                                cx.notify();
+                            });
+                        }),
+                    );
+                }
+                menu
+            });
+        let mut control = div().child(trigger);
+        if let Some(driver) = driver {
+            control = control.child(div().text_size(px(12.)).child(format!(
+                "{} · {}",
+                driver.driver_class,
+                driver.jars.iter().filter_map(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>().join(", ")
+            )));
+        } else {
+            control = control.child(
+                div()
+                    .text_color(colors(cx).error)
+                    .child("Select an installed JDBC driver. Use Drivers to install one."),
+            );
+        }
+        if let Some(error) = &self.jdbc_load_error {
+            control = control.child(div().text_color(colors(cx).error).child(error.clone()));
+        }
+        self.row("JDBC driver", control, cx)
     }
 
     pub(super) fn set_embedded(&mut self) {
@@ -351,7 +561,10 @@ impl SourceForm {
     pub(super) fn can_use_ssh_session(&self, cx: &App) -> bool {
         !self.model.read(cx).saving
             && self.endpoint_mode != 1
-            && !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis)
+            && !matches!(
+                self.engine,
+                DbEngine::MongoDb | DbEngine::Redis | DbEngine::Jdbc
+            )
     }
 
     /// The manager calls this only after persisting a configuration and choosing Use.
@@ -580,7 +793,7 @@ impl SourceForm {
         profile.name = self.value("source-name", cx);
         profile.color = optional(self.value("source-color", cx));
         profile.host = self.value("source-host", cx);
-        profile.port = if self.endpoint_mode == 0 {
+        profile.port = if self.engine != DbEngine::Jdbc && self.endpoint_mode == 0 {
             parse_port(&self.value("source-port", cx), "Database")?
         } else {
             self.original.port
@@ -661,12 +874,28 @@ impl SourceForm {
             },
             _ => Transport::Direct,
         };
+        profile.jdbc = if self.engine == DbEngine::Jdbc {
+            // Native endpoint metadata is inert for JDBC but remains structurally valid.
+            profile.host = "localhost".into();
+            profile.port = self.engine.default_port();
+            profile.database = None;
+            profile.endpoint = ConnectionMode::Default;
+            profile.transport = Transport::Direct;
+            profile.tls = TlsMode::Disabled;
+            profile.ca_path = None;
+            profile.ssl_client_cert = None;
+            profile.ssl_client_key = None;
+            profile.ssh_configuration_id = None;
+            Some(self.jdbc_options(cx)?)
+        } else {
+            None
+        };
         profile.validate()?;
         Ok(profile)
     }
 
     fn refresh_generated_url(&mut self, cx: &mut Context<Self>) {
-        if self.endpoint_mode != 0 {
+        if self.engine == DbEngine::Jdbc || self.endpoint_mode != 0 {
             return;
         }
         let Ok(port) = parse_port(&self.value("source-port", cx), "Database") else {
@@ -705,6 +934,20 @@ impl SourceForm {
             self.dirty = true;
             self.model.update(cx, |model, cx| model.edit_form(cx));
             cx.notify();
+            return;
+        }
+        if self.engine == DbEngine::Jdbc
+            && (id.starts_with("source-tls-")
+                || matches!(
+                    id,
+                    "source-ssh"
+                        | "source-http"
+                        | "source-https"
+                        | "source-manage-ssh"
+                        | "source-mode-socket"
+                        | "source-mode-url"
+                ))
+        {
             return;
         }
         match id {
@@ -767,7 +1010,12 @@ impl SourceForm {
                 self.endpoint_mode = 0;
                 self.refresh_generated_url(cx);
             }
-            "source-mode-socket" if !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) => {
+            "source-mode-socket"
+                if !matches!(
+                    self.engine,
+                    DbEngine::MongoDb | DbEngine::Redis | DbEngine::Jdbc
+                ) =>
+            {
                 self.endpoint_mode = 1;
                 self.transport = 0;
                 self.tls = TlsMode::Disabled;
@@ -796,6 +1044,18 @@ impl SourceForm {
                 if self.model.read(cx).form_busy {
                     return;
                 }
+                if self.engine == DbEngine::Jdbc
+                    && id == "source-test"
+                    && self.jdbc_selected.is_none()
+                {
+                    self.model.update(cx, |model, cx| {
+                        model.form_feedback = Some(
+                            "Select an installed JDBC driver; use Drivers to install one".into(),
+                        );
+                        cx.notify();
+                    });
+                    return;
+                }
                 match self.profile(cx) {
                     Ok(profile) => {
                         let password = self.password(cx);
@@ -818,9 +1078,11 @@ impl SourceForm {
             | "source-engine-mariadb"
             | "source-engine-postgres"
             | "source-engine-mongodb"
-            | "source-engine-redis" => {
+            | "source-engine-redis"
+            | "source-engine-jdbc" => {
                 let old_port = self.engine.default_port();
                 self.engine = match id {
+                    "source-engine-jdbc" => DbEngine::Jdbc,
                     "source-engine-postgres" => DbEngine::PostgreSql,
                     "source-engine-mongodb" => DbEngine::MongoDb,
                     "source-engine-redis" => DbEngine::Redis,
@@ -832,11 +1094,20 @@ impl SourceForm {
                     self.last_values.insert("source-port", value.clone());
                     self.inputs["source-port"].update(cx, |i, cx| i.set_value(value, cx));
                 }
-                if matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) {
+                if matches!(
+                    self.engine,
+                    DbEngine::MongoDb | DbEngine::Redis | DbEngine::Jdbc
+                ) {
                     self.transport = 0;
                     if self.endpoint_mode == 1 {
                         self.endpoint_mode = 0;
                     }
+                }
+                if self.engine == DbEngine::Jdbc {
+                    self.endpoint_mode = 0;
+                    self.transport = 0;
+                    self.tls = TlsMode::Disabled;
+                    self.ssh_selected = None;
                 }
                 self.driver_open = false;
                 self.refresh_generated_url(cx);
@@ -844,20 +1115,29 @@ impl SourceForm {
             "source-direct" => self.transport = 0,
             "source-ssh"
                 if self.endpoint_mode != 1
-                    && !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) =>
+                    && !matches!(
+                        self.engine,
+                        DbEngine::MongoDb | DbEngine::Redis | DbEngine::Jdbc
+                    ) =>
             {
                 self.transport = if self.transport == 1 { 0 } else { 1 };
                 self.ssh_combo_open = false;
             }
             "source-http"
                 if self.endpoint_mode != 1
-                    && !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) =>
+                    && !matches!(
+                        self.engine,
+                        DbEngine::MongoDb | DbEngine::Redis | DbEngine::Jdbc
+                    ) =>
             {
                 self.transport = 2
             }
             "source-https"
                 if self.endpoint_mode != 1
-                    && !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) =>
+                    && !matches!(
+                        self.engine,
+                        DbEngine::MongoDb | DbEngine::Redis | DbEngine::Jdbc
+                    ) =>
             {
                 self.transport = 3
             }
@@ -885,12 +1165,13 @@ impl SourceForm {
         _index: isize,
         cx: &mut Context<Self>,
     ) -> Button {
-        let disabled = (matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis)
-            && matches!(
-                id,
-                "source-mode-socket" | "source-http" | "source-https" | "source-manage-ssh"
-            ))
-            || self.model.read(cx).saving
+        let disabled = (matches!(
+            self.engine,
+            DbEngine::MongoDb | DbEngine::Redis | DbEngine::Jdbc
+        ) && matches!(
+            id,
+            "source-mode-socket" | "source-http" | "source-https" | "source-manage-ssh"
+        )) || self.model.read(cx).saving
             || (matches!(id, "source-save" | "source-test") && self.model.read(cx).form_busy);
         Button::new(id)
             .debug_selector(move || id.into())
@@ -1284,51 +1565,53 @@ impl Render for SourceForm {
             .gap(px(10.));
         match self.active_tab {
             0 => {
-                body = body
-                    .child(self.row(
-                        "Driver",
-                        self.combo(
-                            "source-driver",
-                            match self.engine {
-                                DbEngine::MySql => "MySQL ▾",
-                                DbEngine::MariaDb => "MariaDB ▾",
-                                DbEngine::PostgreSql => "PostgreSQL ▾",
-                                DbEngine::MongoDb => "MongoDB ▾",
-                                DbEngine::Redis => "Redis ▾",
-                            },
-                            self.driver_open,
-                            &[
-                                (
-                                    "source-engine-mysql",
-                                    "MySQL",
-                                    self.engine == DbEngine::MySql,
-                                ),
-                                (
-                                    "source-engine-mariadb",
-                                    "MariaDB",
-                                    self.engine == DbEngine::MariaDb,
-                                ),
-                                (
-                                    "source-engine-postgres",
-                                    "PostgreSQL",
-                                    self.engine == DbEngine::PostgreSql,
-                                ),
-                                (
-                                    "source-engine-mongodb",
-                                    "MongoDB",
-                                    self.engine == DbEngine::MongoDb,
-                                ),
-                                (
-                                    "source-engine-redis",
-                                    "Redis",
-                                    self.engine == DbEngine::Redis,
-                                ),
-                            ],
-                            cx,
-                        ),
+                body = body.child(self.row(
+                    "Driver",
+                    self.combo(
+                        "source-driver",
+                        match self.engine {
+                            DbEngine::MySql => "MySQL ▾",
+                            DbEngine::MariaDb => "MariaDB ▾",
+                            DbEngine::PostgreSql => "PostgreSQL ▾",
+                            DbEngine::MongoDb => "MongoDB ▾",
+                            DbEngine::Redis => "Redis ▾",
+                            DbEngine::Jdbc => "JDBC ▾",
+                        },
+                        self.driver_open,
+                        &[
+                            (
+                                "source-engine-mysql",
+                                "MySQL",
+                                self.engine == DbEngine::MySql,
+                            ),
+                            (
+                                "source-engine-mariadb",
+                                "MariaDB",
+                                self.engine == DbEngine::MariaDb,
+                            ),
+                            (
+                                "source-engine-postgres",
+                                "PostgreSQL",
+                                self.engine == DbEngine::PostgreSql,
+                            ),
+                            (
+                                "source-engine-mongodb",
+                                "MongoDB",
+                                self.engine == DbEngine::MongoDb,
+                            ),
+                            ("source-engine-jdbc", "JDBC", self.engine == DbEngine::Jdbc),
+                            (
+                                "source-engine-redis",
+                                "Redis",
+                                self.engine == DbEngine::Redis,
+                            ),
+                        ],
                         cx,
-                    ))
-                    .child(
+                    ),
+                    cx,
+                ));
+                if self.engine != DbEngine::Jdbc {
+                    body = body.child(
                         self.row(
                             "Connection type",
                             div()
@@ -1358,17 +1641,28 @@ impl Render for SourceForm {
                             cx,
                         ),
                     );
-                if self.endpoint_mode == 0 {
-                    body = body.child(self.host_port_row("Host", "source-host", "source-port", cx));
-                } else if self.endpoint_mode == 1 {
-                    body = body.child(self.path_field("source-socket", "Socket path", "source-socket-browse", cx))
+                    if self.endpoint_mode == 0 {
+                        body = body.child(self.host_port_row(
+                            "Host",
+                            "source-host",
+                            "source-port",
+                            cx,
+                        ));
+                    } else if self.endpoint_mode == 1 {
+                        body = body.child(self.path_field("source-socket", "Socket path", "source-socket-browse", cx))
                         .child(div().text_color(palette.warning).child("Unix socket connections use local socket permissions; TLS unavailable."));
-                }
-                if self.endpoint_mode != 1 {
-                    body = body.child(self.field("source-url", "Connection URL", 0, cx))
+                    }
+                    if self.endpoint_mode != 1 {
+                        body = body.child(self.field("source-url", "Connection URL", 0, cx))
                         .child(self.row("", div().text_color(palette.muted).text_size(px(12.)).child(if self.endpoint_mode == 2 {
                             "URL controls host, port and database. Credentials are configured below."
                         } else { "Edit URL switches to URL-only. Generated URLs contain no credentials." }), cx));
+                    }
+                } else {
+                    body = body
+                        .child(self.jdbc_driver_control(cx))
+                        .child(self.field("source-jdbc-java", "Java executable", 0, cx))
+                        .child(self.field("source-jdbc-url", "Vendor JDBC URL", 0, cx));
                 }
                 body = body.child(self.row(
                     "Authentication",
@@ -1439,7 +1733,7 @@ impl Render for SourceForm {
                         ),
                     );
                 }
-                if self.endpoint_mode != 2 {
+                if self.engine != DbEngine::Jdbc && self.endpoint_mode != 2 {
                     body = body.child(self.field("source-database", "Database (optional)", 0, cx));
                 }
             }
@@ -1453,7 +1747,10 @@ impl Render for SourceForm {
                     ));
             }
             2 => {
-                if self.endpoint_mode == 1 {
+                if self.engine == DbEngine::Jdbc {
+                    body = body.child(div().debug_selector(|| "source-jdbc-security".into())
+                        .text_color(palette.muted).child("JDBC uses its vendor URL for transport and security. Configure TLS in the vendor JDBC URL; native SSH, proxy and certificate controls are unavailable."));
+                } else if self.endpoint_mode == 1 {
                     body = body.child(div().text_color(palette.warning).child("Unix socket connections use local socket permissions; TLS unavailable. SSH and proxies are unavailable for local sockets."));
                 } else {
                     body = body.child(
@@ -1499,7 +1796,9 @@ impl Render for SourceForm {
                                         self.model.read(cx).saving
                                             || matches!(
                                                 self.engine,
-                                                DbEngine::MongoDb | DbEngine::Redis
+                                                DbEngine::MongoDb
+                                                    | DbEngine::Redis
+                                                    | DbEngine::Jdbc
                                             ),
                                     )
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1920,6 +2219,132 @@ mod tests {
         let input = form.read_with(cx, |form, _| form.inputs[id].clone());
         input.update(cx, |input, cx| input.set_value(value.to_owned(), cx));
         cx.run_until_parked();
+    }
+
+    fn installed_jdbc_fixture() -> InstalledDriver {
+        InstalledDriver {
+            id: "h2".into(),
+            name: "H2".into(),
+            group: "com.h2database".into(),
+            artifact: "h2".into(),
+            version: "2.3.232".into(),
+            driver_class: "org.h2.Driver".into(),
+            url_prefix: "jdbc:h2:".into(),
+            jars: vec!["/synthetic/drivers/h2.jar".into()],
+            sha256: vec!["a".repeat(64)],
+        }
+    }
+
+    #[gpui::test]
+    fn jdbc_installed_selection_round_trips_and_clears_native_controls(cx: &mut TestAppContext) {
+        let (form, _, visual) = fixture(cx);
+        form.update(visual, |form, cx| {
+            form.set_installed_jdbc(vec![installed_jdbc_fixture()], cx);
+            form.activate("source-engine-jdbc", cx);
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("source-host").is_none());
+        assert!(visual.debug_bounds("source-url").is_none());
+        click(visual, "source-jdbc-driver");
+        click(visual, "source-jdbc-driver-0");
+        set(
+            &form,
+            visual,
+            "source-jdbc-java",
+            "/synthetic/java/bin/java",
+        );
+        set(&form, visual, "source-jdbc-url", "jdbc:h2:mem:example");
+        let profile = form.read_with(visual, |form, cx| form.profile(cx).unwrap());
+        let jdbc = profile.jdbc.as_ref().unwrap();
+        assert_eq!(jdbc.driver_id, "h2");
+        assert_eq!(jdbc.driver_class, "org.h2.Driver");
+        assert_eq!(jdbc.jars[0].sha256, "a".repeat(64));
+        assert_eq!(profile.transport, Transport::Direct);
+        assert_eq!(profile.endpoint, ConnectionMode::Default);
+        assert_eq!(profile.tls, TlsMode::Disabled);
+        form.update(visual, |form, cx| {
+            form.activate("source-tab-ssh", cx);
+            form.activate("source-ssh", cx);
+            form.activate("source-tls-required", cx);
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("source-jdbc-security").is_some());
+        assert!(visual.debug_bounds("source-ca").is_none());
+        form.read_with(visual, |form, cx| {
+            assert_eq!(form.profile(cx).unwrap(), profile)
+        });
+        form.update(visual, |form, cx| form.activate("source-engine-mysql", cx));
+        form.read_with(visual, |form, cx| {
+            assert!(form.profile(cx).unwrap().jdbc.is_none())
+        });
+    }
+
+    #[gpui::test]
+    fn jdbc_missing_driver_and_unsafe_urls_fail_closed(cx: &mut TestAppContext) {
+        let (form, model, visual) = fixture(cx);
+        form.update(visual, |form, cx| form.activate("source-engine-jdbc", cx));
+        set(
+            &form,
+            visual,
+            "source-jdbc-java",
+            "/synthetic/java/bin/java",
+        );
+        set(&form, visual, "source-jdbc-url", "jdbc:h2:mem:example");
+        form.read_with(visual, |form, cx| assert!(form.profile(cx).is_err()));
+        for action in ["source-test", "source-save"] {
+            form.update(visual, |form, cx| form.activate(action, cx));
+            model.read_with(visual, |model, _| {
+                assert!(
+                    model
+                        .form_feedback
+                        .as_ref()
+                        .unwrap()
+                        .contains("installed JDBC driver")
+                );
+                assert!(!model.form_busy);
+            });
+        }
+        form.update(visual, |form, cx| {
+            form.set_installed_jdbc(vec![installed_jdbc_fixture()], cx);
+            form.jdbc_selected = Some(0);
+        });
+        for url in [
+            "jdbc:h2:mem:test;USER=hidden",
+            "jdbc:h2:mem:test;PASSWORD=hidden",
+            "jdbc:h2:mem:test;INIT=RUNSCRIPT FROM 'bad'",
+        ] {
+            set(&form, visual, "source-jdbc-url", url);
+            form.read_with(visual, |form, cx| assert!(form.profile(cx).is_err()));
+        }
+        set(&form, visual, "source-jdbc-url", "jdbc:h2:mem:test");
+        set(&form, visual, "source-jdbc-java", "java");
+        form.read_with(visual, |form, cx| assert!(form.profile(cx).is_err()));
+    }
+
+    #[gpui::test]
+    fn jdbc_original_matches_exact_installed_hashes(cx: &mut TestAppContext) {
+        let (form, _, visual) = fixture(cx);
+        form.update(visual, |form, cx| {
+            form.activate("source-engine-jdbc", cx);
+            form.original.jdbc = Some(JdbcOptions {
+                java_path: "/synthetic/java/bin/java".into(),
+                url: "jdbc:h2:mem:test".into(),
+                driver_id: "h2".into(),
+                driver_class: "org.h2.Driver".into(),
+                jars: vec![JdbcJar {
+                    path: "/synthetic/drivers/h2.jar".into(),
+                    sha256: "a".repeat(64),
+                }],
+            });
+            form.set_installed_jdbc(vec![installed_jdbc_fixture()], cx);
+            assert_eq!(form.jdbc_selected, Some(0));
+            let mut altered = installed_jdbc_fixture();
+            altered.sha256[0] = "b".repeat(64);
+            form.set_installed_jdbc(vec![altered], cx);
+            assert!(form.jdbc_selected.is_none());
+            form.set_installed_jdbc(Vec::new(), cx);
+            assert!(form.profile(cx).is_err());
+        });
     }
 
     #[gpui::test]
