@@ -1,29 +1,29 @@
 {
-  "fill" : {
-    "automatic-gradient" : "display-p3:0.20133,0.33860,0.92609,1.00000"
+  "fill": {
+    "solid": "extended-gray:0.00000,1.00000"
   },
-  "groups" : [
+  "groups": [
     {
-      "layers" : [
+      "layers": [
         {
-          "image-name" : "Winding Path Database Icon 1 [Vectorized].png",
-          "name" : "Winding Path Database Icon 1 [Vectorized]"
+          "image-name": "Dalan New Transparent.png",
+          "name": "Dalan New Transparent"
         }
       ],
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0
       },
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.3
+      "translucency": {
+        "enabled": false,
+        "value": 0
       }
     }
   ],
-  "supported-platforms" : {
-    "circles" : [
+  "supported-platforms": {
+    "circles": [
       "watchOS"
     ],
-    "squares" : "shared"
+    "squares": "shared"
   }
 }

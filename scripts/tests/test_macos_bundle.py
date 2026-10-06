@@ -100,7 +100,24 @@ class BundleTests(unittest.TestCase):
         icns = (brand / "Dalan.icns").read_bytes()
         self.assertEqual(icns[:4], b"icns")
         self.assertEqual(int.from_bytes(icns[4:8], "big"), len(icns))
+        spec = importlib.util.spec_from_file_location("compose_icon", bundle.ROOT / "scripts/compose_icon.py")
+        composer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(composer)
+        source = (brand / "Dalan.icon/Assets/Dalan New Transparent.png").read_bytes()
+        self.assertEqual(png, composer.compose(source))
+        _, _, pixels = composer.decode_rgba(png)
+        self.assertEqual(bytes(pixels[:4]), bytes((0, 0, 0, 255)))
+        self.assertEqual(set(pixels[3::4]), {255})
+        self.assertIn(bytes((255, 106, 235, 255)), bytes(pixels))
+        with self.assertRaises(ValueError):
+            composer.compose(source[:64])
+        with self.assertRaises(ValueError):
+            composer.compose(source[:-1] + bytes([source[-1] ^ 1]))
         package = json.loads((brand / "Dalan.icon/icon.json").read_text())
+        self.assertEqual(package["fill"], {"solid": "extended-gray:0.00000,1.00000"})
+        self.assertFalse(package["groups"][0]["translucency"]["enabled"])
+        self.assertEqual(package["groups"][0]["shadow"]["opacity"], 0)
+        self.assertEqual([layer["image-name"] for group in package["groups"] for layer in group["layers"]], ["Dalan New Transparent.png"])
         for group in package["groups"]:
             for layer in group["layers"]:
                 self.assertTrue((brand / "Dalan.icon/Assets" / layer["image-name"]).is_file())

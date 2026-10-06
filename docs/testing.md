@@ -1,5 +1,11 @@
 # Test strategy and release evidence
 
+## Black and pink app artwork
+
+Replaced the old source layer with the user-supplied `Dalan New Transparent.png` from the updated Icon Composer package. Source configuration uses the pink layer only, solid black fill and no shadow/translucency. A dependency-free compositor preserves its alpha silhouette with exact sRGB `#FF6AEB` foreground on opaque black, producing the README/portable PNG and conventional multi-size ICNS through `scripts/prepare-icons`. The user's Downloads package is unchanged.
+
+All **14 Python bundle/preview tests passed**, including reproducible composition, exact color/opaque pixels, malformed PNG rejection and source-layer configuration. ICNS extraction produced all ten expected sizes and the 1024px decoded pixels matched the composed PNG; bundled PNG/ICNS bytes matched the repository assets. The debug app rebuilt and plist/signature checks passed. No Rust behavior changes or current-task Rust-suite rerun was needed. Apple `actool`/real compiled Icon Composer rendering remains unavailable/unverified; native Dock/Finder cache refresh is not certified. CI was skipped.
+
 ## Flat SQL editor chrome
 
 Removed rounded/card styling and inter-button gaps from the SQL/JSON console workspace only, using Kit ButtonRounded::None and its borderless editor/Combobox appearance APIs. Added a geometry regression requiring adjacent Run/Cancel/tool and source/database/clear controls, full-height hit targets, and editor-to-pane flush edges at 1200 px and compact 560 px widths. Retained input text/gutter padding and global theme/dialog styling are unchanged. Caret, Cmd-Enter, undo/selection and cached database picker regressions remain intact. Local verification passed **203 headless unit tests + one native-wire integration test, 223 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped. Layout simulation does not claim native visual pixel certification.

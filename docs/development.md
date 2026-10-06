@@ -121,7 +121,7 @@ Finder/Dock display name is Dalan. Debug and release use provisional local ident
 
 ### Supplied app icon
 
-The original `dalan-db.icon` is retained unchanged at `crates/app/assets/brand/Dalan.icon`. The README and portable fallback use its PNG layer resized to 1024 px; `Dalan.icns` contains conventional macOS sizes. The default build copies both fallbacks into Resources and sets `CFBundleIconFile`.
+The updated user-supplied `dalan-db.icon` pink layer is retained unchanged at `crates/app/assets/brand/Dalan.icon/Assets/Dalan New Transparent.png`. Package settings select that layer only with solid black fill and no shadow/translucency. The README/portable fallback compose its alpha silhouette as exact sRGB `#FF6AEB` on opaque black; `Dalan.icns` contains conventional macOS sizes. `scripts/prepare-icons` regenerates both using the dependency-free compositor plus macOS sips/iconutil. The default build copies both fallbacks into Resources and sets `CFBundleIconFile`.
 
 ```sh
 ./scripts/prepare-icons                    # Regenerate PNG/icns using sips + iconutil

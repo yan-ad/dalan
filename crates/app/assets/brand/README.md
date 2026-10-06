@@ -1,10 +1,11 @@
 # Dalan app artwork
 
-The user supplied an Apple Icon Composer package, originally named `dalan-db.icon`. It is preserved unchanged as `Dalan.icon/`, including `icon.json` and its original PNG layer filename. This asset is product artwork, distinct from the Lucide utility/provider icons.
+The user supplied the updated `dalan-db.icon` Apple Icon Composer package. Dalan uses its **Dalan New Transparent.png** layer: the winding-path database mark in **sRGB `#FF6AEB`** on a **solid black `#000000` background**. This is product artwork, distinct from Lucide utility/provider icons.
 
-- `Dalan.icon/`: original editable Icon Composer source, including background and platform settings.
-- `dalan.png`: 1024 × 1024 RGBA copy resized from the original PNG layer. Used by the README and as the portable artwork fallback; no background/gradient, new logo, or other design was invented.
-- `Dalan.icns`: standard macOS multi-size icon generated from that PNG for compatibility.
+- `Dalan.icon/Assets/Dalan New Transparent.png`: unchanged supplied pink alpha layer. The unused white duplicate is not included.
+- `Dalan.icon/icon.json`: adapted package settings use only the pink layer, solid black fill, no shadow and no translucency, preserving its platform settings. The user's original Downloads package is not modified.
+- `dalan.png`: reproducible 1024 × 1024 **opaque** sRGB fallback. `scripts/compose_icon.py` uses the supplied alpha shape, exact `#FF6AEB` foreground and black background; antialiased edge pixels blend those colors. No silhouette is redrawn.
+- `Dalan.icns`: standard macOS multi-size icon generated from the composed PNG.
 
 Regenerate the PNG/icns using macOS's existing `sips` and `iconutil` tools:
 
@@ -20,6 +21,6 @@ Default bundling copies `Dalan.icns` and `dalan.png` to app Resources and sets `
 
 This opt-in path requires full Xcode 26+ supporting Icon Composer. It retains `.icns` for compatibility and adds `CFBundleIconName` only after compilation actually supplies `Assets.car` and valid metadata. Failure leaves the existing bundle unchanged. The minimum target passed to the icon compiler is 26.0; this is not a decision about Dalan's eventual minimum OS matrix.
 
-The local development host has Command Line Tools but no `actool`, so PNG/icns generation and packaging are verified here; real Icon Composer output/rendering is not. Linux/Windows desktop packaging is not implemented; `dalan.png` is the reusable fallback when those targets are developed. The current fallback is the original PNG layer, not a reconstruction of Icon Composer's composited gradient/shadow effects.
+The local development host has Command Line Tools but no `actool`, so PNG/icns generation and packaging are verified here; real Icon Composer output/rendering is not. Linux/Windows desktop packaging is not implemented; `dalan.png` is the reusable fallback when those targets are developed. The fallback is the flat black/pink composite; Apple may apply platform icon masking when rendering the compiled source. Real Icon Composer output remains unverified on this host.
 
 The artwork is user-supplied. Its copyright/redistribution terms have not been specified; do not assume the project or third-party license grants apply to it. Do not distribute it without resolving those terms.

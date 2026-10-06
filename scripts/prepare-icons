@@ -2,7 +2,7 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BRAND="$ROOT/crates/app/assets/brand"
-SOURCE="$BRAND/Dalan.icon/Assets/Winding Path Database Icon 1 [Vectorized].png"
+SOURCE="$BRAND/Dalan.icon/Assets/Dalan New Transparent.png"
 command -v sips >/dev/null 2>&1 || { echo 'Icon preparation needs macOS sips' >&2; exit 1; }
 command -v iconutil >/dev/null 2>&1 || { echo 'Icon preparation needs macOS iconutil' >&2; exit 1; }
 STAGING=$(mktemp -d "${TMPDIR:-/tmp}/dalan-iconset.XXXXXX")
@@ -10,7 +10,7 @@ trap 'rm -rf "$STAGING"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 mkdir -p "$STAGING/Dalan.iconset"
-sips -z 1024 1024 "$SOURCE" --out "$STAGING/dalan.png" >/dev/null
+python3 "$ROOT/scripts/compose_icon.py" "$SOURCE" "$STAGING/dalan.png"
 for spec in '16 16' '16@2x 32' '32 32' '32@2x 64' '128 128' '128@2x 256' '256 256' '256@2x 512' '512 512' '512@2x 1024'; do
     set -- $spec
     name=$1
