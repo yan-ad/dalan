@@ -174,3 +174,7 @@ Owner decisions still needed: project/distribution license, minimum macOS and In
 [DBX reuse assessment](docs/dbx-reuse.md) · [Architecture](docs/architecture.md) · [Product scope](docs/product-plan.md) · [Feature checklist](docs/feature-checklist.md) · [ACP](docs/acp.md)
 
 Reusable SSH sessions now have an explicit Enable SSH / session picker / Manage SSH Sessions workflow; inline SSH compatibility and source-side key discovery are removed. Name and Color remain in a shared fixed header above connection tabs.
+
+### Native driver version management
+
+Implemented: exact bundled version inventory, Latest bundled/exact-pin preferences in `dalan.config`, validation before native routing, and driver-page tables separating library versions/capabilities from unqualified server-version ranges. Each engine currently has one executable bundled backend; selections are not package downloads. Next: compile and route independently tested alternate versions or provide versioned external workers/JDBC after the runtime milestone, with dependency/TLS matrix qualification and safe operation-bound switching. Never advertise a version that cannot execute.

@@ -186,16 +186,41 @@ impl AssetSource for IconAssets {
 }
 
 pub fn provider_icon(engine: dalan_drivers::DbEngine) -> impl IntoElement {
-    let path = match engine {
-        dalan_drivers::DbEngine::MySql => "icons/provider/mysql.svg",
-        dalan_drivers::DbEngine::MariaDb => "icons/provider/mariadb.svg",
-        dalan_drivers::DbEngine::PostgreSql => "icons/provider/pg.svg",
-        dalan_drivers::DbEngine::MongoDb => "icons/provider/mongodb.svg",
-        dalan_drivers::DbEngine::Redis => "icons/provider/redis.svg",
+    // SVG masks discard the original fills. Use the color image decoder and
+    // stable image handles so the supplied brand artwork stays unchanged.
+    static IMAGES: std::sync::OnceLock<Vec<std::sync::Arc<gpui::Image>>> =
+        std::sync::OnceLock::new();
+    let images = IMAGES.get_or_init(|| {
+        [
+            "icons/provider/mysql.svg",
+            "icons/provider/mariadb.svg",
+            "icons/provider/pg.svg",
+            "icons/provider/mongodb.svg",
+            "icons/provider/redis.svg",
+        ]
+        .into_iter()
+        .map(|path| {
+            let bytes = PROVIDER_ASSETS
+                .iter()
+                .find(|(name, _)| *name == path)
+                .expect("bundled provider asset")
+                .1;
+            std::sync::Arc::new(gpui::Image::from_bytes(
+                gpui::ImageFormat::Svg,
+                bytes.to_vec(),
+            ))
+        })
+        .collect()
+    });
+    let index = match engine {
+        dalan_drivers::DbEngine::MySql => 0,
+        dalan_drivers::DbEngine::MariaDb => 1,
+        dalan_drivers::DbEngine::PostgreSql => 2,
+        dalan_drivers::DbEngine::MongoDb => 3,
+        dalan_drivers::DbEngine::Redis => 4,
     };
-    gpui::component::Icon::empty()
-        .path(path)
-        .size(px(16.0))
+    gpui::img(images[index].clone())
+        .size(px(16.))
         .flex_shrink_0()
 }
 
@@ -253,6 +278,32 @@ mod tests {
             assert!(IconAssets.load(&icon.path()).unwrap().is_some(), "{icon:?}");
         }
     }
+    #[test]
+    fn provider_image_path_preserves_original_multicolor_svg_fills() {
+        for (path, color) in [
+            ("icons/provider/mysql.svg", "#00618a"),
+            ("icons/provider/mariadb.svg", "#003545"),
+            ("icons/provider/pg.svg", "#336791"),
+            ("icons/provider/mongodb.svg", "#439934"),
+            ("icons/provider/redis.svg", "#a41e11"),
+        ] {
+            let bytes = IconAssets.load(path).unwrap().unwrap();
+            assert!(std::str::from_utf8(&bytes).unwrap().contains(color));
+        }
+        let source = include_str!("icons.rs");
+        let implementation = source
+            .split("pub fn provider_icon(")
+            .nth(1)
+            .unwrap()
+            .split("/// Kit renders")
+            .next()
+            .unwrap();
+        assert!(
+            implementation.contains("ImageFormat::Svg") && implementation.contains("gpui::img(")
+        );
+        assert!(!implementation.contains("text_color") && !implementation.contains("Icon::empty"));
+    }
+
     #[test]
     fn semantic_actions_and_direct_kit_controls_have_registered_assets() {
         let actions = [

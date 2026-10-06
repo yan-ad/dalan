@@ -20,6 +20,7 @@ pub use query::{
 };
 mod relay;
 pub mod sources;
+pub mod versions;
 pub use mysql::{
     BrowseRequest, CatalogSnapshot, CellValue, ColumnInfo, ConnectionReport, DatabaseCatalog,
     FilterOperator, SortDirection, TableFilter, TableInfo, TablePage, TableSort,

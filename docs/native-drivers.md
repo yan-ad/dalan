@@ -2,6 +2,20 @@
 
 Status: experimental read-only implementations, not release certification. Dalan now exposes five built-in engines: MySQL, MariaDB, PostgreSQL, MongoDB and Redis. PostgreSQL/MongoDB/Redis are native protocol adapters; **JDBC is not implemented**. A JDBC-shaped URL prefix does not install a JVM or Java driver. Native adapters come first; optional external workers remain later work.
 
+## Bundled library versions and selection
+
+The Drivers page distinguishes **driver library versions** from **database server versions**. It offers **Latest bundled** and an exact pin for each available backend, persisted in `dalan.config` through Apply/OK. Latest means the newest backend **included in this Dalan build**, not an upstream download. There is currently **one bundled version per engine**, so the two choices execute the same backend. Older alternatives, package installation and JDBC version management are not implemented; adding another version requires an independently compiled, routed and tested adapter, not just another dropdown entry.
+
+| Engine | Bundled implementation | Exact selection ID | Server-version qualification |
+| --- | --- | --- | --- |
+| MySQL | `mysql_async` 0.37.1 | `mysql-async-0.37.1` | No certified range; actual-server matrix pending |
+| MariaDB | `mysql_async` 0.37.1 | `mysql-async-0.37.1` (separate engine preference) | No certified range; actual-server matrix pending |
+| PostgreSQL | `tokio-postgres` 0.7.18 / `postgres-native-tls` 0.5.3 | `tokio-postgres-0.7.18` | PostgreSQL v3 wire; server-version matrix pending |
+| MongoDB | Official `mongodb` 3.7.0 | `mongodb-3.7.0` | Official compatibility must be qualified against actual servers |
+| Redis | Dalan bounded RESP2 codec, revision 1 | `dalan-resp2-1` | RESP2; no Cluster/RESP3/streams |
+
+Missing preferences resolve to Latest bundled. Unknown engines/versions are rejected before backend use and are not silently substituted. Changing theme preserves driver preferences; driver Apply preserves appearance and does not read credentials, rewrite sources or reconnect existing operations. Cancel discards unapplied choices. The page uses Kit tables for exact library/status and capability/transport/TLS details, with correctly spelled centered labels. Provider SVGs are decoded as cached color images, not theme-tinted masks; original brand fills are unchanged across light/dark modes.
+
 ## Current support
 
 | Boundary | MySQL / MariaDB | PostgreSQL | MongoDB | Redis |

@@ -349,10 +349,19 @@ fn system_appearance_mapping_tracks_changes_and_explicit_mode_is_persisted(
     std::fs::create_dir(&dir).unwrap();
     let path = std::fs::canonicalize(&dir).unwrap().join("dalan.config");
     let repository = ConfigRepository::new(path);
-    visual
-        .cx
-        .update(|app| app.global_mut::<AppearanceSettings>().repository = Some(repository.clone()));
+    visual.cx.update(|app| {
+        let settings = app.global_mut::<AppearanceSettings>();
+        settings.repository = Some(repository.clone());
+        settings
+            .config
+            .driver_versions
+            .insert("redis".into(), dalan_drivers::versions::REDIS.id.into());
+    });
     click(visual, "theme-toggle");
+    assert_eq!(
+        repository.load().unwrap().driver_versions["redis"],
+        dalan_drivers::versions::REDIS.id
+    );
     assert_eq!(
         repository.load().unwrap().appearance,
         AppearancePreference::Light

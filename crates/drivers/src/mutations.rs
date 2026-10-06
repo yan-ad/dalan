@@ -54,6 +54,7 @@ pub async fn apply_table_changes(
     request: &WriteRequest,
 ) -> Result<WriteReport> {
     validate_request(request)?;
+    crate::versions::selected(profile.engine)?;
     match profile.engine {
         DbEngine::MySql | DbEngine::MariaDb => {
             crate::mysql::apply_table_changes(profile, password, request).await

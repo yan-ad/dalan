@@ -176,6 +176,7 @@ impl RenderOnce for NewConnectionButton {
 
 #[derive(Clone)]
 struct AppearanceSettings {
+    config: dalan_app::app_config::Config,
     preference: dalan_app::app_config::AppearancePreference,
     repository: Option<dalan_app::app_config::ConfigRepository>,
     error: Option<String>,
@@ -202,25 +203,24 @@ fn next_appearance(window: &mut Window, cx: &mut App) {
         .try_global::<AppearanceSettings>()
         .cloned()
         .unwrap_or(AppearanceSettings {
+            config: Default::default(),
             preference: Default::default(),
             repository: None,
             error: None,
         });
     let preference = current.preference.next();
+    let mut config = current.config.clone();
+    config.appearance = preference;
     let error = match &current.repository {
-        Some(repo) => {
-            repo.save(&dalan_app::app_config::Config {
-                appearance: preference,
-                ..Default::default()
-            })
-            .err()
-            .map(|_| "Appearance changed for this session; dalan.config could not be saved.".into())
-        }
+        Some(repo) => repo.save(&config).err().map(|_| {
+            "Appearance changed for this session; dalan.config could not be saved.".into()
+        }),
         None => {
             Some("Appearance changed for this session; settings storage is unavailable.".into())
         }
     };
     cx.set_global(AppearanceSettings {
+        config,
         preference,
         repository: current.repository,
         error,
@@ -248,6 +248,7 @@ impl Shell {
         if !cx.has_global::<AppearanceSettings>() {
             #[cfg(all(test, feature = "ui-tests"))]
             cx.set_global(AppearanceSettings {
+                config: Default::default(),
                 preference: Default::default(),
                 repository: None,
                 error: None,
@@ -256,9 +257,9 @@ impl Shell {
             {
                 let repository = dalan_app::app_config::ConfigRepository::default_path()
                     .map(dalan_app::app_config::ConfigRepository::new);
-                let (repository, preference, error) = match repository {
+                let (repository, config, error) = match repository {
                     Ok(repo) => match repo.load() {
-                        Ok(config) => (Some(repo), config.appearance, None),
+                        Ok(config) => (Some(repo), config, None),
                         Err(_) => (
                             Some(repo),
                             Default::default(),
@@ -274,7 +275,11 @@ impl Shell {
                         ),
                     ),
                 };
+                let preference = config.appearance;
+                let _ =
+                    dalan_drivers::versions::install_preferences(config.driver_versions.clone());
                 cx.set_global(AppearanceSettings {
+                    config,
                     repository,
                     preference,
                     error,
@@ -282,12 +287,7 @@ impl Shell {
                 let initial = cx.global::<AppearanceSettings>().clone();
                 if initial.error.is_none()
                     && let Some(repo) = initial.repository
-                    && repo
-                        .save(&dalan_app::app_config::Config {
-                            appearance: initial.preference,
-                            ..Default::default()
-                        })
-                        .is_err()
+                    && repo.save(&initial.config).is_err()
                 {
                     cx.global_mut::<AppearanceSettings>().error =
                         Some("Using System appearance; dalan.config could not be saved.".into());

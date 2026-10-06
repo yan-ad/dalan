@@ -1,5 +1,11 @@
 # Test strategy and release evidence
 
+## Bundled driver inventory, preferences and brand artwork
+
+Driver-page Kit tables display exact compiled versions/status and protocol-specific capabilities/TLS/server-qualification limits. Latest bundled and exact-pin choices persist in `dalan.config`; only one backend version is currently included per engine, so alternate-version downloads or execution are not claimed. Catalog/config validation rejects unsupported choices, exact dependency pins are regression-checked, old config files default empty preferences, and appearance/driver saves preserve one another. UI tests exercise the actual version picker/Apply, cancel isolation, centered icon/name geometry and minimum window layout. Provider images decode the original multicolor SVG rather than a monochrome theme mask; artwork files are unchanged and cached handles avoid per-render decoding identities.
+
+Local verification passed **207 headless unit tests + one native-wire integration test, 230 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. No private configuration/credentials/servers were accessed; selector persistence uses temporary fixtures. Native visual/color certification and actual-server version/TLS matrix remain unrun. Hosted CI remains skipped.
+
 ## Editor notification isolation and complete toggle icons
 
 SQL adapter state observation previously propagated caret blink/focus/selection notifications after materializing the whole rope as a string. It now subscribes only to actual Kit `InputEvent::Change`; selection is read directly from retained state only when an operation requests it. The console does not notify its outer toolbar on unchanged editor content. Tab strips/result-retention bookkeeping react only to presentation/page/target changes, and result grids preserve visible caches on unrelated query-draft notifications. Explicit table-edit revisions keep staged writes repainting correctly.

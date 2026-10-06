@@ -45,6 +45,8 @@ pub(super) struct SourceDialog {
     page: SettingsPage,
     ssh: Option<Entity<SshManager>>,
     driver: DbEngine,
+    driver_choices: std::collections::BTreeMap<String, String>,
+    driver_choices_saved: std::collections::BTreeMap<String, String>,
     confirm_close: bool,
     removing: Option<String>,
     ok_pending: bool,
@@ -112,6 +114,10 @@ impl SourceDialog {
         let generation = model.read(cx).form_generation;
         let form = Self::make_form(profile.clone(), model.clone(), cx);
         let active = profile.id.clone();
+        let driver_choices = cx
+            .try_global::<super::AppearanceSettings>()
+            .map(|s| s.config.driver_versions.clone())
+            .unwrap_or_default();
         let mut this = Self {
             model: model.clone(),
             form: form.clone(),
@@ -122,6 +128,8 @@ impl SourceDialog {
             page: SettingsPage::Sources,
             ssh: None,
             driver: profile.engine,
+            driver_choices_saved: driver_choices.clone(),
+            driver_choices,
             confirm_close: false,
             removing: None,
             ok_pending: false,
@@ -459,7 +467,8 @@ impl SourceDialog {
         if self.blocked(cx) {
             return;
         }
-        let dirty = self.drafts.values().any(|d| d.form.read(cx).is_dirty())
+        let dirty = self.driver_choices != self.driver_choices_saved
+            || self.drafts.values().any(|d| d.form.read(cx).is_dirty())
             || self
                 .ssh
                 .as_ref()
@@ -513,14 +522,71 @@ impl SourceDialog {
         self.page = page;
         cx.notify();
     }
+    fn apply_driver_preferences(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.blocked(cx) {
+            return false;
+        }
+        if dalan_drivers::versions::validate_preferences(&self.driver_choices).is_err() {
+            self.notice =
+                Some("Unsupported driver choice; current backend remains unchanged.".into());
+            cx.notify();
+            return false;
+        }
+        if self.driver_choices == self.driver_choices_saved {
+            return true;
+        }
+        let Some(settings) = cx.try_global::<super::AppearanceSettings>().cloned() else {
+            self.notice = Some(
+                "Configuration storage is unavailable; driver selection was not saved.".into(),
+            );
+            cx.notify();
+            return false;
+        };
+        let Some(repo) = settings.repository.clone() else {
+            self.notice = Some(
+                "Configuration storage is unavailable; driver selection was not saved.".into(),
+            );
+            cx.notify();
+            return false;
+        };
+        let mut config = settings.config;
+        config.appearance = settings.preference;
+        config.driver_versions = self.driver_choices.clone();
+        if repo.save(&config).is_err() {
+            self.notice = Some(
+                "Could not save driver choices; current backend preferences remain unchanged."
+                    .into(),
+            );
+            cx.notify();
+            return false;
+        }
+        if dalan_drivers::versions::install_preferences(config.driver_versions.clone()).is_err() {
+            self.notice = Some(
+                "Driver choices saved but runtime preferences could not be applied; restart Dalan."
+                    .into(),
+            );
+            cx.notify();
+            return false;
+        }
+        cx.global_mut::<super::AppearanceSettings>().config = config;
+        self.driver_choices_saved = self.driver_choices.clone();
+        self.notice = None;
+        cx.notify();
+        true
+    }
     fn drivers(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use dalan_drivers::versions::{bundled, engine_id, resolve};
+        use gpui::component::{
+            menu::{DropdownMenu, PopupMenuItem},
+            table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
+        };
         let mut list = div()
             .w(px(210.))
             .flex_shrink_0()
             .p_3()
             .flex()
             .flex_col()
-            .gap_2();
+            .gap_1();
         for (index, engine) in [
             DbEngine::MySql,
             DbEngine::MariaDb,
@@ -537,10 +603,35 @@ impl SourceDialog {
                     .selected(self.driver == engine)
                     .child(
                         div()
+                            .h(px(28.))
                             .flex()
+                            .items_center()
                             .gap_2()
-                            .child(provider_icon(engine))
-                            .child(format!("{engine:?}")),
+                            .child(
+                                div()
+                                    .id(gpui::SharedString::from(format!(
+                                        "settings-driver-icon-{index}"
+                                    )))
+                                    .debug_selector(move || format!("settings-driver-icon-{index}"))
+                                    .size(px(20.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(provider_icon(engine)),
+                            )
+                            .child(
+                                div()
+                                    .id(gpui::SharedString::from(format!(
+                                        "settings-driver-label-{index}"
+                                    )))
+                                    .debug_selector(move || {
+                                        format!("settings-driver-label-{index}")
+                                    })
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .child(engine.display_name()),
+                            ),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.driver = engine;
@@ -548,12 +639,160 @@ impl SourceDialog {
                     })),
             );
         }
-        div().id("settings-drivers").debug_selector(||"settings-drivers".into()).size_full().flex()
-            .child(list).child(div().flex_1().min_w_0().p_5().flex().flex_col().gap_3()
-            .child(format!("{:?} driver",self.driver)).child("Native protocol · Experimental")
-            .child("MySQL/MariaDB and PostgreSQL use read-only SQL. MongoDB uses restricted JSON find requests; Redis uses JSON command arrays. All have bounded preview browsing.")
-            .child("Drivers are built into Dalan. There are no JDBC libraries to download or editable driver-class settings.")
-            .child("MongoDB/Redis currently use direct transport only. PostgreSQL supports TLS and SSH/proxy transport; raw table clauses are not yet supported."))
+        let choice = self
+            .driver_choices
+            .get(engine_id(self.driver))
+            .map(String::as_str)
+            .unwrap_or("latest");
+        let selected = resolve(self.driver, choice).expect("validated bundled choice");
+        let choice_label = if choice == "latest" {
+            format!("Latest bundled · {}", selected.version)
+        } else {
+            format!("Pinned · {}", selected.version)
+        };
+        let engine = self.driver;
+        let active_choice = choice.to_owned();
+        let owner = cx.entity().downgrade();
+        let disabled = self.blocked(cx);
+        let selector = Button::new("driver-version-selector")
+            .debug_selector(|| "driver-version-selector".into())
+            .small()
+            .label(choice_label)
+            .dropdown_caret(true)
+            .disabled(disabled)
+            .dropdown_menu(move |mut menu, _, _| {
+                let owner_latest = owner.clone();
+                menu = menu.item(
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .debug_selector(|| "driver-choice-latest".into())
+                            .child("Latest bundled (recommended)")
+                    })
+                    .checked(active_choice == "latest")
+                    .on_click(move |_, _, cx| {
+                        let _ = owner_latest.update(cx, |this, cx| {
+                            if this.blocked(cx) {
+                                return;
+                            }
+                            this.driver_choices
+                                .insert(engine_id(engine).into(), "latest".into());
+                            cx.notify();
+                        });
+                    }),
+                );
+                for backend in bundled(engine) {
+                    let owner = owner.clone();
+                    let id = backend.id;
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            div()
+                                .debug_selector(move || format!("driver-choice-{id}"))
+                                .child(format!("{} {} (bundled)", backend.library, backend.version))
+                        })
+                        .checked(active_choice == id)
+                        .on_click(move |_, _, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                if this.blocked(cx) {
+                                    return;
+                                }
+                                this.driver_choices
+                                    .insert(engine_id(engine).into(), id.into());
+                                cx.notify();
+                            });
+                        }),
+                    );
+                }
+                menu
+            });
+        let header = TableHeader::new().child(
+            TableRow::new()
+                .child(TableHead::new().child("Library / backend"))
+                .child(TableHead::new().child("Bundled version"))
+                .child(TableHead::new().child("Status")),
+        );
+        let mut body = TableBody::new();
+        for backend in bundled(engine) {
+            body = body.child(
+                TableRow::new()
+                    .child(TableCell::new().child(backend.library))
+                    .child(TableCell::new().child(backend.version))
+                    .child(TableCell::new().child("Available · Experimental")),
+            );
+        }
+        let library_table = Table::new()
+            .small()
+            .accessibility_label("Bundled driver versions")
+            .child(header)
+            .child(body);
+        let (reads, writes, transport, server) = match engine {
+            DbEngine::MySql => (
+                "Restricted SELECT + table browsing",
+                "Staged scalar edits on eligible InnoDB tables",
+                "TCP, Unix socket, saved SSH / CONNECT",
+                "MySQL wire protocol; server version range not yet qualified",
+            ),
+            DbEngine::MariaDb => (
+                "Restricted SELECT + table browsing",
+                "Staged scalar edits on eligible InnoDB tables",
+                "TCP, Unix socket, saved SSH / CONNECT",
+                "MariaDB/MySQL wire protocol; server version range not yet qualified",
+            ),
+            DbEngine::PostgreSql => (
+                "Restricted PostgreSQL SELECT + schema/table browsing",
+                "Staged scalar edits on eligible base tables",
+                "TCP, Unix socket directory, saved SSH / CONNECT",
+                "PostgreSQL v3 wire protocol; server version range not yet qualified",
+            ),
+            DbEngine::MongoDb => (
+                "Restricted JSON find + Extended JSON collection browsing",
+                "Unavailable",
+                "Direct TCP; TLS Verify Identity / Required / Disabled",
+                "MongoDB driver compatibility must be verified against actual servers",
+            ),
+            DbEngine::Redis => (
+                "Read-only JSON command arrays + key browsing",
+                "Unavailable",
+                "Direct TCP; native TLS",
+                "RESP2; Redis Cluster, RESP3 and streams unavailable",
+            ),
+        };
+        let mut capability_body = TableBody::new();
+        for (label, value) in [
+            ("Read operations", reads),
+            ("Write operations", writes),
+            ("Transport", transport),
+            ("TLS backend", selected.tls),
+            ("Server compatibility", server),
+            (
+                "Verification",
+                "Owned loopback fixtures; actual-server authentication/TLS matrix unrun",
+            ),
+        ] {
+            capability_body = capability_body.child(
+                TableRow::new()
+                    .child(TableCell::new().child(label))
+                    .child(TableCell::new().child(value)),
+            );
+        }
+        let capability_table = Table::new()
+            .small()
+            .accessibility_label("Driver capabilities and server compatibility")
+            .child(
+                TableHeader::new().child(
+                    TableRow::new()
+                        .child(TableHead::new().child("Capability"))
+                        .child(TableHead::new().child("Coverage")),
+                ),
+            )
+            .child(capability_body);
+        div().id("settings-drivers").debug_selector(||"settings-drivers".into()).size_full().flex().child(list)
+            .child(div().id("driver-details").flex_1().min_w_0().min_h_0().overflow_y_scroll().p_5().flex().flex_col().gap_3()
+                .child(div().flex().items_center().gap_2().child(provider_icon(engine)).child(format!("{} driver",engine.display_name())))
+                .child(div().flex().items_center().gap_3().child("Driver version").child(selector))
+                .child("One backend version is bundled for this engine. Latest bundled and its exact pin currently execute the same native backend; no other versions are downloadable in this build.")
+                .child(div().id("driver-version-table").debug_selector(||"driver-version-table".into()).child(library_table))
+                .child(div().id("driver-capability-table").debug_selector(||"driver-capability-table".into()).child(capability_table))
+                .child("Library versions are not server versions. No certified server-version range is claimed. Choices persist in dalan.config only on Apply/OK; Cancel discards unapplied choices."))
     }
 }
 impl Render for SourceDialog {
@@ -828,9 +1067,15 @@ impl Render for SourceDialog {
                     Button::new("source-save")
                         .debug_selector(|| "source-save".into())
                         .label("Apply")
-                        .disabled(blocked || self.page == SettingsPage::Drivers)
+                        .disabled(
+                            blocked
+                                || (self.page == SettingsPage::Drivers
+                                    && self.driver_choices == self.driver_choices_saved),
+                        )
                         .on_click(cx.listener(|this, _, window, cx| {
-                            if this.page == SettingsPage::Ssh {
+                            if this.page == SettingsPage::Drivers {
+                                this.apply_driver_preferences(cx);
+                            } else if this.page == SettingsPage::Ssh {
                                 if let Some(ssh) = &this.ssh {
                                     ssh.update(cx, |s, cx| s.apply_settings(window, cx));
                                 }
@@ -846,6 +1091,12 @@ impl Render for SourceDialog {
                         .primary()
                         .disabled(blocked)
                         .on_click(cx.listener(|this, _, window, cx| {
+                            if this.page == SettingsPage::Drivers {
+                                if this.apply_driver_preferences(cx) {
+                                    this.close(window, cx);
+                                }
+                                return;
+                            }
                             if this.page == SettingsPage::Sources
                                 && (this.form.read(cx).is_dirty()
                                     || !this
@@ -1371,6 +1622,91 @@ mod tests {
         click(&mut visual, "source-cancel");
         click(&mut visual, "settings-discard-close");
         assert_closed(&model, cx);
+    }
+
+    #[gpui::test]
+    fn driver_page_has_centered_branded_rows_tables_and_only_available_versions(
+        cx: &mut TestAppContext,
+    ) {
+        let model = new_model(cx);
+        let (_, mut visual) = open(&model, cx);
+        click(&mut visual, "settings-driver-page");
+        for index in 0..5 {
+            let icon = visual
+                .debug_bounds(Box::leak(
+                    format!("settings-driver-icon-{index}").into_boxed_str(),
+                ))
+                .unwrap();
+            let label = visual
+                .debug_bounds(Box::leak(
+                    format!("settings-driver-label-{index}").into_boxed_str(),
+                ))
+                .unwrap();
+            assert_eq!(icon.center().y, label.center().y);
+            assert!(icon.right() < label.left());
+        }
+        assert!(visual.debug_bounds("driver-version-table").is_some());
+        assert!(visual.debug_bounds("driver-capability-table").is_some());
+        visual.simulate_resize(size(px(1040.), px(560.)));
+        visual.run_until_parked();
+        let selector = visual.debug_bounds("driver-version-selector").unwrap();
+        assert!(selector.left() >= px(258.) && selector.right() <= px(1040.));
+        assert_eq!(
+            visual.debug_bounds("settings-footer").unwrap().bottom(),
+            px(560.)
+        );
+        click(&mut visual, "driver-version-selector");
+        assert!(visual.debug_bounds("driver-choice-latest").is_some());
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        click(&mut visual, "source-cancel");
+        assert_closed(&model, cx);
+    }
+    #[gpui::test]
+    fn exact_bundled_driver_choice_applies_without_losing_theme_and_cancel_isolated(
+        cx: &mut TestAppContext,
+    ) {
+        use dalan_app::app_config::{AppearancePreference, Config, ConfigRepository};
+        let dir =
+            std::env::temp_dir().join(format!("dalan-driver-choice-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let repo = ConfigRepository::new(std::fs::canonicalize(&dir).unwrap().join("dalan.config"));
+        let config = Config {
+            appearance: AppearancePreference::Dark,
+            ..Config::default()
+        };
+        repo.save(&config).unwrap();
+        cx.update(|app| {
+            app.set_global(super::super::AppearanceSettings {
+                config: config.clone(),
+                preference: config.appearance,
+                repository: Some(repo.clone()),
+                error: None,
+            })
+        });
+        let model = new_model(cx);
+        let (handle, mut visual) = open(&model, cx);
+        click(&mut visual, "settings-driver-page");
+        click(&mut visual, "driver-version-selector");
+        click(&mut visual, "driver-choice-mysql-async-0.37.1");
+        click(&mut visual, "source-save");
+        let saved = repo.load().unwrap();
+        assert_eq!(saved.appearance, AppearancePreference::Dark);
+        assert_eq!(
+            saved.driver_versions["mysql"],
+            dalan_drivers::versions::MYSQL.id
+        );
+        handle
+            .update(cx, |d, _, cx| {
+                d.driver_choices.insert("mysql".into(), "latest".into());
+                cx.notify();
+            })
+            .unwrap();
+        click(&mut visual, "source-cancel");
+        assert!(visual.debug_bounds("settings-discard-close").is_some());
+        click(&mut visual, "settings-discard-close");
+        assert_eq!(repo.load().unwrap(), saved);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[gpui::test]

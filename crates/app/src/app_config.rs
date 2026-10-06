@@ -48,6 +48,8 @@ impl AppearancePreference {
 pub struct Config {
     pub version: u32,
     pub appearance: AppearancePreference,
+    #[serde(default)]
+    pub driver_versions: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -55,6 +57,7 @@ impl Default for Config {
         Self {
             version: VERSION,
             appearance: AppearancePreference::System,
+            driver_versions: Default::default(),
         }
     }
 }
@@ -179,6 +182,7 @@ pub fn default_path() -> Result<PathBuf> {
 }
 
 fn validate(config: &Config) -> Result<()> {
+    dalan_drivers::versions::validate_preferences(&config.driver_versions)?;
     ensure!(
         config.version == VERSION,
         "Unsupported Dalan configuration version; expected version 1"
@@ -304,6 +308,28 @@ mod tests {
             AppearancePreference::Dark.next(),
             AppearancePreference::System
         );
+    }
+
+    #[test]
+    fn old_config_loads_and_driver_preferences_are_validated_and_preserved() {
+        let scratch = Scratch::new();
+        let repo = scratch.repository();
+        repo.save(&Config::default()).unwrap();
+        let old: Config = serde_json::from_str(r#"{"version":1,"appearance":"dark"}"#).unwrap();
+        assert!(old.driver_versions.is_empty());
+        let mut config = old;
+        config.driver_versions.insert(
+            "postgresql".into(),
+            dalan_drivers::versions::POSTGRES.id.into(),
+        );
+        repo.save(&config).unwrap();
+        assert_eq!(repo.load().unwrap(), config);
+        let bytes = fs::read(&repo.path).unwrap();
+        config
+            .driver_versions
+            .insert("postgresql".into(), "9.9.9".into());
+        assert!(repo.save(&config).is_err());
+        assert_eq!(fs::read(&repo.path).unwrap(), bytes);
     }
 
     #[test]

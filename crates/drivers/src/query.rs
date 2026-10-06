@@ -438,6 +438,7 @@ pub async fn execute_read_only(
     password: &str,
     request: &QueryRequest,
 ) -> Result<QueryResult> {
+    crate::versions::selected(profile.engine)?;
     match profile.engine {
         DbEngine::PostgreSql => {
             return crate::postgres::execute_read_only(profile, password, request).await;
