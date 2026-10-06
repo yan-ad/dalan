@@ -515,7 +515,16 @@ impl SourceDialog {
             .flex()
             .flex_col()
             .gap_2();
-        for (index, engine) in [DbEngine::MySql, DbEngine::MariaDb].into_iter().enumerate() {
+        for (index, engine) in [
+            DbEngine::MySql,
+            DbEngine::MariaDb,
+            DbEngine::PostgreSql,
+            DbEngine::MongoDb,
+            DbEngine::Redis,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             list = list.child(
                 ListItem::new(index)
                     .debug_selector(move || format!("settings-driver-{index}"))
@@ -535,10 +544,10 @@ impl SourceDialog {
         }
         div().id("settings-drivers").debug_selector(||"settings-drivers".into()).size_full().flex()
             .child(list).child(div().flex_1().min_w_0().p_5().flex().flex_col().gap_3()
-            .child(format!("{:?} driver",self.driver)).child("Native MySQL wire protocol · Experimental")
-            .child("MySQL and MariaDB connections support read-only query execution, table browsing, TLS and saved SSH sessions.")
+            .child(format!("{:?} driver",self.driver)).child("Native protocol · Experimental")
+            .child("MySQL/MariaDB and PostgreSQL use read-only SQL. MongoDB uses restricted JSON find requests; Redis uses JSON command arrays. All have bounded preview browsing.")
             .child("Drivers are built into Dalan. There are no JDBC libraries to download or editable driver-class settings.")
-            .child("PostgreSQL, MongoDB and Redis executors are not implemented."))
+            .child("MongoDB/Redis currently use direct transport only. PostgreSQL supports TLS and SSH/proxy transport; raw table clauses are not yet supported."))
     }
 }
 impl Render for SourceDialog {

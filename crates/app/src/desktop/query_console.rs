@@ -276,6 +276,17 @@ impl QueryConsole {
             return;
         }
         self.tool_feedback = None;
+        if matches!(
+            id,
+            "query-format" | "query-compress" | "query-keyword-case" | "query-paste-in"
+        ) && !matches!(
+            self.model.read(cx).selected_engine(),
+            dalan_drivers::DbEngine::MySql | dalan_drivers::DbEngine::MariaDb
+        ) {
+            self.tool_feedback=Some("MySQL-only formatting/IN tools are unavailable for this engine; input is unchanged.".into());
+            cx.notify();
+            return;
+        }
         match id {
             "query-format" => {
                 let uppercase = self.uppercase_keywords;
@@ -403,10 +414,7 @@ impl QueryConsole {
                 for (index, p) in profiles.iter().enumerate() {
                     let p = p.clone();
                     let entity = entity.clone();
-                    let supported = matches!(
-                        p.engine,
-                        dalan_drivers::DbEngine::MySql | dalan_drivers::DbEngine::MariaDb
-                    );
+                    let supported = true;
                     let selected = Some(&p.id) == current.as_ref();
                     let id = p.id.clone();
                     menu = menu.item(
@@ -485,6 +493,10 @@ impl QueryConsole {
                     .is_some_and(|p| p.database.as_ref() == Some(&db))
             });
         let no_database = self.model.read(cx).selected_database.is_none();
+        let mysql = matches!(
+            self.model.read(cx).selected_engine(),
+            dalan_drivers::DbEngine::MySql | dalan_drivers::DbEngine::MariaDb
+        );
         self.tool_button(
             "query-more",
             "More actions",
@@ -541,7 +553,18 @@ impl QueryConsole {
                             .child(label)
                     })
                     .checked(checked)
-                    .disabled(disabled || extra_disabled)
+                    .disabled(
+                        disabled
+                            || extra_disabled
+                            || (!mysql
+                                && matches!(
+                                    id,
+                                    "query-format"
+                                        | "query-compress"
+                                        | "query-keyword-case"
+                                        | "query-paste-in"
+                                )),
+                    )
                     .on_click(move |_, window, cx| {
                         let _ = entity.update(cx, |this, cx| this.tool(id, window, cx));
                     }),
@@ -618,6 +641,17 @@ impl Focusable for QueryConsole {
 impl Render for QueryConsole {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let database_combo = self.database_combo(window, cx);
+        let engine = self.model.read(cx).selected_engine();
+        self.editor
+            .update(cx, |e, cx| e.set_engine(engine, window, cx));
+        let is_mysql = matches!(
+            engine,
+            dalan_drivers::DbEngine::MySql | dalan_drivers::DbEngine::MariaDb
+        );
+        let is_sql = !matches!(
+            engine,
+            dalan_drivers::DbEngine::MongoDb | dalan_drivers::DbEngine::Redis
+        );
         let model = self.model.read(cx);
         let busy = model.busy;
         let saving = model.saving;
@@ -651,7 +685,15 @@ impl Render for QueryConsole {
                 elapsed.map(|ms| format!(" · {ms} ms")).unwrap_or_default()
             )
         } else {
-            "Run a single read-only query".to_owned()
+            match engine {
+                dalan_drivers::DbEngine::MongoDb => {
+                    "Read-only JSON find: {\"find\":\"collection\",\"filter\":{}}".into()
+                }
+                dalan_drivers::DbEngine::Redis => {
+                    "Read-only JSON command: [\"GET\",\"key\"]".into()
+                }
+                _ => "Run a single read-only SQL query".into(),
+            }
         };
 
         let theme = cx.theme().clone();
@@ -763,7 +805,17 @@ impl Render for QueryConsole {
                     gpui::assets::IconName::Clipboard,
                 ),
             ] {
-                toolbar = toolbar.child(self.tool_button(id, label, icon, disabled, cx));
+                let sql_tool = matches!(
+                    id,
+                    "query-format" | "query-compress" | "query-keyword-case" | "query-paste-in"
+                );
+                toolbar = toolbar.child(self.tool_button(
+                    id,
+                    label,
+                    icon,
+                    disabled || (sql_tool && !is_mysql),
+                    cx,
+                ));
             }
         }
         toolbar = toolbar
@@ -813,7 +865,7 @@ impl Render for QueryConsole {
                 disabled || selected_database.is_none(),
                 cx,
             ));
-        if full {
+        if full && is_sql {
             let is_default = selected_database.as_ref().is_some_and(|db| {
                 self.catalog
                     .read(cx)
@@ -1111,6 +1163,44 @@ mod tests {
         cx.simulate_new_path_selection(|_| None);
         cx.run_until_parked();
         assert!(!view.read_with(cx, |v, _| v.file_busy));
+    }
+
+    #[gpui::test]
+    fn native_non_sql_console_rejects_sql_and_preserves_json_when_tools_are_requested(
+        cx: &mut TestAppContext,
+    ) {
+        for (engine, text) in [
+            (
+                dalan_drivers::DbEngine::MongoDb,
+                r#"{"find":"items","filter":{}}"#,
+            ),
+            (dalan_drivers::DbEngine::Redis, r#"["GET","key"]"#),
+        ] {
+            let (view, model) = fixture_with_profile(
+                cx,
+                SourceProfile {
+                    engine,
+                    database: if engine == dalan_drivers::DbEngine::Redis {
+                        Some("0".into())
+                    } else {
+                        Some("fixture".into())
+                    },
+                    ..SourceProfile::default()
+                },
+            );
+            let editor = view.read_with(cx, |v, _| v.editor.clone());
+            editor.update(cx, |e, cx| e.set_value(text.into(), cx));
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let content = cx.new(|_| ConsoleTestRoot(view.clone()));
+                gpui::base::Root::new(content, window, cx)
+            });
+            visual.refresh().unwrap();
+            visual.run_until_parked();
+            view.update_in(visual, |v, window, cx| v.tool("query-format", window, cx));
+            assert_eq!(editor.read_with(visual, |e, _| e.value()), text);
+            model.update(visual, |m, cx| m.run_query("SELECT 1".into(), cx));
+            assert!(model.read_with(visual, |m, _| m.error.is_some() && !m.busy));
+        }
     }
 
     #[gpui::test]

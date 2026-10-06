@@ -5,15 +5,22 @@ pub use catalog::{
 };
 mod table_clauses;
 pub use table_clauses::validate_table_clauses;
+pub mod mongo;
 pub mod mysql;
+mod native;
+pub mod postgres;
+pub mod redis_driver;
+pub use native::{browse, columns, discover_catalog, is_browsable_kind, tables, test_connection};
 pub mod query;
-pub use query::{QueryRequest, QueryResult, execute_read_only, validate_read_only};
+pub use query::{
+    QueryRequest, QueryResult, execute_read_only, validate_for_engine, validate_postgres_read_only,
+    validate_read_only,
+};
 mod relay;
 pub mod sources;
 pub use mysql::{
     BrowseRequest, CatalogSnapshot, CellValue, ColumnInfo, ConnectionReport, DatabaseCatalog,
-    FilterOperator, SortDirection, TableFilter, TableInfo, TablePage, TableSort, browse, columns,
-    discover_catalog, tables, test_connection,
+    FilterOperator, SortDirection, TableFilter, TableInfo, TablePage, TableSort,
 };
 pub use sources::{
     Authentication, ConnectionMode, ConnectionTarget, DbEngine, SchemaSelection, SourceOptions,
@@ -43,15 +50,18 @@ pub struct DriverDescriptor {
     pub capabilities: Option<ConnectionCapabilities>,
 }
 
-pub const PLANNED_DRIVERS: [DriverDescriptor; 4] = [
+pub const PLANNED_DRIVERS: [DriverDescriptor; 5] = [
     DriverDescriptor {
         id: "postgresql",
         engine: Engine::PostgreSql,
-        proposed_backend: "sqlx::Postgres",
-        status: DriverStatus::Planned,
+        proposed_backend: "tokio-postgres",
+        status: DriverStatus::Experimental,
         runtime: DriverRuntime::Native,
         dialect: Some("postgresql"),
-        capabilities: None,
+        capabilities: Some(ConnectionCapabilities {
+            optional_database: true,
+            unix_socket: true,
+        }),
     },
     DriverDescriptor {
         id: "mysql",
@@ -80,11 +90,26 @@ pub const PLANNED_DRIVERS: [DriverDescriptor; 4] = [
     DriverDescriptor {
         id: "redis",
         engine: Engine::Redis,
-        proposed_backend: "redis",
-        status: DriverStatus::Planned,
+        proposed_backend: "bounded native RESP2",
+        status: DriverStatus::Experimental,
         runtime: DriverRuntime::Native,
         dialect: None,
-        capabilities: None,
+        capabilities: Some(ConnectionCapabilities {
+            optional_database: true,
+            unix_socket: false,
+        }),
+    },
+    DriverDescriptor {
+        id: "mongodb",
+        engine: Engine::MongoDb,
+        proposed_backend: "mongodb",
+        status: DriverStatus::Experimental,
+        runtime: DriverRuntime::Native,
+        dialect: None,
+        capabilities: Some(ConnectionCapabilities {
+            optional_database: true,
+            unix_socket: false,
+        }),
     },
 ];
 
@@ -95,14 +120,7 @@ mod tests {
     #[test]
     fn catalog_has_unique_engines_and_experimental_mysql() {
         for (index, driver) in PLANNED_DRIVERS.iter().enumerate() {
-            assert_eq!(
-                driver.status,
-                if matches!(driver.engine, Engine::MySql | Engine::MariaDb) {
-                    DriverStatus::Experimental
-                } else {
-                    DriverStatus::Planned
-                }
-            );
+            assert_eq!(driver.status, DriverStatus::Experimental);
             assert!(
                 !PLANNED_DRIVERS[..index]
                     .iter()

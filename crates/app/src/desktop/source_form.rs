@@ -349,7 +349,9 @@ impl SourceForm {
     }
 
     pub(super) fn can_use_ssh_session(&self, cx: &App) -> bool {
-        !self.model.read(cx).saving && self.endpoint_mode != 1
+        !self.model.read(cx).saving
+            && self.endpoint_mode != 1
+            && !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis)
     }
 
     /// The manager calls this only after persisting a configuration and choosing Use.
@@ -731,7 +733,7 @@ impl SourceForm {
                 self.tls = TlsMode::Required;
                 self.tls_open = false;
             }
-            "source-tls-verify-ca" => {
+            "source-tls-verify-ca" if self.engine != DbEngine::MongoDb => {
                 self.tls = TlsMode::VerifyCa;
                 self.tls_open = false;
             }
@@ -765,7 +767,7 @@ impl SourceForm {
                 self.endpoint_mode = 0;
                 self.refresh_generated_url(cx);
             }
-            "source-mode-socket" => {
+            "source-mode-socket" if !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) => {
                 self.endpoint_mode = 1;
                 self.transport = 0;
                 self.tls = TlsMode::Disabled;
@@ -812,21 +814,53 @@ impl SourceForm {
                 }
                 return;
             }
-            "source-engine-mysql" => {
-                self.engine = DbEngine::MySql;
+            "source-engine-mysql"
+            | "source-engine-mariadb"
+            | "source-engine-postgres"
+            | "source-engine-mongodb"
+            | "source-engine-redis" => {
+                let old_port = self.engine.default_port();
+                self.engine = match id {
+                    "source-engine-postgres" => DbEngine::PostgreSql,
+                    "source-engine-mongodb" => DbEngine::MongoDb,
+                    "source-engine-redis" => DbEngine::Redis,
+                    "source-engine-mariadb" => DbEngine::MariaDb,
+                    _ => DbEngine::MySql,
+                };
+                if self.value("source-port", cx) == old_port.to_string() {
+                    let value = self.engine.default_port().to_string();
+                    self.last_values.insert("source-port", value.clone());
+                    self.inputs["source-port"].update(cx, |i, cx| i.set_value(value, cx));
+                }
+                if matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) {
+                    self.transport = 0;
+                    if self.endpoint_mode == 1 {
+                        self.endpoint_mode = 0;
+                    }
+                }
                 self.driver_open = false;
-            }
-            "source-engine-mariadb" => {
-                self.engine = DbEngine::MariaDb;
-                self.driver_open = false;
+                self.refresh_generated_url(cx);
             }
             "source-direct" => self.transport = 0,
-            "source-ssh" if self.endpoint_mode != 1 => {
+            "source-ssh"
+                if self.endpoint_mode != 1
+                    && !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) =>
+            {
                 self.transport = if self.transport == 1 { 0 } else { 1 };
                 self.ssh_combo_open = false;
             }
-            "source-http" if self.endpoint_mode != 1 => self.transport = 2,
-            "source-https" if self.endpoint_mode != 1 => self.transport = 3,
+            "source-http"
+                if self.endpoint_mode != 1
+                    && !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) =>
+            {
+                self.transport = 2
+            }
+            "source-https"
+                if self.endpoint_mode != 1
+                    && !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) =>
+            {
+                self.transport = 3
+            }
             "source-tls-verify" if self.endpoint_mode != 1 => {
                 self.tls = TlsMode::VerifyIdentity;
                 self.tls_open = false;
@@ -851,7 +885,12 @@ impl SourceForm {
         _index: isize,
         cx: &mut Context<Self>,
     ) -> Button {
-        let disabled = self.model.read(cx).saving
+        let disabled = (matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis)
+            && matches!(
+                id,
+                "source-mode-socket" | "source-http" | "source-https" | "source-manage-ssh"
+            ))
+            || self.model.read(cx).saving
             || (matches!(id, "source-save" | "source-test") && self.model.read(cx).form_busy);
         Button::new(id)
             .debug_selector(move || id.into())
@@ -1250,10 +1289,12 @@ impl Render for SourceForm {
                         "Driver",
                         self.combo(
                             "source-driver",
-                            if self.engine == DbEngine::MySql {
-                                "MySQL ▾"
-                            } else {
-                                "MariaDB ▾"
+                            match self.engine {
+                                DbEngine::MySql => "MySQL ▾",
+                                DbEngine::MariaDb => "MariaDB ▾",
+                                DbEngine::PostgreSql => "PostgreSQL ▾",
+                                DbEngine::MongoDb => "MongoDB ▾",
+                                DbEngine::Redis => "Redis ▾",
                             },
                             self.driver_open,
                             &[
@@ -1266,6 +1307,21 @@ impl Render for SourceForm {
                                     "source-engine-mariadb",
                                     "MariaDB",
                                     self.engine == DbEngine::MariaDb,
+                                ),
+                                (
+                                    "source-engine-postgres",
+                                    "PostgreSQL",
+                                    self.engine == DbEngine::PostgreSql,
+                                ),
+                                (
+                                    "source-engine-mongodb",
+                                    "MongoDB",
+                                    self.engine == DbEngine::MongoDb,
+                                ),
+                                (
+                                    "source-engine-redis",
+                                    "Redis",
+                                    self.engine == DbEngine::Redis,
                                 ),
                             ],
                             cx,
@@ -1439,7 +1495,13 @@ impl Render for SourceForm {
                                     .debug_selector(|| "source-ssh".into())
                                     .label("Enable SSH")
                                     .checked(self.transport == 1)
-                                    .disabled(self.model.read(cx).saving)
+                                    .disabled(
+                                        self.model.read(cx).saving
+                                            || matches!(
+                                                self.engine,
+                                                DbEngine::MongoDb | DbEngine::Redis
+                                            ),
+                                    )
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.activate("source-ssh", cx)
                                     })),
@@ -2070,6 +2132,36 @@ mod tests {
         assert_eq!(draft.username, "");
         assert!(!draft.save_password);
         assert_eq!(cx.update(|_, app| form.read(app).password(app)), "");
+    }
+
+    #[gpui::test]
+    fn native_driver_choices_use_protocol_ports_and_guard_incompatible_ssh(
+        cx: &mut TestAppContext,
+    ) {
+        let (form, _, cx) = fixture(cx);
+        for (id, engine, port) in [
+            ("source-engine-postgres", DbEngine::PostgreSql, 5432),
+            ("source-engine-mongodb", DbEngine::MongoDb, 27017),
+            ("source-engine-redis", DbEngine::Redis, 6379),
+        ] {
+            click(cx, "source-driver");
+            click(cx, id);
+            assert_eq!(
+                form.read_with(cx, |f, app| f.profile(app).unwrap().engine),
+                engine
+            );
+            assert_eq!(
+                form.read_with(cx, |f, app| f.value("source-port", app)),
+                port.to_string()
+            );
+        }
+        click(cx, "source-tab-ssh");
+        click(cx, "source-ssh");
+        assert_eq!(form.read_with(cx, |f, _| f.transport), 0);
+        form.update(cx, |f, cx| {
+            f.set_ssh_configuration(SshProfile::default(), cx)
+        });
+        assert_eq!(form.read_with(cx, |f, _| f.transport), 0);
     }
 
     #[gpui::test]

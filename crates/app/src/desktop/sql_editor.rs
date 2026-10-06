@@ -17,6 +17,7 @@ pub(super) struct SqlEditor {
     pending_value: bool,
     pub(super) soft_wrap: bool,
     edit_revision: u64,
+    language: &'static str,
     pub(super) validation_error: Option<String>,
 }
 
@@ -33,10 +34,33 @@ impl SqlEditor {
             pending_value: false,
             soft_wrap: false,
             edit_revision: 0,
+            language: "sql",
             validation_error: oversized.then(limit_message),
         }
     }
 
+    pub(super) fn set_engine(
+        &mut self,
+        engine: dalan_drivers::DbEngine,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = if matches!(
+            engine,
+            dalan_drivers::DbEngine::MongoDb | dalan_drivers::DbEngine::Redis
+        ) {
+            "json"
+        } else {
+            "sql"
+        };
+        if self.language != language {
+            self.language = language;
+            if let Some(state) = &self.state {
+                state.update(cx, |s, cx| s.set_highlighter(language, cx));
+            }
+            cx.notify();
+        }
+    }
     pub(super) fn edit_revision(&self) -> u64 {
         self.edit_revision
     }
@@ -91,7 +115,7 @@ impl SqlEditor {
             let state = cx.new(|cx| {
                 EditorState::new(window, cx)
                     .default_value(self.content.clone())
-                    .language("sql")
+                    .language(self.language)
                     .soft_wrap(self.soft_wrap)
             });
             self.focus_handle = state.read(cx).focus_handle(cx);

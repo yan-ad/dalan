@@ -417,6 +417,20 @@ impl SourceProfile {
             );
         }
         self.connection_target()?;
+        if self.engine == DbEngine::Redis
+            && let Some(db) = &self.database
+        {
+            ensure!(
+                db.parse::<u16>().is_ok(),
+                "Redis database must be a numeric ID from 0 through 65535"
+            );
+        }
+        if self.engine == DbEngine::MongoDb {
+            ensure!(
+                self.tls != TlsMode::VerifyCa,
+                "MongoDB cannot verify CA without hostname verification with this native TLS backend; select Verify Identity"
+            );
+        }
         if matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) {
             ensure!(
                 matches!(self.transport, Transport::Direct),
@@ -425,7 +439,10 @@ impl SourceProfile {
         }
         if let ConnectionMode::UrlOnly { url } = &self.endpoint {
             ensure!(
-                !url.starts_with("rediss://") || self.tls != TlsMode::Disabled,
+                !url.strip_prefix("jdbc:")
+                    .unwrap_or(url)
+                    .starts_with("rediss://")
+                    || self.tls != TlsMode::Disabled,
                 "rediss:// requires TLS enabled"
             );
         }
@@ -507,6 +524,18 @@ impl SourceProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn jdbc_prefixed_rediss_never_permits_plaintext_auth() {
+        let p = SourceProfile {
+            engine: DbEngine::Redis,
+            endpoint: ConnectionMode::UrlOnly {
+                url: "jdbc:rediss://example.invalid/0".into(),
+            },
+            tls: TlsMode::Disabled,
+            ..SourceProfile::default()
+        };
+        assert!(p.validate().is_err());
+    }
     #[test]
     fn legacy_profile_defaults_and_round_trip() {
         let original = SourceProfile::default();

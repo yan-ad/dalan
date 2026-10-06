@@ -195,6 +195,11 @@ pub(super) struct SourceModel {
 }
 
 impl SourceModel {
+    pub fn selected_engine(&self) -> dalan_drivers::DbEngine {
+        self.selected_profile()
+            .map(|p| p.engine)
+            .unwrap_or_default()
+    }
     pub fn enable_workspace_routes(&mut self, _cx: &mut Context<Self>) {
         self.workspace_routing = true;
         if self.shared_passwords.is_none() {
@@ -329,7 +334,7 @@ impl SourceModel {
         if let Some(table) = &table
             && !tables
                 .iter()
-                .any(|t| &t.name == table && t.kind == "BASE TABLE")
+                .any(|t| &t.name == table && dalan_drivers::is_browsable_kind(&t.kind))
         {
             return Err(anyhow!("Table is no longer available."));
         }
@@ -446,12 +451,6 @@ impl SourceModel {
         let Some(profile) = self.profiles.iter().find(|p| p.id == id) else {
             return;
         };
-        if !matches!(
-            profile.engine,
-            dalan_drivers::DbEngine::MySql | dalan_drivers::DbEngine::MariaDb
-        ) {
-            return;
-        }
         let database = profile.resolved().ok().and_then(|p| p.database);
         self.invalidate();
         self.selected_source = Some(id);
@@ -544,17 +543,16 @@ impl SourceModel {
             cx.notify();
             return;
         }
-        // Reject unsafe/invalid SQL before accessing credentials or the network.
-        if let Err(error) = dalan_drivers::validate_read_only(&sql) {
+        let Some(profile) = self.selected_profile() else {
+            self.error = Some("Select a source to run a read-only request.".into());
+            cx.notify();
+            return;
+        };
+        if let Err(error) = dalan_drivers::validate_for_engine(profile.engine, &sql) {
             self.error = Some(error.to_string());
             cx.notify();
             return;
         }
-        let Some(profile) = self.selected_profile() else {
-            self.error = Some("Select a datasource to run a query.".into());
-            cx.notify();
-            return;
-        };
         let mut profile = match profile.resolved() {
             Ok(profile) => profile,
             Err(error) => {
@@ -670,7 +668,7 @@ impl SourceModel {
                         && catalog
                             .tables
                             .iter()
-                            .any(|table| (table.kind != "BASE TABLE") == *views)
+                            .any(|table| (!dalan_drivers::is_browsable_kind(&table.kind)) == *views)
                 })
         });
         self.tree.tables.retain(|(source, _), _| source != id);
@@ -1004,7 +1002,7 @@ impl SourceModel {
             .filter(|tables| {
                 tables
                     .iter()
-                    .any(|t| t.name == table && t.kind == "BASE TABLE")
+                    .any(|t| t.name == table && dalan_drivers::is_browsable_kind(&t.kind))
             })
             .cloned()
         else {
@@ -1801,6 +1799,14 @@ impl SourceModel {
             cx.notify();
             return;
         };
+        if !matches!(
+            self.selected_engine(),
+            dalan_drivers::DbEngine::MySql | dalan_drivers::DbEngine::MariaDb
+        ) {
+            self.error=Some("SQL WHERE/ORDER clauses are not supported by this native browse driver; use its read-only console instead.".into());
+            cx.notify();
+            return;
+        }
         if let Err(error) =
             dalan_drivers::validate_table_clauses(&where_clause, &order_by, &page.columns)
         {
@@ -2284,6 +2290,50 @@ mod tests {
         cx.run_until_parked();
         assert!(repo.load().unwrap()[0].database.is_none());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[gpui::test]
+    fn native_collection_and_key_routes_are_browsable_without_sql_table_identity(
+        cx: &mut TestAppContext,
+    ) {
+        for (engine, kind) in [
+            (dalan_drivers::DbEngine::MongoDb, "COLLECTION"),
+            (dalan_drivers::DbEngine::Redis, "STRING"),
+        ] {
+            let profile = SourceProfile {
+                engine,
+                database: Some(
+                    if engine == dalan_drivers::DbEngine::Redis {
+                        "0"
+                    } else {
+                        "db"
+                    }
+                    .into(),
+                ),
+                ..SourceProfile::default()
+            };
+            let id = profile.id.clone();
+            let db = profile.database.clone().unwrap();
+            let model = cx.new(|_| SourceModel::for_tests(vec![profile]));
+            model.update(cx, |m, _| {
+                m.tree.databases.insert(id.clone(), vec![db.clone()]);
+                m.tree.tables.insert(
+                    (id.clone(), db.clone()),
+                    vec![TableInfo {
+                        name: "object".into(),
+                        kind: kind.into(),
+                    }],
+                );
+            });
+            assert!(model.read_with(cx, |m, _| {
+                m.fork_for_workspace(&WorkspaceOpen::Table {
+                    source: id,
+                    database: db,
+                    table: "object".into(),
+                })
+                .is_ok()
+            }));
+        }
     }
 
     #[gpui::test]

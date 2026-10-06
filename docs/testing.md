@@ -1,5 +1,11 @@
 # Test strategy and release evidence
 
+## Native PostgreSQL, MongoDB and Redis adapters
+
+Native engine routing now exposes experimental PostgreSQL, MongoDB and Redis alongside MySQL/MariaDB; this is not JDBC support. New tests cover PostgreSQL quoted identifiers, typed cells/NUMERIC, startup framing and cancellation; MongoDB JSON read-command allowlist/BSON previews and actual official-driver handshake framing; Redis RESP2 frame bounds, authentication/SELECT/SCAN/read-value fixtures and cancellation. PostgreSQL syntax/function/write rejection and normalized `jdbc:rediss://` TLS enforcement have additional regressions. UI checks exercise driver/port selection, direct-only guards, collection/key routing, JSON console preservation and rejecting SQL before credentials/network access.
+
+Local validation passed **186 headless unit tests + one native-wire integration test, 215 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Test traffic uses owned loopback endpoints and synthetic values; no existing databases, local auth files or private keys were accessed. An actual PostgreSQL/MongoDB/Redis server authentication/query/TLS matrix remains unrun, and these modules are experimental rather than release-certified. PostgreSQL and MongoDB previews do not impose hard wire/batch allocation caps; Redis’s RESP2 decoder does. See [native driver support boundaries](native-drivers.md). Hosted CI remains skipped.
+
 ## Contextual tabs and Cmd-T
 
 Tabs display provider icons, Source@Database · console number / Table@Database labels, retained dirty/running indicators and full contextual tooltips. Saved source colors override stable source-UUID fallback colors; subtle inactive/active washes and a colored active underline preserve Kit text contrast. Native small tabs remain 24 px high, with 100–280 px width bounds/ellipsis, scrolling and independent close controls.

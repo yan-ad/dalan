@@ -200,13 +200,22 @@ impl ExplorerTree {
                     let count = tables.map(|items| {
                         items
                             .iter()
-                            .filter(|t| (t.kind != "BASE TABLE") == views)
+                            .filter(|t| (!dalan_drivers::is_browsable_kind(&t.kind)) == views)
                             .count()
                     });
                     rows.push(TreeRow {
                         status: self.status(&key),
                         key,
-                        label: if views { "Views" } else { "Tables" }.into(),
+                        label: if views {
+                            "Views"
+                        } else {
+                            match profile.engine {
+                                dalan_drivers::DbEngine::MongoDb => "Collections",
+                                dalan_drivers::DbEngine::Redis => "Keys",
+                                _ => "Tables",
+                            }
+                        }
+                        .into(),
                         depth: 2,
                         expandable: true,
                         expanded,
@@ -219,7 +228,7 @@ impl ExplorerTree {
                         for table in tables
                             .iter()
                             .take(1000)
-                            .filter(|t| (t.kind != "BASE TABLE") == views)
+                            .filter(|t| (!dalan_drivers::is_browsable_kind(&t.kind)) == views)
                         {
                             let key = TreeKey::Table {
                                 source: source.clone(),

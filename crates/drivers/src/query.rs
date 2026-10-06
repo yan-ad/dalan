@@ -17,7 +17,7 @@ use mysql_async::{
 use serde::{Deserialize, Serialize};
 use sqlparser::{
     ast::{BinaryOperator, Expr, Query, Select, SetExpr, Statement, TableFactor, Visit, Visitor},
-    dialect::MySqlDialect,
+    dialect::{MySqlDialect, PostgreSqlDialect},
     keywords::Keyword,
     parser::Parser,
     tokenizer::{Token, Tokenizer},
@@ -387,6 +387,49 @@ pub fn validate_read_only(sql: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_for_engine(engine: DbEngine, text: &str) -> Result<()> {
+    match engine {
+        DbEngine::MySql | DbEngine::MariaDb => validate_read_only(text),
+        DbEngine::PostgreSql => validate_postgres_read_only(text),
+        DbEngine::MongoDb => crate::mongo::validate_read_only(text),
+        DbEngine::Redis => crate::redis_driver::validate_read_only(text),
+    }
+}
+pub fn validate_postgres_read_only(sql: &str) -> Result<()> {
+    ensure!(
+        !sql.is_empty() && sql.len() <= SQL_CAP,
+        "SQL must contain 1 through 65536 bytes"
+    );
+    let dialect = PostgreSqlDialect {};
+    let tokens = Tokenizer::new(&dialect, sql)
+        .tokenize()
+        .map_err(|_| anyhow!("PostgreSQL query syntax is invalid"))?;
+    check_complexity(&tokens)?;
+    // Conservative function allowlist below plus read-only transaction provide
+    // defense in depth; use trusted objects and a least-privilege account.
+    let meaningful = tokens
+        .iter()
+        .filter(|t| !matches!(t, Token::Whitespace(_)))
+        .collect::<Vec<_>>();
+    let ends = meaningful
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| matches!(t, Token::SemiColon))
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    ensure!(
+        ends.is_empty() || ends == [meaningful.len() - 1],
+        "Provide exactly one read-only query"
+    );
+    let statements = Parser::parse_sql(&dialect, sql)
+        .map_err(|_| anyhow!("PostgreSQL query syntax is invalid"))?;
+    ensure!(statements.len() == 1, "Provide exactly one read-only query");
+    if let ControlFlow::Break(reason) = statements[0].visit(&mut ReadOnly) {
+        return Err(anyhow!(reason));
+    }
+    Ok(())
+}
+
 /// Native prepared statement execution, capped without adding LIMIT or paging
 /// clauses to user SQL. `has_more` means omitted rows; `next_offset` is always
 /// None, because arbitrary query results cannot safely be paged by rewriting.
@@ -395,6 +438,18 @@ pub async fn execute_read_only(
     password: &str,
     request: &QueryRequest,
 ) -> Result<QueryResult> {
+    match profile.engine {
+        DbEngine::PostgreSql => {
+            return crate::postgres::execute_read_only(profile, password, request).await;
+        }
+        DbEngine::MongoDb => {
+            return crate::mongo::execute_read_only(profile, password, request).await;
+        }
+        DbEngine::Redis => {
+            return crate::redis_driver::execute_read_only(profile, password, request).await;
+        }
+        _ => {}
+    }
     ensure!(
         (1..=200).contains(&request.limit),
         "Query limit must be 1 through 200"
@@ -510,6 +565,33 @@ fn data_type(t: ColumnType) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn postgres_native_dialect_is_read_only_and_bounded_before_connection() {
+        for sql in [
+            "SELECT 1::integer",
+            "SELECT 'a;b'::text",
+            "SELECT $text$hello;$text$",
+            "WITH x AS (SELECT 1) SELECT * FROM x",
+            "SELECT \"column name\" FROM \"public\".\"items\"",
+        ] {
+            assert!(validate_postgres_read_only(sql).is_ok(), "{sql}");
+        }
+        for sql in [
+            "DELETE FROM t",
+            "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x",
+            "SELECT 1; SELECT 2",
+            "SELECT pg_sleep(1)",
+            "SELECT pg_catalog.pg_read_file('x')",
+            "SELECT * FROM t FOR UPDATE",
+            "SELECT 1 INTO t",
+        ] {
+            assert!(validate_postgres_read_only(sql).is_err(), "{sql}");
+        }
+        assert!(validate_for_engine(DbEngine::MongoDb, "SELECT 1").is_err());
+        assert!(validate_for_engine(DbEngine::Redis, "SELECT 1").is_err());
+        assert!(validate_for_engine(DbEngine::MongoDb, r#"{"find":"items","filter":{}}"#).is_ok());
+        assert!(validate_for_engine(DbEngine::Redis, r#"["GET","key"]"#).is_ok());
+    }
     #[test]
     fn select_cte_union_and_literals() {
         for sql in [

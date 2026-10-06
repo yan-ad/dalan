@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 dalan-core.workspace = true
 mysql_async = { version = "=0.37.1", default-features = false, features = ["default-rustls-ring"] }
+mongodb = { version = "=3.7.0", default-features = false, features = ["compat-3-0-0", "rustls-tls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "process", "sync", "macros"] }
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -17,6 +18,11 @@ percent-encoding = "2"
 sqlparser = { version = "=0.62.0", features = ["visitor"] }
 native-tls = "0.2"
 tokio-native-tls = "0.3"
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
+postgres-native-tls = "0.5"
+futures-util = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"

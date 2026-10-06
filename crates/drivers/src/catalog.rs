@@ -4,7 +4,7 @@
 //! patterns (Apache-2.0), commit 38ce7b5dd25db0ec058090ffbb4ab0b707a9bfad:
 //! `crates/dbx-driver-agent/src/database_capabilities.rs` and
 //! `crates/dbx-types/src/database_manifest.rs`.
-//! Dalan keeps only its four existing engines, with connection capabilities based
+//! Dalan keeps its five native engines, with connection capabilities based
 //! on its own source/executor implementation. No DBX driver list, agent runtime,
 //! pool policy, generated manifest, or plugin infrastructure is imported.
 
@@ -120,12 +120,19 @@ mod tests {
             match driver.status {
                 DriverStatus::Planned => assert_eq!(driver.capabilities, None),
                 DriverStatus::Experimental => {
-                    assert_eq!(driver.dialect, Some("mysql"));
+                    assert_eq!(
+                        driver.dialect,
+                        match driver.engine {
+                            Engine::PostgreSql => Some("postgresql"),
+                            Engine::MySql | Engine::MariaDb => Some("mysql"),
+                            _ => None,
+                        }
+                    );
                     assert_eq!(
                         driver.capabilities,
                         Some(ConnectionCapabilities {
                             optional_database: true,
-                            unix_socket: true,
+                            unix_socket: !matches!(driver.engine, Engine::Redis | Engine::MongoDb),
                         })
                     );
                 }
@@ -165,6 +172,7 @@ mod tests {
         }
         let mut entries = PLANNED_DRIVERS;
         entries[0].capabilities = entries[1].capabilities;
+        entries[0].status = DriverStatus::Planned;
         assert_eq!(
             validate_driver_catalog(&entries),
             Err(CatalogError::PlannedCapabilities("postgresql"))

@@ -109,17 +109,29 @@ fn build_search_projection(tree: &ExplorerTree, profiles: &[SourceProfile]) -> V
                         database: database.clone(),
                         views,
                     },
-                    if views { "Views" } else { "Tables" }.into(),
+                    if views {
+                        "Views"
+                    } else {
+                        match profile.engine {
+                            dalan_drivers::DbEngine::MongoDb => "Collections",
+                            dalan_drivers::DbEngine::Redis => "Keys",
+                            _ => "Tables",
+                        }
+                    }
+                    .into(),
                     2,
                     tables.map(|items| {
                         items
                             .iter()
-                            .filter(|t| (t.kind != "BASE TABLE") == views)
+                            .filter(|t| (!dalan_drivers::is_browsable_kind(&t.kind)) == views)
                             .count()
                     }),
                 );
                 if let Some(tables) = tables {
-                    for table in tables.iter().filter(|t| (t.kind != "BASE TABLE") == views) {
+                    for table in tables
+                        .iter()
+                        .filter(|t| (!dalan_drivers::is_browsable_kind(&t.kind)) == views)
+                    {
                         push(
                             TreeKey::Table {
                                 source: source.clone(),
@@ -1219,7 +1231,12 @@ impl Render for SourceBrowser {
                     ),
             );
         }
-        if selected_table {
+        if selected_table
+            && matches!(
+                self.model.read(cx).selected_engine(),
+                dalan_drivers::DbEngine::MySql | dalan_drivers::DbEngine::MariaDb
+            )
+        {
             body = body.child(
                 div()
                     .id("table-conditions-toolbar")

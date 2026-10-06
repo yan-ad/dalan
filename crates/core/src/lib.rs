@@ -6,6 +6,7 @@ pub enum Engine {
     MySql,
     MariaDb,
     Redis,
+    MongoDb,
 }
 
 impl Engine {
@@ -15,6 +16,7 @@ impl Engine {
             Self::MySql => "MySQL",
             Self::MariaDb => "MariaDB",
             Self::Redis => "Redis",
+            Self::MongoDb => "MongoDB",
         }
     }
 
@@ -23,6 +25,7 @@ impl Engine {
             Self::PostgreSql => 5432,
             Self::MySql | Self::MariaDb => 3306,
             Self::Redis => 6379,
+            Self::MongoDb => 27017,
         }
     }
 }
