@@ -360,7 +360,9 @@ impl SourceModel {
         let removed = new.is_none();
         let invalid = match (&old, new) {
             (Some(old), Some(new)) => {
-                connection_identity(old).ok() != connection_identity(new).ok()
+                let mut old_identity = old.clone();
+                old_identity.database = new.database.clone();
+                connection_identity(&old_identity).ok() != connection_identity(new).ok()
                     || old.save_password != new.save_password
                     || old.options != new.options
             }
@@ -430,6 +432,107 @@ impl SourceModel {
         self.query_elapsed_ms = None;
         self.query_warnings.clear();
         self.query_dirty = true;
+        cx.notify();
+    }
+    pub fn select_console_source(
+        &mut self,
+        id: String,
+        databases: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.query_console || self.busy || self.saving {
+            return;
+        }
+        let Some(profile) = self.profiles.iter().find(|p| p.id == id) else {
+            return;
+        };
+        if !matches!(
+            profile.engine,
+            dalan_drivers::DbEngine::MySql | dalan_drivers::DbEngine::MariaDb
+        ) {
+            return;
+        }
+        let database = profile.resolved().ok().and_then(|p| p.database);
+        self.invalidate();
+        self.selected_source = Some(id);
+        self.selected_database = database;
+        self.databases = databases;
+        self.workspace_invalidated = false;
+        self.page = None;
+        self.result_evicted = false;
+        self.query_submitted_sql = None;
+        self.query_elapsed_ms = None;
+        self.query_warnings.clear();
+        self.error = None;
+        self.query_dirty = true;
+        cx.notify();
+    }
+    /// Persist the default only; existing consoles retain their execution database.
+    pub fn set_source_default_database(
+        &mut self,
+        id: String,
+        database: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving || self.form_open || !self.storage_ready {
+            return;
+        }
+        let Some(mut profile) = self.profiles.iter().find(|p| p.id == id).cloned() else {
+            return;
+        };
+        if database
+            .as_ref()
+            .is_some_and(|db| db.is_empty() || db.len() > 256)
+        {
+            return;
+        }
+        if matches!(
+            profile.endpoint,
+            dalan_drivers::ConnectionMode::UrlOnly { .. }
+        ) {
+            self.metadata_notice=Some("URL-only connections own their database in the URL; edit source settings to change its default.".into());
+            cx.notify();
+            return;
+        }
+        profile.database = database;
+        if profile.validate().is_err() {
+            self.metadata_notice = Some("Invalid default database.".into());
+            cx.notify();
+            return;
+        }
+        let Some(repo) = self.repository.clone() else {
+            self.metadata_notice =
+                Some("Source settings storage is unavailable; default was not changed.".into());
+            cx.notify();
+            return;
+        };
+        let mut profiles = self.profiles.clone();
+        if let Some(p) = profiles.iter_mut().find(|p| p.id == id) {
+            *p = profile;
+        }
+        self.saving = true;
+        let task = cx
+            .background_executor()
+            .spawn(async move { repo.save(&profiles).map(|()| profiles) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |m, cx| {
+                m.saving = false;
+                match result {
+                    Ok(profiles) => {
+                        m.profiles = profiles;
+                        m.metadata_notice = None;
+                    }
+                    Err(_) => {
+                        m.metadata_notice = Some(
+                            "Could not save default database; existing settings retained.".into(),
+                        )
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
     pub fn run_query(&mut self, sql: String, cx: &mut Context<Self>) {
@@ -2143,6 +2246,44 @@ mod tests {
             assert!(model.query_warnings.is_empty());
             assert!(model.query_dirty);
         });
+    }
+
+    #[gpui::test]
+    fn toolbar_default_persists_without_auth_or_invalidating_explicit_targets(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = std::env::temp_dir().join(format!("dalan-default-db-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let repo = SourceRepository::new(std::fs::canonicalize(&dir).unwrap().join("sources.json"));
+        let profile = SourceProfile::default();
+        let id = profile.id.clone();
+        repo.save(std::slice::from_ref(&profile)).unwrap();
+        let root = cx.new(|_| SourceModel::for_tests(vec![profile.clone()]));
+        root.update(cx, |m, _| m.repository = Some(repo.clone()));
+        root.update(cx, |m, cx| {
+            m.set_source_default_database(id.clone(), Some("analytics".into()), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            repo.load().unwrap()[0].database.as_deref(),
+            Some("analytics")
+        );
+        let tab = cx.new(|_| SourceModel::for_tests(vec![profile]));
+        tab.update(cx, |m, cx| {
+            m.selected_source = Some(id.clone());
+            m.selected_database = Some("existing_tab".into());
+            m.query_sql = "SELECT 1".into();
+            m.sync_workspace_sources(root.read(cx).profiles.clone(), cx);
+        });
+        tab.read_with(cx, |m, _| {
+            assert!(!m.workspace_invalidated);
+            assert_eq!(m.selected_database.as_deref(), Some("existing_tab"));
+            assert_eq!(m.query_sql, "SELECT 1");
+        });
+        root.update(cx, |m, cx| m.set_source_default_database(id, None, cx));
+        cx.run_until_parked();
+        assert!(repo.load().unwrap()[0].database.is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[gpui::test]

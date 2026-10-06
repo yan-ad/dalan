@@ -119,6 +119,25 @@ impl WorkspaceTabs {
         self.active = Some(id.clone());
         Ok(TabOpen { id, created: true })
     }
+    pub fn update_console_target(&mut self, id: &str, source: String, database: Option<String>) {
+        if let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == id && matches!(t.key, TabKey::Console(_)))
+        {
+            tab.source = source.clone();
+            tab.database = database.clone();
+            tab.kind = WorkspaceOpen::Console {
+                source: source.clone(),
+                database: database.clone(),
+            };
+            tab.tooltip = format!(
+                "{source} / {} / {}",
+                database.as_deref().unwrap_or("No database selected"),
+                tab.label
+            );
+        }
+    }
     fn check_capacity(&self) -> Result<()> {
         if self.tabs.len() >= MAX_WORKSPACE_TABS {
             bail!("At most 32 tabs can be open. Close a tab first.")

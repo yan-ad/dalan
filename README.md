@@ -52,7 +52,7 @@ Implement one tested database workflow at a time. Preserve credential safety, lo
 - [Roadmap](ROADMAP.md): drivers, plugins, and ACP AI, now through future.
 - [Source management](docs/source-management.md), [table browser](docs/table-browser.md), and [query consoles](docs/query-consoles.md).
 - [Architecture](docs/architecture.md), [security](docs/security.md), and [feature checklist](docs/feature-checklist.md).
-- [DBX reuse assessment](docs/dbx-reuse.md) and [design direction](DESIGN.md).
+- [DBX reuse assessment](docs/dbx-reuse.md), [staged DBX toolbar parity](docs/dbx-toolbar-parity.md), and [design direction](DESIGN.md).
 
 ## License
 

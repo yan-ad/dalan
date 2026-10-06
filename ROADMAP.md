@@ -63,6 +63,12 @@ Completed starting point: attributed static catalog, distinct MySQL/MariaDB iden
 
 **Exit:** reproducible native performance evidence, keyboard/focus and error-state tests, lossless-value regressions, and isolated-tab cancellation/recovery. No unused toolbar placeholders.
 
+### Staged DBX toolbar parity
+
+Full DBX parity is approved **in stages**, not claimed complete. [The detailed parity plan](docs/dbx-toolbar-parity.md) records implemented Stage 1 safe toolbar/editor tools and remaining gaps: Run/Stop plus retained Cancel, whole-document token-gap Format/Compress, Kit wrap/Unfold, bounded UTF-8 SQL open/new-file save, quoted clipboard IN lists, source/database targeting and persisted source-default controls. Existing loaded CSV export remains an extra. No Fold All placeholder is shipped; compact More uses an 800 px tier, not DBX measured overflow/hysteresis.
+
+Next parity stages are **2: results and explain**, **3: archives/script library, diagnostics and folding/LSP**, **4: multi-database execution and cancellation**, and **5: transaction sessions, permissions and confirmation/rollback**. They depend on explicit capability, execution-policy and session-ownership gates; the current console remains restricted read-only. Stage 1 is independently implemented from conceptual upstream references, not copied toolbar code/assets, and is not 1:1 visual/logic parity. Final local validation totals await primary confirmation; hosted CI is skipped.
+
 ### N3. Define internal driver contract v1
 
 A proposed Dalan-owned contract separates:

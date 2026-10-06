@@ -335,6 +335,18 @@ impl SourceWorkspace {
 }
 impl Render for SourceWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        for (id, view) in &self.views {
+            let model = view.model.read(cx);
+            if model.query_console
+                && let Some(source) = &model.selected_source
+            {
+                self.tabs.update_console_target(
+                    id,
+                    source.clone(),
+                    model.selected_database.clone(),
+                );
+            }
+        }
         let active = self.tabs.active().map(str::to_owned);
         if self.pending_confirmation_focus {
             // KitButton owns its focus handle in keyed window state. Resolve

@@ -30,15 +30,27 @@ The database chooser uses actual Kit `ComboboxState<SearchableVec<DbChoice>>` wi
 
 The thin SQL adapter uses Kit's rope-backed EditorState for native selection, clipboard, IME, scrolling, undo/redo and SQL Tree-sitter highlighting. Each tab retains its draft in memory. The application SQL policy remains **64 KiB UTF-8**: oversized programmatic loads are rejected; interactive edit/IME/paste limit enforcement is a current regression gate, not a claimed atomic rejection guarantee. Native IME/accessibility still needs real-session verification.
 
-Run submits the **selected text**, or the **whole draft if there is no selection**. It does not detect a statement under the cursor, split scripts, run multiple statements or automatically execute on edit. Editing a draft neither executes nor cancels an existing run. SQL highlighting is implemented; database-aware completion, persistent history, saved script/file workflows and a generic code viewer are not. Grammar support does not implement PostgreSQL/MongoDB/Redis executors or broaden the MySQL/MariaDB read-only policy.
+Run submits the **selected text**, or the **whole draft if there is no selection**. It does not detect a statement under the cursor, split scripts, run multiple statements or automatically execute on edit. Editing a draft neither executes nor cancels an existing run. SQL highlighting is implemented; database-aware completion, persistent history, a persistent script library and a generic code viewer are not. Explicit bounded SQL file open/new-file save is available as described below. Grammar support does not implement PostgreSQL/MongoDB/Redis executors or broaden the MySQL/MariaDB read-only policy.
 
 Run immediately refocuses the actual Kit editor so typing can continue; asynchronous completion does not refocus and steal a deliberately focused result. Regressions exercise actual widget rendering and the native UTF-16 selection interface, not a substitute editor or unsupported text-test API. Preview is rebuild-and-restart, not hot reload: drafts, results and session-only passwords are lost, and server reads may continue until their deadline without a cancellation acknowledgement. See [development caveats](development.md#bacon-live-preview).
+
+## DBX-style safe toolbar tools
+
+The [staged DBX parity plan](dbx-toolbar-parity.md) distinguishes implemented Stage 1 from full future parity. The primary **Run/Stop** control switches with busy state; separate **Cancel** and Cmd-Period are retained. Whole-document **Format** adjusts existing token gaps and recognized keyword case; its per-console uppercase/lowercase preference affects formatting only. **Compress** preserves original token adjacency, comments, literal text and newline-bearing gaps instead of blindly deleting whitespace. Unsafe/unlexable input remains unchanged. These are conservative tools, not a complete dialect-aware formatter.
+
+Kit **Soft Wrap** is remembered per console in memory; **Unfold All** is available. No public Kit Fold All API is integrated, so no Fold All button/placeholder is advertised. **Paste as IN condition** converts clipboard newline/tab cells into escaped quoted strings, preserving spaces/empty cells within the SQL size budget; it inserts, never executes. Editor transformations use Kit undo and preserve active caret/focus behavior.
+
+**Open SQL** accepts one UTF-8 file up to 64 KiB, strips an optional UTF-8 BOM and normalizes CRLF/CR outside literals. Literal carriage returns that Kit cannot preserve are refused. A draft changed during the picker/read is not replaced. **Save SQL** captures the draft to a new file with private Unix creation modes and no overwrite/symlink paths; it is not a SQL library, overwrite workflow or automatic recovery.
+
+The right-side source picker retargets the retained console rather than resetting its tab identity/draft; tab source/database descriptors follow the model on each render. The searchable database chooser remains cached-only. **Clear Database** changes only console scope. **Set Default** persists the selected source's default through root profile storage without auth access or resetting the console target (selecting the existing default toggles it off). URL-only sources can select their effective database, but Set Default is refused: edit the URL in connection settings. Target/tool changes are guarded while busy.
+
+At 800 px available toolbar width, safe tools move into **More** and source selection becomes compact. This tiered layout is not DBX's exact measured overflow/hysteresis. **Export loaded CSV** retains its existing contract as an extra action. New result tabs, explain/analyze, archives, multi-database execution, transaction controls, LSP/diagnostic hints and script library remain unimplemented.
 
 ## Close and discard
 
 Closing an active tab selects its left neighbor, or the first remaining tab if there is no left neighbor. Closing an inactive tab does not change active selection. Closing a tab cancels only that tab's owned requests; late completions cannot install results into another tab.
 
-Any **nonempty console draft is unsaved**, even if it has already run successfully. Close x/Cmd-W asks **Keep Open** or **Discard**. Keep Open has default focus; both choices support mouse and keyboard Enter/Space activation. An empty console closes without draft confirmation. No SQL files are written.
+Any **nonempty console draft is unsaved**, even if it has already run successfully. Close x/Cmd-W asks **Keep Open** or **Discard**. Keep Open has default focus; both choices support mouse and keyboard Enter/Space activation. An empty console closes without draft confirmation. Closing never writes a SQL file automatically; explicit Save SQL creates a new file and does not mark the console draft as persisted.
 
 Cmd-W closes an active workspace tab. With no workspace tab, Cmd-W closes the window. The native OS window-close control is unchanged; this tab confirmation is not a promise of restored drafts or a new native-window shutdown guard. Closing the application loses in-memory SQL/results.
 
@@ -110,7 +122,7 @@ Use the existing **Export loaded CSV** action only for fresh, nonbusy, nonstale,
 
 Use a **SELECT-only server role** and **trusted schemas/views/server objects**. The AST classifier cannot analyze view definitions or functions invoked within views. A read-only transaction plus client allowlist is defense in depth, not an absolute sandbox for a broadly privileged account or untrusted server objects.
 
-Profiles remain password-free version 1 JSON; opt-in macOS Keychain and the shared session credential map are unchanged. SQLite caches metadata names/kinds only. Tabs, SQL drafts, results and history are **not persisted**, and no telemetry or automatic ACP sharing is added. SQL clipboard operations are intentional and are distinct from password-input copy/cut suppression. Connection-affecting edits/removal invalidate affected tabs only; cosmetic name/color changes preserve their models/results and update labels.
+Profiles remain password-free version 1 JSON; passwords are session-only unless SaveForever explicitly opts into separate local unencrypted `dalan.auth` storage. The current backend does not use Keychain (see [security](security.md#credentials-and-persistence)). SQLite caches metadata names/kinds only. Tabs, SQL drafts, results and history are **not persisted**, and no telemetry or automatic ACP sharing is added. SQL clipboard operations are intentional and are distinct from password-input copy/cut suppression. Connection-affecting edits/removal invalidate affected tabs only; cosmetic name/color changes preserve their models/results and update labels.
 
 ## Evidence and remaining scope
 

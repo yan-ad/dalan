@@ -1,5 +1,13 @@
 # Test strategy and release evidence
 
+## DBX toolbar Stage 1 validation
+
+[Stage 1 toolbar behavior](dbx-toolbar-parity.md) is implemented. **Local validation passed: 165 headless unit tests + one native-wire integration test, 211 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy, and signed debug bundle/plist/signature checks. Hosted CI remains deliberately skipped; no private profiles, auth files or live databases were required. Historical totals below remain evidence for their recorded revisions, not this change.
+
+Regression gates cover conservative whole-document token-gap formatting and keyword-case scope; compression preserving adjacency/comments/newline semantics; escaped newline/tab clipboard cells; UTF-8/BOM/64 KiB file limits, literal-CR refusal, private new-file publication, no overwrite/symlink paths and changed-draft picker guards; Kit undo/active caret retention; wrap/Unfold without fake Fold All; Run/Stop plus retained Cancel; source/tab descriptor retargeting; cached searchable database choices/Clear Database; root profile default persistence without auth and URL-only refusal; and full/compact 800 px More routing. Export loaded CSV keeps its existing eligibility and snapshot checks.
+
+Only synthetic, credential-free fixtures are appropriate. No private credentials/profiles/row contents, commit/push or current CI result are claimed. Hosted CI is explicitly skipped. Native picker interaction, visual/IME/VoiceOver and measured responsive performance remain separate acceptance gates; simulated geometry does not establish exact DBX overflow/hysteresis or full 1:1 parity. Stages 2–5 need their own execution-policy, session-ownership and evidence gates before shipping.
+
 ## Flush workspace bottom edge
 
 Removed the empty 28 px shell status strip left behind by the ACP trigger relocation. Regression geometry requires explorer, main workspace and visible ACP to reach the 800 px window bottom; main content also reaches the edge with explorer hidden and at compact 720 × 480 size. Connector/appearance feedback is an explicit dismissible absolute overlay whose presence/dismissal never changes workspace bounds. Existing result footers are not removed. Local validation passed: **151 headless unit tests + one native-wire integration test, 203 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped. Geometry is simulated, not a native visual certification.

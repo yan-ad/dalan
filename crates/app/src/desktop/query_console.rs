@@ -14,8 +14,9 @@ use super::{
 
 use gpui::component::{
     ActiveTheme, Disableable, Icon, IndexPath, Sizable,
-    button::Button as KitButton,
+    button::{Button as KitButton, ButtonVariants},
     combobox::{Combobox, ComboboxEvent, ComboboxState},
+    menu::{DropdownMenu, PopupMenuItem},
     searchable_list::{SearchableListItem, SearchableVec},
 };
 
@@ -53,12 +54,26 @@ impl SearchableListItem for DbChoice {
 
 type DatabaseComboState = ComboboxState<SearchableVec<DbChoice>>;
 
-actions!(query_console, [RunQuery, CancelQuery]);
+actions!(
+    query_console,
+    [
+        RunQuery,
+        CancelQuery,
+        FormatSql,
+        SaveSql,
+        OpenSql,
+        PasteInCondition
+    ]
+);
 
 pub(super) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-enter", RunQuery, Some("QueryConsole")),
         KeyBinding::new("cmd-.", CancelQuery, Some("QueryConsole")),
+        KeyBinding::new("cmd-alt-l", FormatSql, Some("QueryConsole")),
+        KeyBinding::new("cmd-s", SaveSql, Some("QueryConsole")),
+        KeyBinding::new("cmd-o", OpenSql, Some("QueryConsole")),
+        KeyBinding::new("cmd-shift-v", PasteInCondition, Some("QueryConsole")),
     ]);
 }
 
@@ -71,7 +86,15 @@ pub(super) struct QueryConsole {
     databases: Vec<Option<String>>,
     database_combo: Option<Entity<DatabaseComboState>>,
     database_items_changed: bool,
+    uppercase_keywords: bool,
+    file_busy: bool,
+    tool_feedback: Option<String>,
     _subscriptions: Vec<Subscription>,
+}
+
+enum EitherFilePicker {
+    Save(futures::channel::oneshot::Receiver<anyhow::Result<Option<std::path::PathBuf>>>),
+    Open(futures::channel::oneshot::Receiver<anyhow::Result<Option<Vec<std::path::PathBuf>>>>),
 }
 
 impl QueryConsole {
@@ -124,6 +147,9 @@ impl QueryConsole {
             databases: Vec::new(),
             database_combo: None,
             database_items_changed: false,
+            uppercase_keywords: true,
+            file_busy: false,
+            tool_feedback: None,
             _subscriptions: subscriptions,
         };
         this.refresh_databases(cx);
@@ -148,9 +174,9 @@ impl QueryConsole {
             .profiles
             .iter()
             .find(|profile| Some(&profile.id) == model.selected_source.as_ref())
-            && let Some(database) = &profile.database
+            && let Some(database) = profile.resolved().ok().and_then(|p| p.database)
         {
-            names.push(database.clone());
+            names.push(database);
         }
         // The current context remains visible even if metadata was refreshed
         // while a query is running. No connection/discovery is initiated here.
@@ -241,8 +267,296 @@ impl QueryConsole {
         state
     }
 
+    fn tool(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.read(cx).busy
+            || self.model.read(cx).saving
+            || self.catalog.read(cx).saving
+            || self.file_busy
+        {
+            return;
+        }
+        self.tool_feedback = None;
+        match id {
+            "query-format" => {
+                let uppercase = self.uppercase_keywords;
+                self.editor.update(cx, |e, cx| {
+                    e.apply_tool(
+                        dalan_app::sql_tools::SqlTransform::Format { uppercase },
+                        window,
+                        cx,
+                    )
+                });
+            }
+            "query-compress" => self.editor.update(cx, |e, cx| {
+                e.apply_tool(dalan_app::sql_tools::SqlTransform::Compress, window, cx)
+            }),
+            "query-keyword-case" => self.uppercase_keywords = !self.uppercase_keywords,
+            "query-wrap" => {
+                let wrap = !self.editor.read(cx).soft_wrap;
+                self.editor
+                    .update(cx, |e, cx| e.set_soft_wrap(wrap, window, cx));
+            }
+            "query-unfold" => self.editor.update(cx, |e, cx| e.unfold_all(window, cx)),
+            "query-paste-in" => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                    match dalan_app::sql_tools::in_condition(&text) {
+                        Ok(text) => self
+                            .editor
+                            .update(cx, |e, cx| e.insert_text(text, window, cx)),
+                        Err(_) => {
+                            self.tool_feedback = Some(
+                                "Clipboard cannot be converted to a bounded SQL IN list.".into(),
+                            )
+                        }
+                    }
+                }
+            }
+            "query-open-sql" => self.sql_file(false, window, cx),
+            "query-save-sql" => self.sql_file(true, window, cx),
+            "query-clear-database" => self.choose_database(None, window, cx),
+            "query-set-default" => {
+                let model = self.model.read(cx);
+                let id = model.selected_source.clone();
+                let database = model.selected_database.clone();
+                if let (Some(id), Some(database)) = (id, database) {
+                    let is_default = self
+                        .catalog
+                        .read(cx)
+                        .profiles
+                        .iter()
+                        .find(|p| p.id == id)
+                        .is_some_and(|p| p.database.as_ref() == Some(&database));
+                    self.catalog.update(cx, |m, cx| {
+                        m.set_source_default_database(
+                            id,
+                            if is_default { None } else { Some(database) },
+                            cx,
+                        )
+                    });
+                }
+            }
+            _ => {}
+        }
+        if !matches!(
+            id,
+            "query-open-sql" | "query-save-sql" | "query-set-default"
+        ) {
+            self.focus(window, cx);
+        }
+        cx.notify();
+    }
+    fn sql_file(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let sql = self.editor.read(cx).value();
+        let before = sql.clone();
+        let revision = self.editor.read(cx).edit_revision();
+        self.file_busy = true;
+        let picker = if save {
+            let home = std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| ".".into());
+            EitherFilePicker::Save(cx.prompt_for_new_path(&home, Some("query.sql")))
+        } else {
+            EitherFilePicker::Open(cx.prompt_for_paths(gpui::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: Some("Open SQL file (UTF-8, at most 64 KiB)".into()),
+            }))
+        };
+        cx.spawn_in(window,async move|this,cx|{
+            let path=match picker {EitherFilePicker::Save(picker)=>match picker.await{Ok(Ok(path))=>path,_=>None},EitherFilePicker::Open(picker)=>match picker.await{Ok(Ok(Some(mut paths)))if paths.len()==1=>paths.pop(),_=>None}};
+            let Some(path)=path else {let _=this.update_in(cx,|this,_,cx|{this.file_busy=false;this.tool_feedback=Some("SQL file action cancelled.".into());cx.notify();});return;};
+            let task=cx.background_executor().spawn(async move {if save{dalan_app::sql_tools::write_sql(&path,&sql).map(|()|None)}else{dalan_app::sql_tools::read_sql(&path).map(Some)}});
+            let result=task.await;
+            let _=this.update_in(cx,|this,window,cx|{this.file_busy=false;match result {
+                Ok(Some(text))=>{if this.editor.read(cx).value()!=before||this.editor.read(cx).edit_revision()!=revision{this.tool_feedback=Some("SQL file was not loaded because the draft changed; open it again.".into());}else{this.editor.update(cx,|e,cx|e.replace_all_undoable(text,window,cx));this.tool_feedback=Some("SQL file loaded. Undo restores the prior draft.".into());}},
+                Ok(None)=>this.tool_feedback=Some("SQL saved to a new file. Existing files are never overwritten.".into()),
+                Err(_)=>this.tool_feedback=Some("SQL file action failed: check UTF-8/64 KiB bounds, access permissions and a new non-symlink destination.".into()),
+            }cx.notify();});
+        }).detach();
+        cx.notify();
+    }
+    fn source_control(&self, width: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.model.read(cx).selected_source.clone();
+        let profile = self
+            .catalog
+            .read(cx)
+            .profiles
+            .iter()
+            .find(|p| Some(&p.id) == current.as_ref());
+        let label = profile
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "Select source".into());
+        let profiles = self.catalog.read(cx).profiles.clone();
+        let entity = cx.entity().downgrade();
+        let disabled = self.model.read(cx).busy || self.catalog.read(cx).saving || self.file_busy;
+        KitButton::new("query-source")
+            .debug_selector(|| "query-source".into())
+            .label(label.clone())
+            .tooltip(label)
+            .small()
+            .ghost()
+            .dropdown_caret(true)
+            .disabled(disabled)
+            .max_w(px(width))
+            .dropdown_menu(move |mut menu, _, _| {
+                for (index, p) in profiles.iter().enumerate() {
+                    let p = p.clone();
+                    let entity = entity.clone();
+                    let supported = matches!(
+                        p.engine,
+                        dalan_drivers::DbEngine::MySql | dalan_drivers::DbEngine::MariaDb
+                    );
+                    let selected = Some(&p.id) == current.as_ref();
+                    let id = p.id.clone();
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            div()
+                                .debug_selector(move || format!("query-source-choice-{index}"))
+                                .flex()
+                                .gap_2()
+                                .child(super::icons::provider_icon(p.engine))
+                                .child(p.name.clone())
+                        })
+                        .checked(selected)
+                        .disabled(disabled || !supported)
+                        .on_click(move |_, window, cx| {
+                            let _ = entity.update(cx, |this, cx| {
+                                if this.model.read(cx).busy
+                                    || this.model.read(cx).saving
+                                    || this.catalog.read(cx).saving
+                                    || this.file_busy
+                                {
+                                    return;
+                                }
+                                let names = this
+                                    .catalog
+                                    .read(cx)
+                                    .tree
+                                    .databases
+                                    .get(&id)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                this.model.update(cx, |m, cx| {
+                                    m.select_console_source(id.clone(), names, cx)
+                                });
+                                this.refresh_databases(cx);
+                                this.focus(window, cx);
+                                cx.notify();
+                            });
+                        }),
+                    );
+                }
+                menu
+            })
+    }
+    fn tool_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        icon: gpui::assets::IconName,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> KitButton {
+        KitButton::new(id)
+            .debug_selector(move || id.into())
+            .icon(icon)
+            .small()
+            .ghost()
+            .tooltip(label)
+            .disabled(disabled)
+            .on_click(cx.listener(move |this, _, window, cx| this.tool(id, window, cx)))
+    }
+    fn more_tools(&self, disabled: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity().downgrade();
+        let upper = self.uppercase_keywords;
+        let wrap = self.editor.read(cx).soft_wrap;
+        let default = self
+            .model
+            .read(cx)
+            .selected_database
+            .clone()
+            .is_some_and(|db| {
+                self.catalog
+                    .read(cx)
+                    .profiles
+                    .iter()
+                    .find(|p| Some(&p.id) == self.model.read(cx).selected_source.as_ref())
+                    .is_some_and(|p| p.database.as_ref() == Some(&db))
+            });
+        let no_database = self.model.read(cx).selected_database.is_none();
+        self.tool_button(
+            "query-more",
+            "More actions",
+            gpui::assets::IconName::Ellipsis,
+            disabled,
+            cx,
+        )
+        .dropdown_menu(move |mut menu, _, _| {
+            for (id, label, checked, extra_disabled) in [
+                ("query-compress", "Compress SQL", false, false),
+                ("query-unfold", "Unfold all", false, false),
+                (
+                    "query-keyword-case",
+                    if upper {
+                        "Use lower-case SQL keywords"
+                    } else {
+                        "Use upper-case SQL keywords"
+                    },
+                    false,
+                    false,
+                ),
+                ("query-wrap", "Word wrap", wrap, false),
+                ("query-format", "Format SQL (Cmd-Alt-L)", false, false),
+                ("query-open-sql", "Open SQL file (Cmd-O)", false, false),
+                (
+                    "query-save-sql",
+                    "Save SQL to new file (Cmd-S)",
+                    false,
+                    false,
+                ),
+                (
+                    "query-paste-in",
+                    "Paste as IN condition (Cmd-Shift-V)",
+                    false,
+                    false,
+                ),
+                ("query-clear-database", "Clear database", false, no_database),
+                (
+                    "query-set-default",
+                    if default {
+                        "Clear default database"
+                    } else {
+                        "Set Default"
+                    },
+                    default,
+                    no_database,
+                ),
+            ] {
+                let entity = entity.clone();
+                menu = menu.item(
+                    PopupMenuItem::element(move |_, _| {
+                        div()
+                            .debug_selector(move || format!("{id}-menu"))
+                            .child(label)
+                    })
+                    .checked(checked)
+                    .disabled(disabled || extra_disabled)
+                    .on_click(move |_, window, cx| {
+                        let _ = entity.update(cx, |this, cx| this.tool(id, window, cx));
+                    }),
+                );
+            }
+            menu
+        })
+    }
+
     fn run(&mut self, cx: &mut Context<Self>) {
-        if self.model.read(cx).busy || self.model.read(cx).saving {
+        if self.model.read(cx).busy
+            || self.model.read(cx).saving
+            || self.catalog.read(cx).saving
+            || self.file_busy
+        {
             return;
         }
         let editor = self.editor.read(cx);
@@ -271,7 +585,11 @@ impl QueryConsole {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.model.read(cx).busy || self.model.read(cx).saving {
+        if self.model.read(cx).busy
+            || self.model.read(cx).saving
+            || self.catalog.read(cx).saving
+            || self.file_busy
+        {
             return;
         }
         // A metadata notification can reorder choices while the popup is open.
@@ -302,7 +620,10 @@ impl Render for QueryConsole {
         let database_combo = self.database_combo(window, cx);
         let model = self.model.read(cx);
         let busy = model.busy;
-        let disabled = busy || model.saving;
+        let saving = model.saving;
+        let selected_database = model.selected_database.clone();
+        let selected_source = model.selected_source.clone();
+        let disabled = busy || saving || self.catalog.read(cx).saving || self.file_busy;
         let export_disabled = disabled
             || model.export_busy
             || model.error.is_some()
@@ -334,35 +655,121 @@ impl Render for QueryConsole {
         };
 
         let theme = cx.theme().clone();
-        let toolbar = div()
+        let available: f32 = self
+            .editor
+            .read(cx)
+            .viewport_width(cx)
+            .unwrap_or_else(|| f32::from(window.bounds().size.width) - 300.);
+        let full = available >= 800.;
+        let database_width = if available < 400. {
+            100.
+        } else if full {
+            200.
+        } else if available < 500. {
+            130.
+        } else {
+            170.
+        };
+        let source_width = if full {
+            160.
+        } else if available < 400. {
+            72.
+        } else {
+            100.
+        };
+        let mut toolbar = div()
+            .id("query-toolbar")
+            .debug_selector(|| "query-toolbar".into())
             .flex()
             .items_center()
             .h(px(TOOLBAR_HEIGHT))
             .flex_shrink_0()
+            .min_w_0()
             .border_b_1()
             .border_color(theme.border)
-            .gap(px(4.))
+            .gap(px(2.));
+        toolbar = toolbar
             .child(
                 KitButton::new("query-run")
                     .small()
+                    .ghost()
                     .debug_selector(|| "query-run".into())
-                    .icon(Icon::empty().path("icons/play.svg"))
-                    .disabled(disabled)
-                    .tooltip("Run selection or entire query (Cmd-Enter)")
+                    .icon(Icon::empty().path(if busy {
+                        "icons/circle-stop.svg"
+                    } else {
+                        "icons/play.svg"
+                    }))
+                    .disabled(
+                        model.saving
+                            || self.catalog.read(cx).saving
+                            || self.file_busy
+                            || (!busy && self.editor.read(cx).value().trim().is_empty()),
+                    )
+                    .tooltip(if busy {
+                        "Stop query (Cmd-.)"
+                    } else {
+                        "Run selection or entire query (Cmd-Enter)"
+                    })
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.run(cx);
-                        this.focus(window, cx);
+                        if this.model.read(cx).busy {
+                            this.cancel(cx);
+                        } else {
+                            this.run(cx);
+                            this.focus(window, cx);
+                        }
                     })),
             )
             .child(
                 KitButton::new("query-cancel")
                     .small()
+                    .ghost()
                     .debug_selector(|| "query-cancel".into())
                     .icon(Icon::empty().path("icons/circle-stop.svg"))
                     .disabled(!busy)
                     .tooltip("Cancel query (Cmd-.)")
                     .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
-            )
+            );
+        if full {
+            for (id, label, icon) in [
+                (
+                    "query-format",
+                    "Format SQL (Cmd-Alt-L)",
+                    gpui::assets::IconName::TextAlignStart,
+                ),
+                (
+                    "query-compress",
+                    "Compress SQL",
+                    gpui::assets::IconName::Minimize,
+                ),
+                (
+                    "query-keyword-case",
+                    "Toggle keyword case preference (used by Format)",
+                    gpui::assets::IconName::Type,
+                ),
+                ("query-wrap", "Word wrap", gpui::assets::IconName::TextWrap),
+                (
+                    "query-save-sql",
+                    "Save SQL to new file (Cmd-S)",
+                    gpui::assets::IconName::Save,
+                ),
+                (
+                    "query-open-sql",
+                    "Open SQL file (Cmd-O)",
+                    gpui::assets::IconName::FolderOpen,
+                ),
+                (
+                    "query-paste-in",
+                    "Paste as IN condition (Cmd-Shift-V)",
+                    gpui::assets::IconName::Clipboard,
+                ),
+            ] {
+                toolbar = toolbar.child(self.tool_button(id, label, icon, disabled, cx));
+            }
+        }
+        toolbar = toolbar
+            .child(self.more_tools(disabled, cx))
+            .child(div().flex_1().min_w_0())
+            .child(self.source_control(source_width, cx))
             .child(
                 div()
                     .id("query-database")
@@ -370,7 +777,7 @@ impl Render for QueryConsole {
                     .child(
                         Combobox::new(&database_combo)
                             .small()
-                            .w(px(240.))
+                            .w(px(database_width))
                             .menu_max_h(px(224.))
                             .search_placeholder("Search databases...")
                             .placeholder("No default database")
@@ -399,25 +806,49 @@ impl Render for QueryConsole {
                             }),
                     ),
             )
-            .child(
-                KitButton::new("query-read-only")
+            .child(self.tool_button(
+                "query-clear-database",
+                "Clear database",
+                gpui::assets::IconName::X,
+                disabled || selected_database.is_none(),
+                cx,
+            ));
+        if full {
+            let is_default = selected_database.as_ref().is_some_and(|db| {
+                self.catalog
+                    .read(cx)
+                    .profiles
+                    .iter()
+                    .find(|p| Some(&p.id) == selected_source.as_ref())
+                    .is_some_and(|p| p.database.as_ref() == Some(db))
+            });
+            toolbar = toolbar.child(
+                KitButton::new("query-set-default")
+                    .debug_selector(|| "query-set-default".into())
+                    .label(if is_default { "Default" } else { "Set Default" })
                     .small()
-                    .icon(Icon::empty().path("icons/lock-keyhole.svg"))
-                    .disabled(true)
-                    .tooltip("Read-only: one SELECT, CTE, or UNION query"),
-            )
-            .child(div().flex_1())
-            .child(
-                KitButton::new("query-export")
-                    .small()
-                    .debug_selector(|| "query-export".into())
-                    .icon(Icon::empty().path("icons/download.svg"))
-                    .disabled(export_disabled)
-                    .tooltip("Export loaded result rows to a new CSV file")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.model.update(cx, |model, cx| model.request_export(cx));
+                    .ghost()
+                    .disabled(
+                        disabled || selected_database.is_none() || self.catalog.read(cx).form_open,
+                    )
+                    .tooltip("Persist or clear this source’s default database")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.tool("query-set-default", window, cx)
                     })),
             );
+        }
+        toolbar = toolbar.child(
+            KitButton::new("query-export")
+                .small()
+                .ghost()
+                .debug_selector(|| "query-export".into())
+                .icon(Icon::empty().path("icons/download.svg"))
+                .disabled(export_disabled)
+                .tooltip("Export loaded result rows to a new CSV file")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.model.update(cx, |m, cx| m.request_export(cx))
+                })),
+        );
 
         div()
             .id("query-console")
@@ -441,6 +872,10 @@ impl Render for QueryConsole {
             }))
             .on_action(cx.listener(|this, _: &RunQuery, window, cx| { this.run(cx); this.focus(window, cx); }))
             .on_action(cx.listener(|this, _: &CancelQuery, _, cx| this.cancel(cx)))
+            .on_action(cx.listener(|this,_:&FormatSql,window,cx|this.tool("query-format",window,cx)))
+            .on_action(cx.listener(|this,_:&SaveSql,window,cx|this.tool("query-save-sql",window,cx)))
+            .on_action(cx.listener(|this,_:&OpenSql,window,cx|this.tool("query-open-sql",window,cx)))
+            .on_action(cx.listener(|this,_:&PasteInCondition,window,cx|this.tool("query-paste-in",window,cx)))
             .child(toolbar)
             .child(
                 div()
@@ -453,6 +888,7 @@ impl Render for QueryConsole {
                     .border_color(theme.border)
                     .child(self.editor.clone()),
             )
+            .when_some(self.tool_feedback.clone().or_else(||self.catalog.read(cx).metadata_notice.clone()),|el,feedback|el.child(notice(feedback,theme.muted_foreground)))
             .when_some(editor_error, |el, error| el.child(notice(error, theme.danger)))
             .when_some(error, |el, error| el.child(notice(error, theme.danger)))
             .children(warnings.into_iter().map(|warning| notice(warning, theme.warning)))
@@ -535,6 +971,146 @@ mod tests {
         let model = cx.new(|_| model);
         let view = cx.new(|cx| QueryConsole::new(model.clone(), root, cx));
         (view, model)
+    }
+
+    fn click_tool(cx: &mut gpui::VisualTestContext, id: &'static str) {
+        cx.run_until_parked();
+        let bounds = cx
+            .debug_bounds(id)
+            .unwrap_or_else(|| panic!("missing {id}"));
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+    }
+    #[gpui::test]
+    fn toolbar_local_tools_preserve_sql_undo_and_preference_only_changes_format(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, _) = fixture(cx);
+        let editor = view.read_with(cx, |v, _| v.editor.clone());
+        editor.update(cx, |e, cx| {
+            e.set_value("select 'Keep CASE' from items where id=1".into(), cx)
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| ConsoleTestRoot(view.clone()));
+            gpui::base::Root::new(content, window, cx)
+        });
+        cx.simulate_resize(gpui::size(px(1200.), px(720.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        click_tool(cx, "query-format");
+        assert!(
+            editor
+                .read_with(cx, |e, _| e.value())
+                .contains("SELECT 'Keep CASE'")
+        );
+        cx.simulate_keystrokes("cmd-z");
+        cx.run_until_parked();
+        assert_eq!(
+            editor.read_with(cx, |e, _| e.value()),
+            "select 'Keep CASE' from items where id=1"
+        );
+        click_tool(cx, "query-keyword-case");
+        assert_eq!(
+            editor.read_with(cx, |e, _| e.value()),
+            "select 'Keep CASE' from items where id=1"
+        );
+        click_tool(cx, "query-format");
+        assert!(editor.read_with(cx, |e, _| e.value()).starts_with("select"));
+        click_tool(cx, "query-wrap");
+        assert!(editor.read_with(cx, |e, _| e.soft_wrap));
+        cx.cx
+            .update(|app| app.write_to_clipboard(gpui::ClipboardItem::new_string("a'\nb".into())));
+        cx.simulate_keystrokes("cmd-a");
+        cx.simulate_keystrokes("cmd-shift-v");
+        cx.run_until_parked();
+        assert_eq!(editor.read_with(cx, |e, _| e.value()), "('a''', 'b')");
+        cx.simulate_keystrokes("cmd-z");
+        cx.run_until_parked();
+        assert!(editor.read_with(cx, |e, _| e.value()).starts_with("select"));
+    }
+    #[gpui::test]
+    fn source_picker_changes_only_this_console_context_and_clear_drops_stale_result(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, model) = fixture(cx);
+        let catalog = view.read_with(cx, |v, _| v.catalog.clone());
+        let other = SourceProfile {
+            name: "Other source".into(),
+            database: Some("other_db".into()),
+            ..Default::default()
+        };
+        let id = other.id.clone();
+        catalog.update(cx, |m, cx| {
+            m.profiles.push(other);
+            m.tree.databases.insert(id.clone(), vec!["other_db".into()]);
+            cx.notify();
+        });
+        model.update(cx, |m, cx| {
+            m.profiles = catalog.read(cx).profiles.clone();
+            m.set_query_sql("SELECT 1".into(), cx);
+        });
+        let editor = view.read_with(cx, |v, _| v.editor.clone());
+        editor.update(cx, |e, cx| e.set_value("SELECT 1".into(), cx));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| ConsoleTestRoot(view.clone()));
+            gpui::base::Root::new(content, window, cx)
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        click_tool(cx, "query-source");
+        click_tool(cx, "query-source-choice-1");
+        model.read_with(cx, |m, _| {
+            assert_eq!(m.selected_source.as_deref(), Some(id.as_str()));
+            assert_eq!(m.selected_database.as_deref(), Some("other_db"));
+            assert!(m.page.is_none());
+            assert_eq!(m.query_sql, "SELECT 1");
+        });
+        assert!(catalog.read_with(cx, |m, _| m.selected_source.is_none()));
+        click_tool(cx, "query-clear-database");
+        assert!(model.read_with(cx, |m, _| m.selected_database.is_none()));
+        assert_eq!(editor.read_with(cx, |e, _| e.value()), "SELECT 1");
+        model.update(cx, |m, cx| {
+            m.busy = true;
+            cx.notify();
+        });
+        view.update_in(cx, |v, window, cx| v.tool("query-wrap", window, cx));
+        assert!(!editor.read_with(cx, |e, _| e.soft_wrap));
+    }
+    #[gpui::test]
+    fn sql_file_cancel_and_compact_overflow_do_not_modify_draft(cx: &mut TestAppContext) {
+        let (view, _) = fixture(cx);
+        let editor = view.read_with(cx, |v, _| v.editor.clone());
+        editor.update(cx, |e, cx| e.set_value("SELECT 'fixture'".into(), cx));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| ConsoleTestRoot(view.clone()));
+            gpui::base::Root::new(content, window, cx)
+        });
+        cx.simulate_resize(gpui::size(px(560.), px(480.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        for id in [
+            "query-run",
+            "query-more",
+            "query-source",
+            "query-database",
+            "query-export",
+        ] {
+            let b = cx.debug_bounds(id).unwrap();
+            assert!(b.left() >= px(0.) && b.right() <= px(560.), "{id} {b:?}");
+        }
+        click_tool(cx, "query-more");
+        click_tool(cx, "query-open-sql-menu");
+        assert!(cx.did_prompt_for_paths());
+        cx.simulate_path_prompt_response(|_| None);
+        cx.run_until_parked();
+        assert_eq!(editor.read_with(cx, |e, _| e.value()), "SELECT 'fixture'");
+        cx.update(|window, app| view.update(app, |v, cx| v.focus(window, cx)));
+        cx.simulate_keystrokes("cmd-s");
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_new_path());
+        cx.simulate_new_path_selection(|_| None);
+        cx.run_until_parked();
+        assert!(!view.read_with(cx, |v, _| v.file_busy));
     }
 
     #[gpui::test]

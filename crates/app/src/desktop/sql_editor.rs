@@ -15,6 +15,8 @@ pub(super) struct SqlEditor {
     content: String,
     selection: Option<String>,
     pending_value: bool,
+    pub(super) soft_wrap: bool,
+    edit_revision: u64,
     pub(super) validation_error: Option<String>,
 }
 
@@ -29,10 +31,21 @@ impl SqlEditor {
             content: if oversized { String::new() } else { value },
             selection: None,
             pending_value: false,
+            soft_wrap: false,
+            edit_revision: 0,
             validation_error: oversized.then(limit_message),
         }
     }
 
+    pub(super) fn edit_revision(&self) -> u64 {
+        self.edit_revision
+    }
+    pub(super) fn viewport_width(&self, cx: &App) -> Option<f32> {
+        self.state
+            .as_ref()
+            .map(|s| f32::from(s.read(cx).input_bounds().size.width))
+            .filter(|w| *w > 0.)
+    }
     pub(super) fn value(&self) -> String {
         self.content.clone()
     }
@@ -63,29 +76,23 @@ impl SqlEditor {
             self.validation_error = Some(limit_message());
         } else {
             self.content = value;
+            self.edit_revision = self.edit_revision.wrapping_add(1);
             self.selection = None;
             self.pending_value = true;
             self.validation_error = None;
         }
         cx.notify();
     }
-}
 
-impl Focusable for SqlEditor {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-impl Render for SqlEditor {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Lazily mount Kit and flush any accepted programmatic load before a tool.
+    fn ensure_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<EditorState> {
         if self.state.is_none() {
             let was_focused = self.focus_handle.is_focused(window);
             let state = cx.new(|cx| {
                 EditorState::new(window, cx)
                     .default_value(self.content.clone())
                     .language("sql")
-                    .soft_wrap(false)
+                    .soft_wrap(self.soft_wrap)
             });
             self.focus_handle = state.read(cx).focus_handle(cx);
             if was_focused {
@@ -106,6 +113,7 @@ impl Render for SqlEditor {
                         this.validation_error = Some(limit_message());
                     } else {
                         if content != this.content {
+                            this.edit_revision = this.edit_revision.wrapping_add(1);
                             this.validation_error = None;
                         }
                         this.content = content;
@@ -126,6 +134,142 @@ impl Render for SqlEditor {
             self.pending_value = false;
         }
 
+        state.clone()
+    }
+
+    fn sync_snapshot(&mut self, cx: &Context<Self>) {
+        if let Some(state) = &self.state {
+            let state = state.read(cx);
+            let value = state.value().to_string();
+            if value != self.content {
+                self.edit_revision = self.edit_revision.wrapping_add(1);
+            }
+            self.content = value;
+            let selected = state.selected_text().to_string();
+            self.selection = (!selected.is_empty()).then_some(selected);
+        }
+    }
+
+    /// Format/compress the active selection, or the whole document when empty.
+    /// Read Kit directly: selection observation can still be queued by a click.
+    pub(super) fn apply_tool(
+        &mut self,
+        tool: dalan_app::sql_tools::SqlTransform,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.transform(tool, window, cx);
+    }
+
+    pub(super) fn transform(
+        &mut self,
+        operation: dalan_app::sql_tools::SqlTransform,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.ensure_state(window, cx);
+        let input = state.read(cx).value().to_string();
+        let output = operation.transform(&input);
+        self.replace_all_undoable(output, window, cx);
+    }
+
+    /// Replace a file/tool result atomically, keeping Kit's undo history.
+    pub(super) fn replace_all_undoable(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if dalan_app::sql_tools::contains_literal_carriage_return(&text) {
+            self.validation_error=Some("SQL contains carriage returns in a literal; cannot safely normalize it for the editor.".into());
+            cx.notify();
+            return;
+        }
+        let text = normalize(&text);
+        if text.len() > MAX_BYTES {
+            self.validation_error = Some(limit_message());
+            cx.notify();
+            return;
+        }
+        let state = self.ensure_state(window, cx);
+        state.update(cx, |state, cx| {
+            state.replace_all(text, window, cx);
+            state.focus(window, cx);
+        });
+        self.sync_snapshot(cx);
+        self.validation_error = None;
+        cx.notify();
+    }
+
+    /// Insert at the caret, replacing any selection (e.g. clipboard IN values).
+    pub(super) fn insert_text(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if dalan_app::sql_tools::contains_literal_carriage_return(&text) {
+            self.validation_error=Some("SQL contains carriage returns in a literal; cannot safely normalize it for the editor.".into());
+            cx.notify();
+            return;
+        }
+        let text = normalize(&text);
+        let state = self.ensure_state(window, cx);
+        let range = state.read(cx).selected_range();
+        let result_len = state.read(cx).value().len() - range.len() + text.len();
+        if result_len > MAX_BYTES {
+            self.validation_error = Some(limit_message());
+            cx.notify();
+            return;
+        }
+        state.update(cx, |state, cx| {
+            state.replace(text, window, cx);
+            state.focus(window, cx);
+        });
+        self.sync_snapshot(cx);
+        self.validation_error = None;
+        cx.notify();
+    }
+
+    pub(super) fn set_soft_wrap(
+        &mut self,
+        wrap: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.soft_wrap = wrap;
+        if let Some(state) = &self.state {
+            state.update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
+        }
+        self.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Kit 0.7.1 has gutter folding but no public fold-all state API.
+    /// Return false so callers can disable this unsupported toolbar action.
+    pub(super) fn unfold_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(state) = &self.state {
+            state.update(cx, |state, cx| {
+                // Disabling folding clears folds; re-enable gutter candidates.
+                state.set_folding(false, window, cx);
+                state.set_folding(true, window, cx);
+                state.focus(window, cx);
+            });
+        }
+        cx.notify();
+    }
+}
+
+impl Focusable for SqlEditor {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for SqlEditor {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.ensure_state(window, cx);
+
         div()
             .id("dalan-sql-editor")
             .flex_1()
@@ -134,7 +278,7 @@ impl Render for SqlEditor {
             .h_full()
             .overflow_hidden()
             .child(
-                Editor::new(state)
+                Editor::new(&state)
                     .h_full()
                     .tab_index(20)
                     .aria_label("SQL editor"),
@@ -176,6 +320,104 @@ mod tests {
             editor.read(cx).focus_handle().focus(window, cx);
         });
         (editor, visual)
+    }
+
+    #[gpui::test]
+    fn tools_transform_whole_document_without_treating_literal_selection_as_sql(
+        cx: &mut TestAppContext,
+    ) {
+        use dalan_app::sql_tools::SqlTransform;
+        let original = "select 'select' from items where id=1";
+        let (editor, visual) = fixture(cx, original);
+        visual.update(|window, app| {
+            let state = editor.read(app).state.as_ref().unwrap().clone();
+            state.update(app, |s, cx| s.set_selected_range(8..14, cx));
+            editor.update(app, |e, cx| {
+                e.apply_tool(SqlTransform::Format { uppercase: true }, window, cx)
+            });
+            assert_eq!(
+                state.read(app).value(),
+                dalan_app::sql_tools::format_sql(original, true)
+            );
+            assert!(state.read(app).value().contains("'select'"));
+            window.press("secondary-z", app);
+            assert_eq!(state.read(app).value(), original);
+        });
+    }
+
+    #[gpui::test]
+    fn file_load_and_clipboard_insert_preserve_history_and_reject_oversized_results(
+        cx: &mut TestAppContext,
+    ) {
+        let (editor, visual) = fixture(cx, "SELECT 1;");
+        visual.update(|window, app| {
+            let state = editor.read(app).state.as_ref().unwrap().clone();
+            editor.update(app, |e, cx| {
+                e.replace_all_undoable("SELECT 2;\r\n".into(), window, cx)
+            });
+            assert_eq!(state.read(app).value(), "SELECT 2;\n");
+            window.press("secondary-z", app);
+            assert_eq!(state.read(app).value(), "SELECT 1;");
+            state.update(app, |s, cx| s.set_selected_range(7..8, cx));
+            editor.update(app, |e, cx| e.insert_text("(2, 3)".into(), window, cx));
+            assert_eq!(state.read(app).value(), "SELECT (2, 3);");
+            window.press("secondary-z", app);
+            assert_eq!(state.read(app).value(), "SELECT 1;");
+            let range = state.read(app).selected_range();
+            editor.update(app, |e, cx| {
+                e.replace_all_undoable("é".repeat(MAX_BYTES / 2 + 1), window, cx);
+                assert!(e.validation_error.is_some());
+                e.insert_text("x".repeat(MAX_BYTES), window, cx);
+                assert!(e.validation_error.is_some());
+            });
+            assert_eq!(state.read(app).value(), "SELECT 1;");
+            assert_eq!(state.read(app).selected_range(), range);
+        });
+    }
+
+    #[gpui::test]
+    fn format_expansion_over_limit_is_rejected_without_touching_selection(cx: &mut TestAppContext) {
+        let original = format!("{}select 1 {}", "(".repeat(600), "where a=1 ".repeat(4000));
+        assert!(original.len() <= MAX_BYTES);
+        assert!(dalan_app::sql_tools::format_sql(&original, true).len() > MAX_BYTES);
+        let (editor, visual) = fixture(cx, &original);
+        visual.update(|window, app| {
+            let state = editor.read(app).state.as_ref().unwrap().clone();
+            state.update(app, |s, cx| s.set_selected_range(3..3, cx));
+            editor.update(app, |e, cx| {
+                e.apply_tool(
+                    dalan_app::sql_tools::SqlTransform::Format { uppercase: true },
+                    window,
+                    cx,
+                );
+            });
+            assert_eq!(state.read(app).value(), original);
+            assert_eq!(state.read(app).selected_range(), 3..3);
+            assert!(editor.read(app).validation_error.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn wrap_and_fold_controls_preserve_content_selection_and_undo(cx: &mut TestAppContext) {
+        let (editor, visual) = fixture(cx, "SELECT 1;");
+        visual.update(|window, app| {
+            let state = editor.read(app).state.as_ref().unwrap().clone();
+            editor.update(app, |e, cx| {
+                e.replace_all_undoable("SELECT 2;".into(), window, cx)
+            });
+            state.update(app, |s, cx| s.set_selected_range(2..5, cx));
+            editor.update(app, |e, cx| {
+                e.set_soft_wrap(true, window, cx);
+                assert!(e.soft_wrap);
+                e.unfold_all(window, cx);
+                e.set_soft_wrap(false, window, cx);
+                assert!(!e.soft_wrap);
+            });
+            assert_eq!(state.read(app).value(), "SELECT 2;");
+            assert_eq!(state.read(app).selected_range(), 2..5);
+            window.press("secondary-z", app);
+            assert_eq!(state.read(app).value(), "SELECT 1;");
+        });
     }
 
     #[gpui::test]
