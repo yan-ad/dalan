@@ -209,6 +209,8 @@ pub(super) struct DataGrid {
     edit_target: Option<(usize, usize)>,
     write_confirm: bool,
     edit_rows: usize,
+    edit_revision: u64,
+    write_feedback: Option<String>,
     stale: bool,
     selection: Selection,
     viewport: GridViewport,
@@ -246,13 +248,35 @@ impl DataGrid {
     pub(super) fn new(model: Entity<SourceModel>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(&model, |this, model, cx| {
             let model = model.read(cx);
-            this.write_confirm = false;
             let selection = Self::selection(model);
             let page_changed = match (&this.page, &model.page) {
-                (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+                (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
                 (None, None) => false,
                 _ => true,
             };
+            let edits_changed = this.edit_revision != model.table_edit_revision;
+            let stale = model.busy
+                || model.saving
+                || model.error.is_some()
+                || model.query_console
+                || model.has_table_changes()
+                || model.write_busy
+                || matches!(
+                    model.selected_engine(),
+                    dalan_drivers::DbEngine::MongoDb | dalan_drivers::DbEngine::Redis
+                );
+            if selection == this.selection
+                && !page_changed
+                && !edits_changed
+                && stale == this.stale
+                && this.sort == model.sort
+                && this.write_feedback == model.write_feedback
+            {
+                return;
+            }
+            this.write_confirm = false;
+            this.edit_revision = model.table_edit_revision;
+            this.write_feedback = model.write_feedback.clone();
             // Busy/error notifications retain the same Arc, so scrolling a
             // stale snapshot is not disrupted while the replacement is fetched.
             if selection != this.selection || page_changed {
@@ -269,8 +293,10 @@ impl DataGrid {
             }
             this.selection = selection;
             this.page = model.page.as_ref().map(Arc::clone);
-            this.visible_text.clear();
-            this.visible_lines.clear();
+            if edits_changed {
+                this.visible_text.clear();
+                this.visible_lines.clear();
+            }
             this.edit_rows = model
                 .table_edits
                 .as_ref()
@@ -302,6 +328,8 @@ impl DataGrid {
             edit_target: None,
             write_confirm: false,
             edit_rows: 0,
+            edit_revision: snapshot.table_edit_revision,
+            write_feedback: snapshot.write_feedback.clone(),
             stale: snapshot.busy
                 || snapshot.saving
                 || snapshot.error.is_some()
@@ -1430,6 +1458,37 @@ mod tests {
         cx.run_until_parked();
         (model, grid, cx)
     }
+    #[gpui::test]
+    fn query_draft_notifications_keep_retained_grid_caches_without_repaint(
+        cx: &mut TestAppContext,
+    ) {
+        let (model, grid, cx) = fixture(cx);
+        model.update(cx, |m, cx| {
+            m.query_console = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.refresh().unwrap();
+        let cached = grid.read_with(cx, |g, _| g.visible_lines.len());
+        assert!(cached > 0);
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscription = cx.update(|_, app| {
+            let count = count.clone();
+            app.observe(&grid, move |_, _| {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        });
+        cx.run_until_parked();
+        count.store(0, std::sync::atomic::Ordering::SeqCst);
+        for i in 0..30 {
+            model.update(cx, |m, cx| m.set_query_sql(format!("SELECT {i}"), cx));
+            cx.run_until_parked();
+        }
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(grid.read_with(cx, |g, _| g.visible_lines.len()), cached);
+        drop(subscription);
+    }
+
     #[gpui::test]
     fn cell_editor_stages_captured_target_and_discard_preserves_original_page(
         cx: &mut TestAppContext,

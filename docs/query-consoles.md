@@ -142,3 +142,7 @@ Focus restoration uses Kit’s `EditorState::focus` so lazy editor initializatio
 ### Flat editor chrome
 
 Console-only Kit styling uses square ghost toolbar controls with zero inter-control gap and full toolbar-height hit targets. The database Combobox keeps its searchable/keyboard behavior but has no rounded input frame; the source selector and tab close controls are also square. The retained Kit editor is borderless and fills the pane without an outer inset/card background. Native text padding, line-number gutter, caret/selection and hover/focus behavior remain; source/settings dialogs and global System/Light/Dark theme defaults are unchanged.
+
+### Editor update isolation
+
+Caret blinking and selection changes stay inside Kit instead of copying the whole SQL draft and rebuilding the outer toolbar. Selection is read on demand for Run; actual text changes still synchronize the console draft. Unchanged result snapshots preserve their grid caches, and continued typing does not rebuild tab chrome/result-budget state. Wrap/keyword-case buttons expose selected state; toolbar and overflow icons load from the complete bundled Kit inventory. This reduces redundant work; it is not a claim of certified native typing latency or FPS.

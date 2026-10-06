@@ -1,5 +1,13 @@
 # Test strategy and release evidence
 
+## Editor notification isolation and complete toggle icons
+
+SQL adapter state observation previously propagated caret blink/focus/selection notifications after materializing the whole rope as a string. It now subscribes only to actual Kit `InputEvent::Change`; selection is read directly from retained state only when an operation requests it. The console does not notify its outer toolbar on unchanged editor content. Tab strips/result-retention bookkeeping react only to presentation/page/target changes, and result grids preserve visible caches on unrelated query-draft notifications. Explicit table-edit revisions keep staged writes repainting correctly.
+
+Regression counters cover four seconds of simulated caret blink and selection on a roughly 56 KiB draft producing zero outer editor notifications, while real input still propagates; 30 query-draft updates cause zero result-grid notifications/cache invalidations; 38 continued nonempty draft updates cause zero workspace/tab-strip notifications or budget recomputations. These are deterministic work-count bounds, not measured native typing latency/FPS. Kit highlighter/native font/IME profiling remains a separate gate.
+
+Named control icons now resolve from the complete bundled Kit catalog when missing from its small default asset subset, without inventory enumeration on each load. Tests exercise exact formatter/wrap/case/save/open/clipboard/overflow/theme icon paths as well as the full inventory; wrap/case buttons have selected states and overflow items have icons. Local verification passed **203 headless unit tests + one native-wire integration test, 227 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped.
+
 ## Black and pink app artwork
 
 Replaced the old source layer with the user-supplied `Dalan New Transparent.png` from the updated Icon Composer package. Source configuration uses the pink layer only, solid black fill and no shadow/translucency. A dependency-free compositor preserves its alpha silhouette with exact sRGB `#FF6AEB` foreground on opaque black, producing the README/portable PNG and conventional multi-size ICNS through `scripts/prepare-icons`. The user's Downloads package is unchanged.

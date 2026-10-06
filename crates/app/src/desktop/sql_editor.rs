@@ -88,7 +88,13 @@ impl SqlEditor {
         }
     }
 
-    pub(super) fn selected_text(&self) -> Option<String> {
+    pub(super) fn selected_text(&self, cx: &App) -> Option<String> {
+        if !self.pending_value
+            && let Some(state) = &self.state
+        {
+            let selected = state.read(cx).selected_text();
+            return (!state.read(cx).selected_range().is_empty()).then(|| selected.to_string());
+        }
         self.selection.clone()
     }
 
@@ -122,31 +128,30 @@ impl SqlEditor {
             if was_focused {
                 state.update(cx, |state, cx| state.focus(window, cx));
             }
-            self.subscription = Some(cx.observe(&state, |this, state, cx| {
-                // A pending console load takes precedence over stale editor state.
-                if !this.pending_value {
-                    let state = state.read(cx);
-                    let content = state.value().to_string();
+            self.subscription = Some(cx.subscribe(
+                &state,
+                |this, state, event: &gpui::component::input::InputEvent, cx| {
+                    if !matches!(event, gpui::component::input::InputEvent::Change)
+                        || this.pending_value
+                    {
+                        return;
+                    }
+                    let content = state.read(cx).value().to_string();
                     if content.len() > MAX_BYTES {
-                        // Kit 0.7.1 only exposes validators on single-line
-                        // InputState, not EditorState. Restore the last accepted
-                        // value at render instead of persisting an oversized
-                        // draft. Kit's setter starts a new undo history on this
-                        // exceptional path; ordinary edits remain entirely Kit's.
                         this.pending_value = true;
                         this.validation_error = Some(limit_message());
-                    } else {
-                        if content != this.content {
-                            this.edit_revision = this.edit_revision.wrapping_add(1);
-                            this.validation_error = None;
-                        }
-                        this.content = content;
-                        let selected = state.selected_text().to_string();
-                        this.selection = (!selected.is_empty()).then_some(selected);
+                        cx.notify();
+                        return;
                     }
-                }
-                cx.notify();
-            }));
+                    if content != this.content {
+                        this.edit_revision = this.edit_revision.wrapping_add(1);
+                        this.validation_error = None;
+                        this.content = content;
+                        this.selection = None;
+                        cx.notify();
+                    }
+                },
+            ));
             self.state = Some(state);
             self.pending_value = false;
         }
@@ -522,8 +527,8 @@ mod tests {
             );
         });
         visual.run_until_parked();
-        editor.read_with(visual, |editor, _| {
-            assert_eq!(editor.selected_text().as_deref(), Some(sql));
+        editor.read_with(visual, |editor, app| {
+            assert_eq!(editor.selected_text(app).as_deref(), Some(sql));
         });
     }
 
@@ -692,6 +697,49 @@ mod tests {
             state.read_with(visual, |s, _| s.selected_range()),
             sql.len()..sql.len()
         );
+    }
+
+    #[gpui::test]
+    fn caret_blinks_and_selection_changes_do_not_materialize_or_notify_outer_editor(
+        cx: &mut TestAppContext,
+    ) {
+        let (editor, visual) = fixture(cx, &format!("SELECT '{}';", "fixture ".repeat(7000)));
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscription = visual.update(|_, app| {
+            let count = count.clone();
+            app.observe(&editor, move |_, _| {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        });
+        visual.run_until_parked();
+        count.store(0, std::sync::atomic::Ordering::SeqCst);
+        for _ in 0..8 {
+            visual
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(500));
+            visual.run_until_parked();
+        }
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "caret animation must stay inside Kit"
+        );
+        visual.simulate_keystrokes("cmd-a");
+        visual.run_until_parked();
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            editor
+                .read_with(visual, |e, app| e.selected_text(app))
+                .is_some()
+        );
+        visual.simulate_keystrokes("right");
+        visual.simulate_input(" ");
+        visual.run_until_parked();
+        assert!(
+            count.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "actual edits must still propagate"
+        );
+        drop(subscription);
     }
 
     #[gpui::test]

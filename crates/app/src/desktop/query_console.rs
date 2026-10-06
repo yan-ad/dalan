@@ -13,7 +13,7 @@ use super::{
 };
 
 use gpui::component::{
-    ActiveTheme, Disableable, Icon, IndexPath, Sizable,
+    ActiveTheme, Disableable, Icon, IndexPath, Selectable, Sizable,
     button::{Button as KitButton, ButtonRounded, ButtonVariants},
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     menu::{DropdownMenu, PopupMenuItem},
@@ -134,8 +134,8 @@ impl QueryConsole {
                     this.last_text = text.clone();
                     this.model
                         .update(cx, |model, cx| model.set_query_sql(text, cx));
+                    cx.notify();
                 }
-                cx.notify();
             }),
         ];
         let mut this = Self {
@@ -476,8 +476,26 @@ impl QueryConsole {
             .h(px(TOOLBAR_HEIGHT))
             .ghost()
             .tooltip(label)
+            .selected(
+                (id == "query-wrap" && self.editor.read(cx).soft_wrap)
+                    || (id == "query-keyword-case" && self.uppercase_keywords),
+            )
             .disabled(disabled)
             .on_click(cx.listener(move |this, _, window, cx| this.tool(id, window, cx)))
+    }
+    fn action_icon(id: &str) -> gpui::assets::IconName {
+        match id {
+            "query-wrap" => gpui::assets::IconName::TextWrap,
+            "query-keyword-case" => gpui::assets::IconName::Type,
+            "query-compress" => gpui::assets::IconName::Minimize,
+            "query-format" => gpui::assets::IconName::TextAlignStart,
+            "query-unfold" => gpui::assets::IconName::ChevronsUpDown,
+            "query-open-sql" => gpui::assets::IconName::FolderOpen,
+            "query-save-sql" => gpui::assets::IconName::Save,
+            "query-paste-in" => gpui::assets::IconName::Clipboard,
+            "query-clear-database" => gpui::assets::IconName::X,
+            _ => gpui::assets::IconName::Database,
+        }
     }
     fn more_tools(&self, disabled: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity().downgrade();
@@ -556,6 +574,7 @@ impl QueryConsole {
                             .debug_selector(move || format!("{id}-menu"))
                             .child(label)
                     })
+                    .icon(Self::action_icon(id))
                     .checked(checked)
                     .disabled(
                         disabled
@@ -594,7 +613,7 @@ impl QueryConsole {
             });
             return;
         }
-        let sql = editor.selected_text().unwrap_or_else(|| editor.value());
+        let sql = editor.selected_text(cx).unwrap_or_else(|| editor.value());
         // Keep validation in the model: rejected SQL must never access saved auth
         // or the network, including runs issued through keyboard actions.
         self.model.update(cx, |model, cx| model.run_query(sql, cx));
@@ -1298,13 +1317,13 @@ mod tests {
         cx.simulate_keystrokes("cmd-a");
         cx.run_until_parked();
         assert_eq!(
-            editor.read_with(cx, |e, _| e.selected_text()),
+            editor.read_with(cx, |e, app| e.selected_text(app)),
             Some(sql.clone())
         );
         cx.simulate_keystrokes("cmd-enter");
         cx.run_until_parked();
         assert_eq!(
-            editor.read_with(cx, |e, _| e.selected_text()),
+            editor.read_with(cx, |e, app| e.selected_text(app)),
             Some(sql.clone())
         );
         cx.simulate_keystrokes("right");
@@ -1331,7 +1350,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             editor
-                .read_with(cx, |editor, _| editor.selected_text())
+                .read_with(cx, |editor, app| editor.selected_text(app))
                 .as_deref(),
             Some(sql)
         );
@@ -1346,7 +1365,7 @@ mod tests {
         assert_eq!(editor.read_with(cx, |editor, _| editor.value()), sql);
         assert_eq!(
             editor
-                .read_with(cx, |editor, _| editor.selected_text())
+                .read_with(cx, |editor, app| editor.selected_text(app))
                 .as_deref(),
             Some(sql)
         );

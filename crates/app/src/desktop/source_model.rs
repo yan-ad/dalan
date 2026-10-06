@@ -163,6 +163,7 @@ pub(super) struct SourceModel {
     pub form_busy: bool,
     pub saving: bool,
     pub error: Option<String>,
+    pub table_edit_revision: u64,
     pub table_edits: Option<dalan_app::table_edits::TableEdits>,
     pub write_busy: bool,
     pub write_uncertain: bool,
@@ -270,6 +271,7 @@ impl SourceModel {
         self.write_feedback = result.err().map(|_| {
             "Cell edit rejected: check column type, key/null rules and value limits.".into()
         });
+        self.table_edit_revision = self.table_edit_revision.wrapping_add(1);
         cx.notify();
     }
     pub fn stage_row(&mut self, row: usize, action: &str, cx: &mut Context<Self>) {
@@ -291,6 +293,7 @@ impl SourceModel {
         self.write_feedback = result
             .err()
             .map(|_| "Row action rejected; no staged changes were applied.".into());
+        self.table_edit_revision = self.table_edit_revision.wrapping_add(1);
         cx.notify();
     }
     pub fn discard_table_changes(&mut self, cx: &mut Context<Self>) {
@@ -299,6 +302,7 @@ impl SourceModel {
         }
         self.table_edits = None;
         self.write_feedback = None;
+        self.table_edit_revision = self.table_edit_revision.wrapping_add(1);
         cx.notify();
     }
     pub fn apply_table_changes(&mut self, cx: &mut Context<Self>) {
@@ -315,6 +319,7 @@ impl SourceModel {
             Ok(request) => request,
             Err(_) => {
                 self.write_feedback = Some("Staged changes are invalid; review the rows.".into());
+                self.table_edit_revision = self.table_edit_revision.wrapping_add(1);
                 cx.notify();
                 return;
             }
@@ -333,8 +338,9 @@ impl SourceModel {
             m.write_busy=false;m.busy=false;
             if m.write_target_invalidated {m.workspace_invalidated=true;m.write_uncertain=true;m.write_feedback=Some("Source settings changed during Apply. The original target may have been modified; do not retry or reload through the changed source. Verify the original server and reopen the tab.".into());cx.notify();return;}
             match result {Ok(report)=>{m.table_edits=None;m.write_feedback=Some(format!("Applied: {} updated, {} inserted, {} deleted.",report.updated,report.inserted,report.deleted));let offset=m.page.as_ref().map(|p|p.offset).unwrap_or(0);m.load_page(offset,cx);},Err(error)=>{m.write_uncertain=error.downcast_ref::<dalan_drivers::WriteFailure>().is_some();m.write_feedback=Some(if m.write_uncertain{"Write outcome unknown. Do not retry; discard local staging, reload and verify the database.".into()}else{"Changes were not applied; transaction failed or optimistic row conflict. Review and reload before retry.".into()});}}
-            cx.notify();
+            m.table_edit_revision=m.table_edit_revision.wrapping_add(1);cx.notify();
         });
+        self.table_edit_revision = self.table_edit_revision.wrapping_add(1);
         cx.notify();
     }
 
@@ -1311,6 +1317,7 @@ impl SourceModel {
             form_busy: false,
             saving: false,
             error: None,
+            table_edit_revision: 0,
             table_edits: None,
             write_busy: false,
             write_uncertain: false,

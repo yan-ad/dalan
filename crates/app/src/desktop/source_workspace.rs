@@ -57,6 +57,33 @@ fn contextual_tab_label(tab: &dalan_app::workspace_tabs::TabDescriptor, source: 
     }
 }
 
+#[derive(PartialEq, Eq)]
+struct TabRenderState {
+    busy: bool,
+    has_sql: bool,
+    page: Option<usize>,
+    source: Option<String>,
+    database: Option<String>,
+    error: bool,
+    write_busy: bool,
+    changes: bool,
+}
+fn tab_render_state(model: &SourceModel) -> TabRenderState {
+    TabRenderState {
+        busy: model.busy,
+        has_sql: !model.query_sql.trim().is_empty(),
+        page: model
+            .page
+            .as_ref()
+            .map(|p| std::sync::Arc::as_ptr(p) as usize),
+        source: model.selected_source.clone(),
+        database: model.selected_database.clone(),
+        error: model.error.is_some(),
+        write_busy: model.write_busy,
+        changes: model.has_table_changes(),
+    }
+}
+
 #[derive(Default)]
 struct ResultStats {
     // Only an identity token: retaining an Arc here would prevent eviction.
@@ -198,9 +225,14 @@ impl SourceWorkspace {
                 cx.new(|cx| QueryConsole::new(tab_model.clone(), self.model.clone(), cx)),
             ),
         };
-        let subscription = cx.observe(&tab_model, |this, _, cx| {
-            this.refresh_result_usage(cx);
-            cx.notify();
+        let mut last = tab_render_state(tab_model.read(cx));
+        let subscription = cx.observe(&tab_model, move |this, model, cx| {
+            let next = tab_render_state(model.read(cx));
+            if next != last {
+                last = next;
+                this.refresh_result_usage(cx);
+                cx.notify();
+            }
         });
         self.result_usage.remove(&opened.id);
         self.views.insert(
@@ -803,6 +835,31 @@ mod tests {
         cx.simulate_click(bounds.center(), Modifiers::default());
         pump_workers(cx);
         cx.refresh().unwrap();
+    }
+
+    #[gpui::test]
+    fn continued_typing_does_not_rebuild_tab_strip_or_retention_budget(cx: &mut TestAppContext) {
+        let (workspace, _root, _listener, cx) = fixture(cx);
+        let (_id, model) = console(&workspace, cx);
+        model.update(cx, |m, cx| m.set_query_sql("SELECT 1".into(), cx));
+        cx.run_until_parked();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscription = cx.update(|_, app| {
+            let count = count.clone();
+            app.observe(&workspace, move |_, _| {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        });
+        cx.run_until_parked();
+        count.store(0, std::sync::atomic::Ordering::SeqCst);
+        let before = workspace.read_with(cx, |w, _| w.budget_estimates);
+        for i in 2..40 {
+            model.update(cx, |m, cx| m.set_query_sql(format!("SELECT {i}"), cx));
+            cx.run_until_parked();
+        }
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(workspace.read_with(cx, |w, _| w.budget_estimates), before);
+        drop(subscription);
     }
 
     #[gpui::test]

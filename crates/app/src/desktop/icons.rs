@@ -153,20 +153,20 @@ impl AssetSource for IconAssets {
         if let Some(bytes) = AppIconAssets.load(path)? {
             return Ok(Some(bytes));
         }
-        // The default source reports missing paths as errors. Use its public
-        // inventory to retain AssetSource's normal Ok(None) lookup semantics.
-        if gpui::assets::Assets
-            .list(path)?
-            .iter()
-            .any(|name| name.as_ref() == path)
-        {
-            return gpui::assets::Assets.load(path);
+        // IconName includes the full catalog, while Kit's default Assets is a
+        // small subset. Resolve named controls without enumerating that catalog
+        // on every SVG load, and fall back to the bundled complete inventory.
+        if let Ok(Some(bytes)) = gpui::assets::Assets.load(path) {
+            return Ok(Some(bytes));
+        }
+        if let Ok(Some(bytes)) = gpui::assets::AllAssets.load(path) {
+            return Ok(Some(bytes));
         }
         Ok(None)
     }
 
     fn list(&self, prefix: &str) -> anyhow::Result<Vec<SharedString>> {
-        let mut paths = gpui::assets::Assets.list(prefix)?;
+        let mut paths = gpui::assets::AllAssets.list(prefix)?;
         paths.extend(
             PROVIDER_ASSETS
                 .iter()
@@ -236,6 +236,23 @@ mod tests {
         assert!(IconAssets.load("../icons/database.svg").unwrap().is_none());
     }
 
+    #[test]
+    fn query_toolbar_icons_resolve_even_outside_kit_default_subset() {
+        for icon in [
+            gpui::assets::IconName::TextAlignStart,
+            gpui::assets::IconName::Minimize,
+            gpui::assets::IconName::Type,
+            gpui::assets::IconName::TextWrap,
+            gpui::assets::IconName::Save,
+            gpui::assets::IconName::FolderOpen,
+            gpui::assets::IconName::Clipboard,
+            gpui::assets::IconName::Ellipsis,
+            gpui::assets::IconName::Sun,
+            gpui::assets::IconName::Moon,
+        ] {
+            assert!(IconAssets.load(&icon.path()).unwrap().is_some(), "{icon:?}");
+        }
+    }
     #[test]
     fn semantic_actions_and_direct_kit_controls_have_registered_assets() {
         let actions = [
