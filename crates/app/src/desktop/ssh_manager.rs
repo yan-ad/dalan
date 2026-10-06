@@ -21,7 +21,7 @@ use gpui::{
 };
 
 use gpui::component::{
-    ActiveTheme, Disableable, Sizable,
+    ActiveTheme, Disableable, Sizable, WindowExt,
     button::Button as KitButton,
     checkbox::Checkbox as KitCheckbox,
     menu::{DropdownMenu as KitDropdown, PopupMenuItem},
@@ -81,6 +81,7 @@ pub(super) struct SshManager {
     test_cancel: Option<Arc<AtomicBool>>,
     owner: WeakEntity<SourceForm>,
     delete_confirmation: bool,
+    close_pending: bool,
     picker_open: bool,
     revision: u64,
     _subscriptions: Vec<Subscription>,
@@ -189,6 +190,7 @@ impl SshManager {
             test_cancel: None,
             owner: owner.downgrade(),
             delete_confirmation: false,
+            close_pending: false,
             picker_open: false,
             revision: 0,
             _subscriptions: Vec::new(),
@@ -597,24 +599,74 @@ impl SshManager {
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.saving {
-            self.cancel_test();
-            if self.embedded {
-                // Discard in memory as well: the host may retain this entity.
-                self.revision += 1;
-                self.profiles = self.saved_profiles.clone();
-                self.selected = None;
-                self.error = None;
-                self.feedback = None;
-                self.delete_confirmation = false;
-                if let Some(id) = self.profiles.first().map(|profile| profile.id.clone()) {
-                    self.select(id, cx);
-                }
-                cx.emit(EmbeddedSshEvent::Cancel);
-                cx.notify();
-            } else {
-                window.remove_window();
+        if self.saving || self.close_pending || window.has_active_dialog(cx) {
+            return;
+        }
+        if !self.has_unsaved_changes(cx) && self.test_cancel.is_none() {
+            self.finish_close(window, cx);
+            return;
+        }
+        let manager = cx.entity().downgrade();
+        let cancel_manager = manager.clone();
+        let description = if self.test_cancel.is_some() {
+            "Close the SSH editor and discard any unapplied changes? The running authentication test will be cancelled. It executes only the harmless remote command ‘true’; no database or remote data is modified."
+        } else {
+            "Discard unapplied SSH session changes and close the editor? Saved sessions and datasource settings will not be changed."
+        };
+        self.close_pending = super::confirm::open(
+            window,
+            cx,
+            super::confirm::ConfirmAlert {
+                title: "Close SSH editor?".into(),
+                description: description.into(),
+                confirm_id: "ssh-discard-close",
+                confirm_label: "Discard and close",
+                cancel_id: "ssh-keep-editing",
+                cancel_label: "Keep editing",
+            },
+            move |window, cx| {
+                manager
+                    .update(cx, |manager, cx| {
+                        if manager.saving {
+                            return false;
+                        }
+                        manager.close_pending = false;
+                        manager.finish_close(window, cx);
+                        true
+                    })
+                    .unwrap_or(true)
+            },
+            move |_, cx| {
+                let _ = cancel_manager.update(cx, |manager, cx| {
+                    manager.close_pending = false;
+                    cx.notify();
+                });
+                true
+            },
+        );
+    }
+
+    /// The only discard path: called after confirmation or when already clean.
+    fn finish_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
+        self.cancel_test();
+        if self.embedded {
+            // Discard in memory as well: the host may retain this entity.
+            self.revision += 1;
+            self.profiles = self.saved_profiles.clone();
+            self.selected = None;
+            self.error = None;
+            self.feedback = None;
+            self.delete_confirmation = false;
+            if let Some(id) = self.profiles.first().map(|profile| profile.id.clone()) {
+                self.select(id, cx);
             }
+            cx.emit(EmbeddedSshEvent::Cancel);
+            cx.notify();
+        } else {
+            window.remove_window();
         }
     }
 
@@ -773,16 +825,77 @@ impl Render for SshManager {
         if !self.embedded && !self.native_close_registered {
             self.native_close_registered = true;
             let weak = cx.entity().downgrade();
-            window.on_window_should_close(cx, move |_, cx| {
-                weak.upgrade().is_none_or(|entity| {
-                    let manager = entity.read(cx);
-                    if manager.saving {
-                        return false;
-                    }
-                    manager.cancel_test();
-                    true
-                })
+            window.on_window_should_close(cx, move |window, cx| {
+                let Some(entity) = weak.upgrade() else {
+                    return true;
+                };
+                if window.has_active_dialog(cx) {
+                    return false;
+                }
+                let manager = entity.read(cx);
+                if manager.saving || manager.close_pending {
+                    return false;
+                }
+                if !manager.has_unsaved_changes(cx) && manager.test_cancel.is_none() {
+                    return true;
+                }
+                entity.update(cx, |manager, cx| manager.close(window, cx));
+                false
             });
+        }
+        if self.delete_confirmation
+            && let Some(profile) = self
+                .profiles
+                .iter()
+                .find(|profile| Some(&profile.id) == self.selected.as_ref())
+        {
+            let id = profile.id.clone();
+            let cancel_id = id.clone();
+            let revision = self.revision;
+            let manager = cx.entity().downgrade();
+            let cancel_manager = manager.clone();
+            super::confirm::open(
+                window,
+                cx,
+                super::confirm::ConfirmAlert {
+                    title: "Remove SSH session?".into(),
+                    description: format!(
+                        "Remove {} from the draft? Nothing is deleted from disk until Apply / Use. Saved datasource references are checked then. Closing without applying restores the session.",
+                        profile.name
+                    )
+                    .into(),
+                    confirm_id: "ssh-delete-confirm",
+                    confirm_label: "Confirm remove",
+                    cancel_id: "ssh-delete-cancel",
+                    cancel_label: "Keep session",
+                },
+                move |_, cx| {
+                    let _ = manager.update(cx, |manager, cx| {
+                        if manager.delete_confirmation
+                            && manager.editable()
+                            && manager.revision == revision
+                            && manager.selected.as_ref() == Some(&id)
+                            && manager.profiles.iter().any(|profile| profile.id == id)
+                        {
+                            manager.remove(cx);
+                        } else {
+                            // Never apply a confirmation to a changed draft or selection.
+                            manager.delete_confirmation = false;
+                            cx.notify();
+                        }
+                    });
+                    true
+                },
+                move |_, cx| {
+                    let _ = cancel_manager.update(cx, |manager, cx| {
+                        if manager.selected.as_ref() == Some(&cancel_id) {
+                            manager.delete_confirmation = false;
+                            cx.notify();
+                        }
+                    });
+                    true
+                },
+            );
         }
         let enabled = self.editable();
         let mut list = div()
@@ -954,11 +1067,6 @@ impl Render for SshManager {
                     .child("Host keys must already be trusted. Test executes the harmless command ‘true’ remotely; it does not test the database or forwarding."));
         } else {
             editor = editor.child("No SSH session selected. Add a session to get started.");
-        }
-        if self.delete_confirmation {
-            editor = editor.child(div().text_color(cx.theme().warning).child("Remove this session from the draft? Click Confirm remove. Saved datasource references are checked on Apply / Use."))
-                .child(self.button("ssh-delete-confirm", "Confirm remove", Icon::Remove, enabled, |this, _, cx| this.remove(cx), cx))
-                .child(self.button("ssh-delete-cancel", "Keep session", Icon::Close, enabled, |this, _, cx| { this.delete_confirmation = false; cx.notify(); }, cx));
         }
         div()
             .id("ssh-manager")
@@ -1359,6 +1467,8 @@ mod ui_tests {
         click(cx, "ssh-add");
         assert!(manager.read_with(cx, |manager, app| manager.has_unsaved_changes(app)));
         click(cx, "ssh-cancel");
+        assert!(events.borrow().is_empty());
+        click(cx, "ssh-discard-close");
         assert_eq!(*events.borrow(), vec![EmbeddedSshEvent::Cancel]);
         assert_eq!(cx.cx.read(|app| app.windows().len()), 2);
         assert!(unrelated.refresh().is_ok());
@@ -1430,6 +1540,65 @@ mod ui_tests {
     }
 
     #[gpui::test]
+    fn close_cancel_preserves_draft_and_running_test_then_confirm_aborts(cx: &mut TestAppContext) {
+        let files = Files::new(false);
+        let (manager, _, cx) = fixture(cx, &files);
+        set(&manager, cx, "ssh-name", "Unapplied draft");
+        let cancel = Arc::new(AtomicBool::new(false));
+        manager.update(cx, |manager, cx| {
+            // Synthetic running test: never starts OpenSSH or accesses credentials.
+            manager.busy = true;
+            manager.test_cancel = Some(cancel.clone());
+            cx.notify();
+        });
+        assert!(!cx.simulate_close());
+        cx.run_until_parked();
+        let revision = manager.read_with(cx, |manager, _| manager.revision);
+        click(cx, "ssh-keep-editing");
+        assert!(!cancel.load(Ordering::Acquire));
+        manager.read_with(cx, |manager, app| {
+            assert_eq!(manager.revision, revision);
+            assert_eq!(
+                manager.inputs["ssh-name"].read(app).value(),
+                "Unapplied draft"
+            );
+            assert!(manager.busy);
+        });
+        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+        click(cx, "ssh-cancel");
+        manager.update_in(cx, |manager, window, cx| manager.close(window, cx));
+        click(cx, "ssh-discard-close");
+        assert!(cancel.load(Ordering::Acquire));
+        assert!(cx.cx.read(|app| app.windows().is_empty()));
+        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+    }
+
+    #[gpui::test]
+    fn delete_alert_cancel_and_stale_revision_never_remove_session(cx: &mut TestAppContext) {
+        let files = Files::new(false);
+        let (manager, _, cx) = fixture(cx, &files);
+        click(cx, "ssh-remove");
+        click(cx, "ssh-delete-cancel");
+        assert_eq!(
+            manager.read_with(cx, |manager, _| manager.profiles.len()),
+            1
+        );
+        click(cx, "ssh-remove");
+        set(
+            &manager,
+            cx,
+            "ssh-name",
+            "Changed after confirmation opened",
+        );
+        click(cx, "ssh-delete-confirm");
+        assert_eq!(
+            manager.read_with(cx, |manager, _| manager.profiles.len()),
+            1
+        );
+        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+    }
+
+    #[gpui::test]
     fn manager_load_add_duplicate_preserves_agent_metadata_and_drafts(cx: &mut TestAppContext) {
         let files = Files::new(false);
         let (manager, _, cx) = fixture(cx, &files);
@@ -1495,6 +1664,7 @@ mod ui_tests {
         assert_eq!(files.sources.load().unwrap(), vec![source]);
         assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
         click(cx, "ssh-cancel");
+        click(cx, "ssh-discard-close");
         assert!(cx.cx.read(|app| app.windows().is_empty()));
         assert!(owner.read_with(cx, |form, app| {
             form.profile(app).unwrap().ssh_configuration_id.is_none()
@@ -1638,6 +1808,7 @@ mod ui_tests {
         click(cx, "ssh-remove");
         click(cx, "ssh-delete-confirm");
         click(cx, "ssh-cancel");
+        click(cx, "ssh-discard-close");
         assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
         assert_eq!(
             owner.read_with(cx, |form, app| form.profile(app).unwrap()),

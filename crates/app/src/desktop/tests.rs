@@ -741,7 +741,7 @@ fn new_console_shortcut_opens_once_and_uses_selected_database(cx: &mut TestAppCo
     assert_eq!(workspace.read_with(cx, |w, _| w.tab_count()), 1);
     cx.simulate_keystrokes("cmd-w");
     cx.run_until_parked();
-    assert!(cx.debug_bounds("confirm-close-console").is_some());
+    assert!(cx.debug_bounds("discard-query-draft").is_some());
     cx.simulate_keystrokes("space");
     cx.run_until_parked();
     assert_eq!(

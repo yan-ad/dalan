@@ -1,4 +1,5 @@
 mod about;
+mod confirm;
 mod data_grid;
 mod icons;
 mod input;

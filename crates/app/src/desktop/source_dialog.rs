@@ -1603,34 +1603,90 @@ impl Render for SourceDialog {
                     ),
             );
         }
-        if self.confirm_remove {
-            root=root.child(div().p_2().flex().gap_2().child("Remove this source and its saved credentials? Database objects are not changed.").child(Button::new("settings-confirm-remove").debug_selector(||"settings-confirm-remove".into()).label("Remove").disabled(blocked).on_click(cx.listener(|this,_,window,cx|this.remove(window,cx)))).child(Button::new("settings-keep-source").label("Keep").on_click(cx.listener(|this,_,_,cx|{this.confirm_remove=false;cx.notify();}))));
-        }
         if self.confirm_close {
-            root = root.child(
-                div()
-                    .p_2()
-                    .flex()
-                    .gap_2()
-                    .child("Close settings and discard unapplied drafts?")
-                    .child(
-                        Button::new("settings-discard-close")
-                            .debug_selector(|| "settings-discard-close".into())
-                            .label("Discard and close")
-                            .disabled(blocked)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.finish_close(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("settings-keep-editing")
-                            .debug_selector(|| "settings-keep-editing".into())
-                            .label("Keep editing")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.confirm_close = false;
-                                cx.notify();
-                            })),
-                    ),
+            let confirm = cx.entity().downgrade();
+            let cancel = confirm.clone();
+            super::confirm::open(
+                window,
+                cx,
+                super::confirm::ConfirmAlert {
+                    title: "Discard unapplied settings?".into(),
+                    description: "Closing settings will discard unsaved source/SSH drafts and unapplied driver choices. Saved connections and database data are not changed.".into(),
+                    confirm_id: "settings-discard-close",
+                    confirm_label: "Discard and close",
+                    cancel_id: "settings-keep-editing",
+                    cancel_label: "Keep editing",
+                },
+                move |window, app| {
+                    confirm
+                        .update(app, |d, cx| {
+                            if d.blocked(cx) {
+                                return false;
+                            }
+                            d.confirm_close = false;
+                            d.finish_close(window, cx);
+                            true
+                        })
+                        .unwrap_or(true)
+                },
+                move |_, app| {
+                    cancel
+                        .update(app, |d, cx| {
+                            if d.blocked(cx) {
+                                return false;
+                            }
+                            d.confirm_close = false;
+                            cx.notify();
+                            true
+                        })
+                        .unwrap_or(true)
+                },
+            );
+        } else if self.confirm_remove {
+            let target = self.active.clone();
+            let target_cancel = target.clone();
+            let confirm = cx.entity().downgrade();
+            let cancel = confirm.clone();
+            let description = format!(
+                "Remove {} and its saved credentials? Only local source settings are removed; remote databases/data are not changed.",
+                self.form.read(cx).draft_identity(cx).0
+            );
+            super::confirm::open(
+                window,
+                cx,
+                super::confirm::ConfirmAlert {
+                    title: "Remove data source?".into(),
+                    description: description.into(),
+                    confirm_id: "settings-confirm-remove",
+                    confirm_label: "Remove source",
+                    cancel_id: "settings-keep-source",
+                    cancel_label: "Keep source",
+                },
+                move |window, app| {
+                    confirm
+                        .update(app, |d, cx| {
+                            if d.blocked(cx) || d.active != target || !d.confirm_remove {
+                                return false;
+                            }
+                            d.remove(window, cx);
+                            true
+                        })
+                        .unwrap_or(true)
+                },
+                move |_, app| {
+                    cancel
+                        .update(app, |d, cx| {
+                            if d.blocked(cx) {
+                                return false;
+                            }
+                            if d.active == target_cancel {
+                                d.confirm_remove = false;
+                            }
+                            cx.notify();
+                            true
+                        })
+                        .unwrap_or(true)
+                },
             );
         }
         root
@@ -1700,6 +1756,7 @@ mod tests {
         model: &Entity<SourceModel>,
         cx: &mut TestAppContext,
     ) -> (DialogHandle, VisualTestContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
         cx.update(|app| show(model.clone(), app));
         let handle = cx.update(|app| {
             let windows = app.windows();
@@ -1718,6 +1775,7 @@ mod tests {
     fn new_model(cx: &mut TestAppContext) -> Entity<SourceModel> {
         cx.update(gpui::init);
         cx.update(crate::desktop::bind_keys);
+        cx.update(|cx| cx.set_reduce_motion(true));
         assert!(cx.update(|app| app.windows().is_empty()));
         let model = cx.new(|_| SourceModel::for_tests(vec![]));
         model.update(cx, |model, cx| model.new_source(cx));
@@ -1726,7 +1784,13 @@ mod tests {
 
     fn assert_closed(model: &Entity<SourceModel>, cx: &mut TestAppContext) {
         cx.run_until_parked();
-        assert!(cx.update(|app| app.windows().is_empty()));
+        let windows = cx.update(|app| app.windows());
+        assert!(
+            windows.is_empty(),
+            "windows not empty: len={}, windows={:?}",
+            windows.len(),
+            windows
+        );
         model.read_with(cx, |model, _| {
             assert!(!model.form_open);
             assert!(model.form_profile.is_none());
@@ -2000,6 +2064,7 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.did_prompt_for_new_path());
         visual.simulate_new_path_selection(|_| None);
+        cx.run_until_parked();
         visual.run_until_parked();
         click(&mut visual, "source-cancel");
         click(&mut visual, "settings-discard-close");

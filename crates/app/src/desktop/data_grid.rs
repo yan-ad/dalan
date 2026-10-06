@@ -208,6 +208,7 @@ pub(super) struct DataGrid {
     editing: bool,
     edit_target: Option<(usize, usize)>,
     write_confirm: bool,
+    write_alert_open: bool,
     edit_rows: usize,
     edit_revision: u64,
     write_feedback: Option<String>,
@@ -331,6 +332,7 @@ impl DataGrid {
             editing: false,
             edit_target: None,
             write_confirm: false,
+            write_alert_open: false,
             edit_rows: 0,
             edit_revision: snapshot.table_edit_revision,
             write_feedback: snapshot.write_feedback.clone(),
@@ -456,18 +458,139 @@ impl DataGrid {
                 self.model.update(cx, |m, cx| m.stage_row(row, action, cx))
             }
             "discard" => {
-                self.model.update(cx, |m, cx| m.discard_table_changes(cx));
-                self.editing = false;
-                self.write_confirm = false;
+                self.open_write_alert(false, window, cx);
             }
-            "apply" => self.write_confirm = true,
-            "confirm" => {
-                self.write_confirm = false;
-                self.model.update(cx, |m, cx| m.apply_table_changes(cx));
+            "apply"
+                if !self.write_alert_open
+                    && self.model.read(cx).table_editable()
+                    && self.model.read(cx).has_table_changes() =>
+            {
+                self.write_confirm = true;
             }
             _ => {}
         }
         cx.notify();
+    }
+
+    /// Snapshot the exact staging target. A stale alert can never apply/discard
+    /// edits from a replacement page, tab model, or revision.
+    fn open_write_alert(&mut self, apply: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.write_alert_open {
+            return;
+        }
+        let model = self.model.read(cx);
+        if model.write_busy || !model.has_table_changes() || (apply && !model.table_editable()) {
+            self.write_confirm = false;
+            return;
+        }
+        let Some(page) = model.page.clone() else {
+            return;
+        };
+        let selection = Self::selection(model);
+        let revision = model.table_edit_revision;
+        let model_id = self.model.entity_id();
+        let count = model
+            .table_edits
+            .as_ref()
+            .map(|e| e.operation_count())
+            .unwrap_or(0);
+        let source = model
+            .profiles
+            .iter()
+            .find(|p| Some(&p.id) == model.selected_source.as_ref())
+            .map(|p| p.name.as_str())
+            .unwrap_or("source");
+        let description = format!(
+            "{} {count} staged operation(s) {} {} / {} / {}. {}",
+            if apply { "Apply" } else { "Discard" },
+            if apply { "to" } else { "for" },
+            source,
+            selection.1.as_deref().unwrap_or("database"),
+            selection.2.as_deref().unwrap_or("table"),
+            if apply {
+                "Updates, inserts and deletes will modify the database."
+            } else {
+                "Local staged changes will be lost; the database is unchanged."
+            }
+        );
+        let weak = cx.entity().downgrade();
+        let cancel = weak.clone();
+        self.write_alert_open = super::confirm::open(
+            window,
+            cx,
+            super::confirm::ConfirmAlert {
+                title: if apply {
+                    "Apply staged changes?"
+                } else {
+                    "Discard staged changes?"
+                }
+                .into(),
+                description: description.into(),
+                confirm_id: if apply {
+                    "grid-confirm-apply"
+                } else {
+                    "grid-confirm-discard"
+                },
+                confirm_label: if apply {
+                    "Apply to database"
+                } else {
+                    "Discard changes"
+                },
+                cancel_id: if apply {
+                    "grid-keep-staging"
+                } else {
+                    "grid-keep-edits"
+                },
+                cancel_label: "Keep editing",
+            },
+            move |_, cx| {
+                weak.update(cx, |this, cx| {
+                    let model = this.model.read(cx);
+                    let valid = this.model.entity_id() == model_id
+                        && !model.write_busy
+                        && model.has_table_changes()
+                        && model.table_edit_revision == revision
+                        && Self::selection(model) == selection
+                        && model.page.as_ref().is_some_and(|p| Arc::ptr_eq(p, &page))
+                        && model.table_edits.as_ref().is_some_and(|e| {
+                            Arc::ptr_eq(e.base(), &page)
+                                && e.request().map_or(!apply, |r| {
+                                    Some(&r.database) == selection.1.as_ref()
+                                        && Some(&r.table) == selection.2.as_ref()
+                                })
+                        })
+                        && (!apply || (this.write_confirm && model.table_editable()));
+                    this.write_confirm = false;
+                    if !valid {
+                        cx.notify();
+                        return false;
+                    }
+                    this.write_alert_open = false;
+                    this.model.update(cx, |m, cx| {
+                        if apply {
+                            m.apply_table_changes(cx);
+                        } else {
+                            m.discard_table_changes(cx);
+                        }
+                    });
+                    if !apply {
+                        this.editing = false;
+                        this.edit_target = None;
+                    }
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(true)
+            },
+            move |_, cx| {
+                let _ = cancel.update(cx, |this, cx| {
+                    this.write_confirm = false;
+                    this.write_alert_open = false;
+                    cx.notify();
+                });
+                true
+            },
+        );
     }
 
     fn selection(model: &SourceModel) -> Selection {
@@ -1319,8 +1442,8 @@ impl Render for DataGrid {
                     ),
             );
         }
-        if self.write_confirm {
-            root=root.child(div().id("grid-write-confirm").debug_selector(||"grid-write-confirm".into()).absolute().top(px(HEADER_HEIGHT)).left(px(ROW_GUTTER_WIDTH)).right_0().p_3().bg(cx.theme().popover).border_1().border_color(cx.theme().border).flex().gap_2().child(format!("Apply {} staged operation(s) to {}? Updates/inserts/deletes will modify the database.",self.model.read(cx).table_edits.as_ref().map(|e|e.operation_count()).unwrap_or(0),self.model.read(cx).selected_table.as_deref().unwrap_or("table"))).child(KitButton::new("grid-confirm-apply").debug_selector(||"grid-confirm-apply".into()).small().label("Apply to database").on_click(cx.listener(|this,_,window,cx|this.grid_action("confirm",window,cx)))).child(KitButton::new("grid-keep-staging").small().label("Keep editing").on_click(cx.listener(|this,_,_,cx|{this.write_confirm=false;cx.notify();}))));
+        if self.write_confirm && !self.write_alert_open {
+            self.open_write_alert(true, window, cx);
         }
         let entity = cx.entity().downgrade();
         root.context_menu(move |mut menu, _, cx| {
@@ -1524,16 +1647,61 @@ mod tests {
             assert!(!m.write_busy && !m.busy);
         });
         click(cx, "grid-apply");
-        assert!(cx.debug_bounds("grid-write-confirm").is_some());
+        assert!(cx.debug_bounds("grid-confirm-apply").is_some());
+        click(cx, "grid-keep-staging");
         assert!(!model.read_with(cx, |m, _| m.write_busy));
         grid.update_in(cx, |g, window, cx| g.grid_action("discard", window, cx));
         cx.run_until_parked();
+        assert!(model.read_with(cx, |m, _| m.has_table_changes()));
+        click(cx, "grid-confirm-discard");
         assert!(!model.read_with(cx, |m, _| m.has_table_changes()));
         assert!(Arc::ptr_eq(
             &base,
             &model.read_with(cx, |m, _| m.page.clone().unwrap())
         ));
     }
+    #[gpui::test]
+    fn staged_alerts_cancel_safely_and_reject_changed_revisions(cx: &mut TestAppContext) {
+        use gpui::component::WindowExt;
+        let (model, grid, cx) = editable_fixture(cx);
+        model.update(cx, |m, cx| m.stage_cell(0, 1, Some("changed".into()), cx));
+        cx.run_until_parked();
+        let body = cx.debug_bounds("grid-body").unwrap();
+        grid.update_in(cx, |g, w, cx| g.grid_action("discard", w, cx));
+        cx.run_until_parked();
+        assert!(cx.update(|w, cx| w.has_active_dialog(cx)));
+        assert_eq!(cx.debug_bounds("grid-body").unwrap(), body);
+        click(cx, "grid-keep-edits");
+        assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
+        assert!(model.read_with(cx, |m, _| m.has_table_changes()));
+        grid.update_in(cx, |g, w, cx| g.grid_action("apply", w, cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("grid-write-confirm").is_none());
+        assert_eq!(cx.debug_bounds("grid-body").unwrap(), body);
+        cx.simulate_click(point(px(2.), px(2.)), Modifiers::default());
+        cx.run_until_parked();
+        assert!(cx.update(|w, cx| w.has_active_dialog(cx)));
+        assert!(model.read_with(cx, |m, _| m.has_table_changes()));
+        press(cx, "escape");
+        assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
+        grid.update_in(cx, |g, w, cx| g.grid_action("discard", w, cx));
+        cx.run_until_parked();
+        model.update(cx, |m, cx| m.stage_cell(1, 1, Some("newer".into()), cx));
+        cx.run_until_parked();
+        click(cx, "grid-confirm-discard");
+        assert!(model.read_with(cx, |m, _| m.has_table_changes()));
+        assert!(cx.update(|w, cx| w.has_active_dialog(cx)));
+        click(cx, "grid-keep-edits");
+        grid.update_in(cx, |g, w, cx| g.grid_action("apply", w, cx));
+        cx.run_until_parked();
+        model.update(cx, |m, cx| m.stage_cell(1, 1, Some("latest".into()), cx));
+        cx.run_until_parked();
+        click(cx, "grid-confirm-apply");
+        assert!(!model.read_with(cx, |m, _| m.write_busy));
+        assert!(model.read_with(cx, |m, _| m.has_table_changes()));
+        click(cx, "grid-keep-staging");
+    }
+
     #[gpui::test]
     fn staged_rows_render_default_clone_deleted_restore_without_network(cx: &mut TestAppContext) {
         let (model, grid, cx) = editable_fixture(cx);

@@ -122,8 +122,7 @@ pub(super) struct SourceWorkspace {
     open_generation: u64,
     close_confirmation: Option<String>,
     focus: FocusHandle,
-    confirmation_focus: FocusHandle,
-    pending_confirmation_focus: bool,
+    close_alert_open: bool,
     pending_focus: bool,
     tab_scroll: gpui::ScrollHandle,
     _subscription: Subscription,
@@ -174,8 +173,7 @@ impl SourceWorkspace {
             open_generation: 0,
             close_confirmation: None,
             focus: cx.focus_handle().tab_stop(false),
-            confirmation_focus: cx.focus_handle().tab_stop(true).tab_index(20),
-            pending_confirmation_focus: false,
+            close_alert_open: false,
             pending_focus: false,
             tab_scroll: gpui::ScrollHandle::new(),
             _subscription: subscription,
@@ -284,22 +282,24 @@ impl SourceWorkspace {
     pub(super) fn has_inflight_write(&self, cx: &gpui::App) -> bool {
         self.views.values().any(|t| t.model.read(cx).write_busy)
     }
-    fn close_tab(&mut self, id: &str, force: bool, cx: &mut Context<Self>) {
+    fn close_tab(&mut self, id: &str, force: bool, cx: &mut Context<Self>) -> bool {
+        if !force && self.close_alert_open {
+            return false;
+        }
         let Some(tab) = self.views.get(id) else {
-            return;
+            return false;
         };
         let state = tab.model.read(cx);
         if state.write_busy {
-            return;
+            return false;
         }
         if !force
             && ((state.query_console && !state.query_sql.trim().is_empty())
                 || state.has_table_changes())
         {
             self.close_confirmation = Some(id.to_owned());
-            self.pending_confirmation_focus = true;
             cx.notify();
-            return;
+            return false;
         }
         // A per-tab model owns its operation; dropping the retained view/model
         // cancels only that tab, never another tab or root metadata refresh.
@@ -309,7 +309,9 @@ impl SourceWorkspace {
         self.touch_active(cx);
         self.close_confirmation = None;
         self.pending_focus = true;
+        self.close_alert_open = false;
         cx.notify();
+        true
     }
     fn cycle(&mut self, backwards: bool, cx: &mut Context<Self>) {
         let Some(active) = self.tabs.active() else {
@@ -423,18 +425,52 @@ impl Render for SourceWorkspace {
             }
         }
         let active = self.tabs.active().map(str::to_owned);
-        if self.pending_confirmation_focus {
-            // KitButton owns its focus handle in keyed window state. Resolve
-            // that same handle rather than tracking a second toolbar handle.
-            self.confirmation_focus = window
-                .use_keyed_state("keep-query-draft", cx, |_, cx| cx.focus_handle())
-                .read(cx)
-                .clone();
-            self.confirmation_focus.focus(window, cx);
-            self.pending_confirmation_focus = false;
-            self.pending_focus = false;
+        if !self.close_alert_open
+            && let Some(target) = self.close_confirmation.clone()
+            && let Some(tab) = self.views.get(&target)
+            && !tab.model.read(cx).write_busy
+        {
+            let model_id = tab.model.entity_id();
+            let weak = cx.entity().downgrade();
+            let cancel = weak.clone();
+            self.close_alert_open = super::confirm::open(
+                window,
+                cx,
+                super::confirm::ConfirmAlert {
+                    title: "Discard unsaved changes?".into(),
+                    description:
+                        "Closing this tab will discard its unsaved SQL draft or staged table changes."
+                            .into(),
+                    confirm_id: "discard-query-draft",
+                    confirm_label: "Discard",
+                    cancel_id: "keep-query-draft",
+                    cancel_label: "Keep open",
+                },
+                move |_, cx| {
+                    weak.update(cx, |this, cx| {
+                        if this.close_confirmation.as_deref() != Some(target.as_str())
+                            || !this.views.get(&target).is_some_and(|tab| {
+                                tab.model.entity_id() == model_id && !tab.model.read(cx).write_busy
+                            })
+                        {
+                            return false;
+                        }
+                        this.close_tab(&target, true, cx)
+                    })
+                    .unwrap_or(true)
+                },
+                move |_, cx| {
+                    let _ = cancel.update(cx, |this, cx| {
+                        this.close_confirmation = None;
+                        this.close_alert_open = false;
+                        this.pending_focus = true;
+                        cx.notify();
+                    });
+                    true
+                },
+            );
         }
-        if self.pending_focus {
+        if self.pending_focus && !self.close_alert_open {
             if let Some(index) = self
                 .tabs
                 .tabs()
@@ -648,43 +684,6 @@ impl Render for SourceWorkspace {
                             .on_click(cx.listener(|this, _, _, cx| this.new_console(cx))),
                     ),
             );
-        }
-        if let Some(id) = &self.close_confirmation {
-            let target = id.clone();
-            root =
-                root.child(
-                    div()
-                        .id("confirm-close-console")
-                        .debug_selector(|| "confirm-close-console".into())
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .px(px(10.))
-                        .py(px(4.))
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Discard this unsaved SQL draft?")
-                        .child(
-                            KitButton::new("discard-query-draft")
-                                .small()
-                                .label("Discard")
-                                .debug_selector(|| "discard-query-draft".into())
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.close_tab(&target, true, cx)
-                                })),
-                        )
-                        .child(
-                            KitButton::new("keep-query-draft")
-                                .small()
-                                .label("Keep open")
-                                .debug_selector(|| "keep-query-draft".into())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_confirmation = None;
-                                    this.pending_focus = true;
-                                    cx.notify();
-                                })),
-                        ),
-                );
         }
         let content = match active.and_then(|id| self.views.get(&id).map(|tab| tab.view.clone())) {
             Some(TabView::Table(view)) => view.into_any_element(),
@@ -1402,7 +1401,12 @@ mod tests {
         pump_workers(cx);
         cx.simulate_keystrokes("cmd-w");
         pump_workers(cx);
-        assert!(cx.debug_bounds("confirm-close-console").is_some());
+        assert!(cx.debug_bounds("discard-query-draft").is_some());
+        assert!(cx.debug_bounds("confirm-close-console").is_none());
+        assert!(cx.update(|window, cx| {
+            use gpui::component::WindowExt;
+            window.has_active_dialog(cx)
+        }));
         click(cx, "keep-query-draft");
         assert!(workspace.read_with(cx, |workspace, _| workspace.close_confirmation.is_none()));
         assert_eq!(active(&workspace, cx).0, id);
@@ -1421,6 +1425,49 @@ mod tests {
     }
 
     #[gpui::test]
+    fn dirty_tab_alert_rejects_inflight_write_and_cancel_restores_editor(cx: &mut TestAppContext) {
+        use gpui::component::WindowExt;
+        let (workspace, _root, _listener, cx) = fixture(cx);
+        let (id, model) = console(&workspace, cx);
+        cx.simulate_input("SELECT 1");
+        pump_workers(cx);
+        model.update(cx, |m, cx| {
+            m.write_busy = true;
+            cx.notify();
+        });
+        workspace.update(cx, |w, cx| w.close_tab(&id, false, cx));
+        pump_workers(cx);
+        assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
+        model.update(cx, |m, cx| {
+            m.write_busy = false;
+            cx.notify();
+        });
+        workspace.update(cx, |w, cx| w.close_tab(&id, false, cx));
+        pump_workers(cx);
+        model.update(cx, |m, cx| {
+            m.write_busy = true;
+            cx.notify();
+        });
+        pump_workers(cx);
+        click(cx, "discard-query-draft");
+        assert_eq!(active(&workspace, cx).0, id);
+        assert!(cx.update(|w, cx| w.has_active_dialog(cx)));
+        click(cx, "keep-query-draft");
+        pump_workers(cx);
+        assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
+        model.update(cx, |m, cx| {
+            m.write_busy = false;
+            cx.notify();
+        });
+        cx.simulate_input(" -- kept");
+        pump_workers(cx);
+        assert_eq!(
+            model.read_with(cx, |m, _| m.query_sql.clone()),
+            "SELECT 1 -- kept"
+        );
+    }
+
+    #[gpui::test]
     fn closing_inactive_and_active_tabs_releases_only_target_entities(cx: &mut TestAppContext) {
         let (workspace, root, _listener, cx) = fixture(cx);
         let (first_id, first) = open_table(&workspace, &root, "items", cx);
@@ -1429,7 +1476,7 @@ mod tests {
         let (second_id, second) = open_table(&workspace, &root, "orders", cx);
         let page = second.read_with(cx, |model, _| model.page.clone().unwrap());
         workspace.update(cx, |workspace, cx| {
-            workspace.close_tab(&first_id, false, cx)
+            workspace.close_tab(&first_id, false, cx);
         });
         pump_workers(cx);
         cx.refresh().unwrap();
@@ -1443,7 +1490,7 @@ mod tests {
         let draft_weak = draft.downgrade();
         drop(draft);
         workspace.update(cx, |workspace, cx| {
-            workspace.close_tab(&console_id, false, cx)
+            workspace.close_tab(&console_id, false, cx);
         });
         pump_workers(cx);
         cx.refresh().unwrap();
@@ -1515,7 +1562,7 @@ mod tests {
         let weak = loading.downgrade();
         drop(loading);
         workspace.update(cx, |workspace, cx| {
-            workspace.close_tab(&loading_id, false, cx)
+            workspace.close_tab(&loading_id, false, cx);
         });
         pump_workers(cx);
         cx.refresh().unwrap();

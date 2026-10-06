@@ -2450,6 +2450,9 @@ impl SourceModel {
         self.confirm_delete(cx);
     }
 
+    pub fn pending_removal_id(&self) -> Option<String> {
+        self.pending_delete_source.clone()
+    }
     pub fn removal_source_name(&self) -> Option<&str> {
         self.pending_delete_source.as_ref().and_then(|id| {
             self.profiles

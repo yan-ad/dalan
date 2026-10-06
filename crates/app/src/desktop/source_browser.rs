@@ -960,7 +960,7 @@ pub(super) fn explorer_header_actions(
 }
 
 impl Render for SourceExplorer {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = colors(cx);
         let model = self.model.read(cx);
         let target = model
@@ -971,14 +971,56 @@ impl Render for SourceExplorer {
             target.is_none_or(|id| !model.profiles.iter().any(|p| &p.id == id)) || model.saving;
         let refresh_is_disabled = refresh_disabled(model);
         let metadata_notice = model.metadata_notice.clone();
-        let busy = model.busy;
-        let confirm = model.delete_confirm;
+        let removal_id = model.pending_removal_id().filter(|_| model.delete_confirm);
         let error = model.error.clone();
         let name = model
             .removal_source_name()
             .unwrap_or("Data source")
             .to_owned();
         let expanded = model.tree.has_visible_expansion(&model.profiles);
+        if let Some(id) = removal_id {
+            let cancel_id = id.clone();
+            let confirm_model = self.model.downgrade();
+            let cancel_model = confirm_model.clone();
+            super::confirm::open(
+                window,
+                cx,
+                super::confirm::ConfirmAlert {
+                    title: "Remove saved source?".into(),
+                    description: format!(
+                        "Remove {name}? Only the saved source, its local credentials and cached metadata are removed. Databases and remote data are not modified."
+                    )
+                    .into(),
+                    confirm_id: "confirm-delete",
+                    confirm_label: "Remove",
+                    cancel_id: "cancel-delete",
+                    cancel_label: "Cancel",
+                },
+                move |_, cx| {
+                    let _ = confirm_model.update(cx, |model, cx| {
+                        if model.delete_confirm
+                            && !model.saving
+                            && model.pending_removal_id().as_ref() == Some(&id)
+                            && model.profiles.iter().any(|profile| profile.id == id)
+                        {
+                            model.confirm_delete_explorer(cx);
+                        }
+                    });
+                    true
+                },
+                move |_, cx| {
+                    let _ = cancel_model.update(cx, |model, cx| {
+                        if model.delete_confirm
+                            && !model.saving
+                            && model.pending_removal_id().as_ref() == Some(&cancel_id)
+                        {
+                            model.request_delete_explorer(cx);
+                        }
+                    });
+                    true
+                },
+            );
+        }
         let toolbar = div()
             .id("source-explorer-toolbar")
             .debug_selector(|| "source-explorer-toolbar".into())
@@ -1116,44 +1158,6 @@ impl Render for SourceExplorer {
             ));
         }
         root = root.child(entries);
-        if confirm {
-            root = root.child(
-                div()
-                    .flex_shrink_0()
-                    .p(px(6.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .child(format!(
-                        "Remove {name}? Saved source only; databases are not removed."
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(4.))
-                            .child(button(
-                                "confirm-delete",
-                                "Remove",
-                                false,
-                                busy,
-                                cx,
-                                |this: &mut Self, cx| {
-                                    this.model.update(cx, |m, cx| m.confirm_delete_explorer(cx))
-                                },
-                            ))
-                            .child(button(
-                                "cancel-delete",
-                                "Cancel",
-                                false,
-                                false,
-                                cx,
-                                |this: &mut Self, cx| {
-                                    this.model.update(cx, |m, cx| m.request_delete_explorer(cx))
-                                },
-                            )),
-                    ),
-            );
-        }
         if let Some(notice) = metadata_notice {
             root = root.child(
                 div()

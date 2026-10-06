@@ -1,5 +1,19 @@
 # Test strategy and release evidence
 
+## Accessible Kit AlertDialog modals for destructive confirmations
+
+Replaced all text-only discard, abort, remove, and close confirmations across Dalan with accessible GPUI Kit `AlertDialog` modal overlays (`super::confirm::open` and `WindowExt::open_alert_dialog`) without breaking safety guards or DataGrip/DBX-inspired workflows. The shared helper sets default initial focus on the safe cancel button, routes Escape to cancellation, disables backdrop dismissal, prevents stacking dialogs on repeated shortcuts, and verifies that stale targets, in-flight operations (`write_busy`, `saving`), or changed revisions reject destructive callbacks.
+
+Flows migrated to Kit AlertDialog:
+- Staged table write discard and apply confirmations in the data grid (`grid-confirm-apply`, `grid-confirm-discard`, `grid-keep-staging`, `grid-keep-edits`).
+- Unsaved draft close and active source deletion in source settings dialog (`settings-discard-close`, `settings-keep-editing`, `settings-confirm-remove`, `settings-keep-source`).
+- Saved source removal in source browser explorer (`confirm-delete`, `cancel-delete`).
+- Unsaved query console and staged table tab closure in the workspace (`discard-query-draft`, `keep-query-draft`).
+- SSH manager unsaved session discard on close / in-flight test cancellation, and session draft deletion (`ssh-discard-close`, `ssh-keep-editing`, `ssh-delete-confirm`, `ssh-delete-cancel`).
+
+Local verification passed **237 headless unit tests + one native-wire integration test, 247 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. No private credentials or live servers were contacted. CI remains skipped.
+
+
 ## Statement gutter, Run chooser and sequential batches
 
 Added source-preserving dialect statement spans/numbered ellipsized labels, visible Kit Run/Stop gutter buttons before line numbers, and a real Kit toolbar chooser with All Query / numbered statements. Cmd-Enter executes selection/current statement. All Query validates all bounded statements before credentials/network and executes sequentially, with first-error stop, generation-guarded progress/cancellation and individual retained result selectors. It is not a shared transaction or a write-console expansion.
