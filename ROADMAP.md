@@ -153,3 +153,5 @@ Every milestone must record commands, actual outcomes, exact engine/agent/plugin
 Owner decisions still needed: project/distribution license, minimum macOS and Intel matrix, exact server support versions, first optional worker engines, plugin signing authority/trust model, concrete process-confinement targets, and which real ACP agents/auth methods are supported. Do not invent a delivery date to resolve these.
 
 [DBX reuse assessment](docs/dbx-reuse.md) · [Architecture](docs/architecture.md) · [Product scope](docs/product-plan.md) · [Feature checklist](docs/feature-checklist.md) · [ACP](docs/acp.md)
+
+Reusable SSH sessions now have an explicit Enable SSH / session picker / Manage SSH Sessions workflow; inline settings remain a compatibility option rather than the new-connection default.

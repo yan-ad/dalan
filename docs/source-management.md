@@ -2,7 +2,7 @@
 
 Main-workspace development fixes add **cached-only explorer search**, using a thin Kit Input wrapper. It finds source/engine/database/table/view names in collapsed branches while preserving ancestors and retained expansions, without discovery, credentials, database selection changes or SQL execution. A lazy index covers the 50,000-item fixture; scrolling does not flatten all metadata. Escape clears focused search, rather than closing an unrelated source menu; the 256-character matching cap is not an Input byte-limit guarantee. Unsupported routines are not fabricated. The console's separate database selector is an actual searchable Kit Combobox with value-safe optional-string choices; this does not change the source form's dropdown or saved SSH popup alternatives.
 
-Optional Bacon preview rebuilds/restarts the owned native app, not hot reload. Unsaved forms and session-only passwords are lost; saved Keychain credentials may prompt after rebuilding. Other app instances are not killed by name. Source/profile/cache/credential persistence contracts remain unchanged. See [development lifecycle](development.md#bacon-live-preview) and [current local evidence](testing.md#native-multiline-result-crash-and-development-fixes). Final counts await primary confirmation; hosted CI is explicitly skipped for this task.
+Optional Bacon preview rebuilds/restarts the owned native app, not hot reload. Unsaved forms and session-only passwords are lost; saved Keychain credentials may prompt after rebuilding. Other app instances are not killed by name. Source/profile/cache/credential persistence contracts remain unchanged. See [development lifecycle](development.md#bacon-live-preview) and [current local evidence](testing.md#native-multiline-result-crash-and-development-fixes). The previous development-fix counts are recorded in the linked evidence; hosted CI is explicitly skipped for this task.
 
 Status: implemented experimental MySQL/MariaDB configuration subset, not an exact replica of DataGrip or its native/JDBC properties. Dalan uses Kit standard controls and Kit's default theme with compact app-owned layout. Driver/authentication choices are Kit dropdown menus; saved SSH choices are Kit popup lists, not claimed Combobox/Select usage. Kit InputState owns editing/IME/selection; a thin value adapter and native password surrounding-text privacy handler preserve model/safety contracts alongside Kit masked clipboard protections. Current native/UI validation remains gated. Source-control relocation does not change engine glyphs, provider assets or attribution. See [setup and browsing](mysql-sources.md), [security](security.md) and [migration](gpui-kit-migration.md).
 
@@ -58,14 +58,16 @@ The loaded-page footer reports actual retained rows and the configured page size
 
 This tab contains actual **Transport** settings, not simulated SOCKS controls. Existing Direct, SSH, anonymous HTTP CONNECT and HTTPS CONNECT routes remain available. CONNECT tunnels the database wire protocol; it is not a SQL-over-HTTP API. SOCKS and proxy authentication are not implemented.
 
-For SSH, select **Custom SSH connection** or a saved configuration by readable name, not raw UUID. The ellipsis control opens an independent native SSH configuration manager. The local forwarding port is dynamically allocated and read-only; there is no fixed local-port setting. Custom retains backward-compatible inline host/port/user, identity selection, optional known-hosts path and Parse config settings.
+For SSH, check **Enable SSH**, then select a saved session by readable name and endpoint, not raw UUID. **Manage SSH Sessions** opens a separate, reusable-settings window and is available even before enabling SSH. New SSH drafts show **Select SSH session…**, not editable inline host/key settings or an implicit localhost tunnel. Test and Save reject enabled SSH without a selected session. Disabling SSH uses Direct and omits the saved reference from the submitted source; re-enabling it retains the draft’s previous session choice. SSH and CONNECT are mutually exclusive routes, not nested tunnels.
 
-### SSH configuration manager
+The local forwarding port is dynamically allocated and read-only; there is no fixed local-port setting. Existing inline connections remain editable through **Custom SSH connection (legacy)**, retaining backward-compatible host/port/user, identity selection, optional known-hosts path and Parse config settings. The normal new-session workflow keeps these settings in the manager. Unix socket connections remain local and cannot enable SSH.
+
+### Manage SSH Sessions
 
 The manager owns its draft, keyboard traversal and saving guard independently from the source window. It supports:
 
-- **Add** a profile; **Duplicate** with a new identity; confirmed **Remove**; **Apply** to save without closing.
-- **Use** to commit the selected configuration and fill the parent source draft. It does **not** automatically save the database source.
+- **Add** a session; **Duplicate** with a new identity; confirmed **Remove**; **Apply** to save without closing or enabling SSH. Apply refreshes the parent picker with all saved additions, edits and removals while preserving its chosen session and route. Cancel never publishes unapplied drafts.
+- **Use Session** to save the sessions, enable SSH and select the chosen session in the parent source draft. It does **not** automatically save the database source.
 - **Cancel**, Escape, Cmd-W or close to discard unapplied edits and cancel the owned test, guarded while saving.
 - Agent or KeyPair authentication; host, port and user; an identity-file manual path and native picker; optional known-hosts file; explicit **Parse config** checkbox.
 

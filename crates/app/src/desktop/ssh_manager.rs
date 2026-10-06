@@ -1,4 +1,4 @@
-//! Independent SSH settings editor. Drafts never mutate the datasource form until Use.
+//! Independent SSH session editor. Only saved metadata is published; Use selects a session.
 use std::{
     collections::HashMap,
     process::{Command, Stdio},
@@ -118,7 +118,7 @@ impl SshManager {
             _subscriptions: Vec::new(),
         };
         for (id, placeholder) in [
-            ("ssh-name", "Configuration name"),
+            ("ssh-name", "Session name"),
             ("ssh-host", "localhost"),
             ("ssh-port", "22"),
             ("ssh-user", "SSH user"),
@@ -204,7 +204,7 @@ impl SshManager {
         let id = self
             .selected
             .clone()
-            .context("Select an SSH configuration first")?;
+            .context("Select an SSH session first")?;
         let value = |key| self.inputs[key].read(cx).value().trim().to_string();
         let optional = |key| {
             let v = value(key);
@@ -292,7 +292,7 @@ impl SshManager {
             return;
         }
         if self.profiles.len() >= 100 {
-            self.error = Some("At most 100 SSH configurations are supported.".into());
+            self.error = Some("At most 100 SSH sessions are supported.".into());
             cx.notify();
             return;
         }
@@ -390,15 +390,24 @@ impl SshManager {
                 .find(|p| Some(&p.id) == self.selected.as_ref())
                 .cloned()
             else {
-                self.error = Some("Select a configuration to use.".into());
+                self.error = Some("Select a session to use.".into());
                 cx.notify();
                 return;
             };
             if self.owner.upgrade().is_none() {
                 self.error = Some(
-                    "The datasource form has closed. You can still Apply settings or Cancel."
+                    "The datasource form has closed. You can still Apply sessions or Cancel."
                         .into(),
                 );
+                cx.notify();
+                return;
+            }
+            if self
+                .owner
+                .upgrade()
+                .is_some_and(|owner| !owner.read(cx).can_use_ssh_session(cx))
+            {
+                self.error = Some("The datasource is saving or uses a local socket. Apply sessions without enabling SSH, or switch the datasource to a network endpoint.".into());
                 cx.notify();
                 return;
             }
@@ -415,6 +424,7 @@ impl SshManager {
             return;
         };
         let profiles = self.profiles.clone();
+        let saved_profiles = profiles.clone();
         self.saving = true;
         self.error = None;
         self.feedback = None;
@@ -427,16 +437,25 @@ impl SshManager {
                 this.saving = false;
                 match result {
                     Ok(()) => {
-                        this.feedback = Some("SSH configurations saved.".into());
+                        this.feedback = Some("SSH sessions saved.".into());
+                        if let Some(owner) = this.owner.upgrade() {
+                            owner.update(cx, |owner, cx| {
+                                owner.refresh_ssh_configurations(saved_profiles.clone(), cx);
+                            });
+                        }
                         if let Some(profile) = chosen {
                             if let Some(owner) = this.owner.upgrade() {
-                                owner.update(cx, |owner, cx| {
-                                    owner.set_ssh_configuration(profile, cx)
-                                });
-                                window.remove_window();
+                                if owner.read(cx).can_use_ssh_session(cx) {
+                                    owner.update(cx, |owner, cx| {
+                                        owner.set_ssh_configuration(profile, cx)
+                                    });
+                                    window.remove_window();
+                                } else {
+                                    this.error = Some("Sessions saved, but the datasource is saving or uses a local socket. Return to a network endpoint before using this session.".into());
+                                }
                             } else {
                                 this.error = Some(
-                                    "Settings saved, but the datasource form has closed.".into(),
+                                    "Sessions saved, but the datasource form has closed.".into(),
                                 );
                             }
                         }
@@ -560,7 +579,7 @@ fn save_profiles(
         if let Some(id) = source.ssh_configuration_id {
             ensure!(
                 profiles.iter().any(|p| p.id == id),
-                "Configuration is in use by a saved datasource. Restore it before applying settings."
+                "Session is in use by a saved datasource. Restore it before applying sessions."
             );
         }
     }
@@ -821,13 +840,12 @@ impl Render for SshManager {
                 .child(div().text_xs().text_color(cx.theme().muted_foreground)
                     .child("Host keys must already be trusted. Test executes the harmless command ‘true’ remotely; it does not test the database or forwarding."));
         } else {
-            editor =
-                editor.child("No SSH configuration selected. Add a configuration to get started.");
+            editor = editor.child("No SSH session selected. Add a session to get started.");
         }
         if self.delete_confirmation {
-            editor = editor.child(div().text_color(cx.theme().warning).child("Remove this configuration from the draft? Click Confirm remove. Saved datasource references are checked on Apply / Use."))
+            editor = editor.child(div().text_color(cx.theme().warning).child("Remove this session from the draft? Click Confirm remove. Saved datasource references are checked on Apply / Use."))
                 .child(self.button("ssh-delete-confirm", "Confirm remove", Icon::Remove, enabled, |this, _, cx| this.remove(cx), cx))
-                .child(self.button("ssh-delete-cancel", "Keep configuration", Icon::Close, enabled, |this, _, cx| { this.delete_confirmation = false; cx.notify(); }, cx));
+                .child(self.button("ssh-delete-cancel", "Keep session", Icon::Close, enabled, |this, _, cx| { this.delete_confirmation = false; cx.notify(); }, cx));
         }
         div()
             .id("ssh-manager")
@@ -863,7 +881,7 @@ impl Render for SshManager {
                             .size(px(16.))
                             .text_color(cx.theme().foreground),
                     )
-                    .child("SSH Configurations")
+                    .child("Manage SSH Sessions")
                     .child(div().flex_1())
                     .child(self.button(
                         "ssh-add",
@@ -923,9 +941,9 @@ impl Render for SshManager {
                         )
                     })
                     .when(self.busy && !self.loaded, |s| {
-                        s.child("Loading SSH configurations…")
+                        s.child("Loading SSH sessions…")
                     })
-                    .when(self.saving, |s| s.child("Saving…")),
+                    .when(self.saving, |s| s.child("Saving SSH sessions…")),
             )
             .child(
                 div()
@@ -962,7 +980,7 @@ impl Render for SshManager {
                     ))
                     .child(self.button(
                         "ssh-use",
-                        "Use Configuration",
+                        "Use Session",
                         Icon::Check,
                         enabled && self.selected.is_some(),
                         |this, window, cx| this.save(true, window, cx),
@@ -1017,7 +1035,7 @@ pub(super) fn show(owner: Entity<SourceForm>, selected: Option<String>, cx: &mut
             window_min_size: Some(size(px(760.), px(620.))),
             window_background: gpui::WindowBackgroundAppearance::Opaque,
             titlebar: Some(TitlebarOptions {
-                title: Some("SSH Configurations · Dalan".into()),
+                title: Some("Manage SSH Sessions".into()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1292,9 +1310,158 @@ mod ui_tests {
         assert!(cx.cx.read(|app| app.windows().is_empty()));
     }
 
+    // Render the owner separately so regressions exercise its public picker rather
+    // than reaching into SourceForm's private cache or selection state.
+    fn owner_window(owner: &Entity<SourceForm>, cx: &mut VisualTestContext) -> VisualTestContext {
+        let window = cx.cx.update(|app| {
+            gpui::open_window(WindowOptions::default(), app, |_, _| owner.clone())
+                .unwrap()
+                .0
+        });
+        let mut visual = VisualTestContext::from_window(window, &cx.cx);
+        visual.simulate_resize(size(px(900.), px(760.)));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        visual
+    }
+
+    #[gpui::test]
+    fn apply_publishes_added_edited_deleted_sessions_without_enabling_or_selecting(
+        cx: &mut TestAppContext,
+    ) {
+        let files = Files::new(false);
+        let removed = SshProfile {
+            name: "Remove me".into(),
+            ..SshProfile::default()
+        };
+        files
+            .ssh
+            .save(&[files.profile.clone(), removed.clone()])
+            .unwrap();
+        let (manager, owner, cx) = fixture(cx, &files);
+        let before = owner.read_with(cx, |form, app| form.profile(app).unwrap());
+        set(&manager, cx, "ssh-name", "Edited session");
+        set(&manager, cx, "ssh-host", "edited.example");
+        click(cx, "ssh-add");
+        set(&manager, cx, "ssh-name", "Added session");
+        set(&manager, cx, "ssh-host", "added.example");
+        set(&manager, cx, "ssh-user", "added-user");
+        let added = manager.read_with(cx, |manager, app| manager.collect_current(app).unwrap());
+        manager.update(cx, |manager, cx| {
+            assert!(manager.commit_current(cx));
+            manager.select(removed.id.clone(), cx);
+        });
+        click(cx, "ssh-remove");
+        click(cx, "ssh-delete-confirm");
+        manager.update(cx, |manager, cx| manager.select(added.id.clone(), cx));
+        click(cx, "ssh-apply");
+        assert!(!cx.cx.read(|app| app.windows().is_empty()));
+        assert_eq!(
+            owner.read_with(cx, |form, app| form.profile(app).unwrap()),
+            before
+        );
+        let saved = files.ssh.load().unwrap();
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved[0].name, "Edited session");
+        assert_eq!(saved[1], added);
+
+        let mut picker = owner_window(&owner, cx);
+        click(&mut picker, "source-tab-ssh");
+        click(&mut picker, "source-ssh");
+        click(&mut picker, "source-ssh-profile");
+        assert!(picker.debug_bounds("source-ssh-profile-0").is_some());
+        assert!(picker.debug_bounds("source-ssh-profile-1").is_some());
+        assert!(picker.debug_bounds("source-ssh-profile-2").is_none());
+        click(&mut picker, "source-ssh-profile-0");
+        let selected = owner.read_with(&picker, |form, app| form.profile(app).unwrap());
+        assert_eq!(selected.ssh_configuration_id, Some(saved[0].id.clone()));
+        assert_eq!(selected.transport, saved[0].transport());
+        click(&mut picker, "source-ssh-profile");
+        click(&mut picker, "source-ssh-profile-1");
+        let selected = owner.read_with(&picker, |form, app| form.profile(app).unwrap());
+        assert_eq!(selected.ssh_configuration_id, Some(added.id.clone()));
+        assert_eq!(selected.transport, added.transport());
+
+        // Apply with the manager on another session must retain the owner's
+        // existing selection and transport as well as keeping the window open.
+        manager.update(cx, |manager, cx| manager.select(saved[0].id.clone(), cx));
+        click(cx, "ssh-apply");
+        assert_eq!(
+            owner.read_with(cx, |form, app| form.profile(app).unwrap()),
+            selected
+        );
+    }
+
+    #[gpui::test]
+    fn cancel_does_not_publish_added_edited_or_deleted_draft_sessions(cx: &mut TestAppContext) {
+        let files = Files::new(false);
+        let (manager, owner, cx) = fixture(cx, &files);
+        owner.update(cx, |owner, cx| {
+            owner.refresh_ssh_configurations(vec![files.profile.clone()], cx);
+            owner.set_ssh_configuration(files.profile.clone(), cx);
+        });
+        let before = owner.read_with(cx, |form, app| form.profile(app).unwrap());
+        set(&manager, cx, "ssh-host", "unsaved.example");
+        click(cx, "ssh-add");
+        set(&manager, cx, "ssh-name", "Unsaved new session");
+        manager.update(cx, |manager, cx| {
+            assert!(manager.commit_current(cx));
+            manager.select(files.profile.id.clone(), cx);
+        });
+        click(cx, "ssh-remove");
+        click(cx, "ssh-delete-confirm");
+        click(cx, "ssh-cancel");
+        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+        assert_eq!(
+            owner.read_with(cx, |form, app| form.profile(app).unwrap()),
+            before
+        );
+        let mut picker = owner_window(&owner, cx);
+        click(&mut picker, "source-tab-ssh");
+        click(&mut picker, "source-ssh-profile");
+        assert!(picker.debug_bounds("source-ssh-profile-0").is_some());
+        assert!(picker.debug_bounds("source-ssh-profile-1").is_none());
+        click(&mut picker, "source-ssh-profile-0");
+        let selected = owner.read_with(&picker, |form, app| form.profile(app).unwrap());
+        assert_eq!(
+            selected.ssh_configuration_id,
+            Some(files.profile.id.clone())
+        );
+        assert_eq!(selected.transport, files.profile.transport());
+    }
+
+    #[gpui::test]
+    fn use_session_rejects_local_socket_without_publishing_or_closing(cx: &mut TestAppContext) {
+        let files = Files::new(false);
+        let (manager, owner, cx) = fixture(cx, &files);
+        // Keep the owner alive, but disallow SSH by choosing a local socket.
+        owner.update(cx, |owner, cx| {
+            owner.refresh_ssh_configurations(vec![files.profile.clone()], cx);
+        });
+        // Exercise the actual public source controls to choose a local socket.
+        let mut source = owner_window(&owner, cx);
+        click(&mut source, "source-mode-socket");
+        set(&manager, cx, "ssh-name", "Unapplied name");
+        click(cx, "ssh-use");
+        assert!(manager.read_with(cx, |m, _| {
+            m.error.as_ref().is_some_and(|e| e.contains("local socket"))
+        }));
+        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+        assert!(cx.cx.read(|app| app.windows().len() == 2));
+    }
+
     #[gpui::test]
     fn use_commits_exact_key_metadata_to_owner_without_secrets_and_closes(cx: &mut TestAppContext) {
         let files = Files::new(true);
+        let other = SshProfile {
+            name: "Other saved session".into(),
+            host: "other.example".into(),
+            ..SshProfile::default()
+        };
+        files
+            .ssh
+            .save(&[files.profile.clone(), other.clone()])
+            .unwrap();
         let (_, owner, cx) = fixture(cx, &files);
         click(cx, "ssh-use");
         assert!(cx.cx.read(|app| app.windows().is_empty()));
@@ -1305,6 +1472,16 @@ mod ui_tests {
         assert!(!json.contains("not a private key"));
         assert!(!json.contains("passphrase"));
         assert!(!json.contains("private_key"));
-        assert_eq!(files.ssh.load().unwrap(), vec![files.profile.clone()]);
+        assert_eq!(
+            files.ssh.load().unwrap(),
+            vec![files.profile.clone(), other.clone()]
+        );
+        let mut picker = owner_window(&owner, cx);
+        click(&mut picker, "source-tab-ssh");
+        click(&mut picker, "source-ssh-profile");
+        click(&mut picker, "source-ssh-profile-1");
+        let selected = owner.read_with(&picker, |form, app| form.profile(app).unwrap());
+        assert_eq!(selected.ssh_configuration_id, Some(other.id.clone()));
+        assert_eq!(selected.transport, other.transport());
     }
 }

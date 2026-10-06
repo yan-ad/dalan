@@ -46,6 +46,8 @@ pub(super) struct SourceForm {
     ssh_profiles: Vec<SshProfile>,
     ssh_load_error: Option<String>,
     ssh_selected: Option<String>,
+    ssh_custom: bool,
+    ssh_catalog_revision: u64,
     ssh_combo_open: bool,
     selected_schema_names: HashSet<String>,
     schema_scroll: gpui::UniformListScrollHandle,
@@ -264,18 +266,15 @@ impl SourceForm {
                 let _ = this.update(cx, |this, cx| {
                     match result {
                         Ok(profiles) => {
-                            // Loading labels must not overwrite an edited transport draft.
-                            for profile in profiles {
-                                if !this
-                                    .ssh_profiles
-                                    .iter()
-                                    .any(|existing| existing.id == profile.id)
-                                {
-                                    this.ssh_profiles.push(profile);
-                                }
+                            // A manager Apply/Use is newer than this startup load.
+                            if this.ssh_catalog_revision == 0 {
+                                this.refresh_ssh_configurations(profiles, cx);
                             }
                         }
-                        Err(error) => this.ssh_load_error = Some(error.to_string()),
+                        Err(error) if this.ssh_catalog_revision == 0 => {
+                            this.ssh_load_error = Some(error.to_string())
+                        }
+                        Err(_) => {}
                     }
                     cx.notify();
                 });
@@ -283,6 +282,8 @@ impl SourceForm {
             .detach();
         }
         Self {
+            ssh_custom: transport == 1 && profile.ssh_configuration_id.is_none(),
+            ssh_catalog_revision: 0,
             ssh_selected: profile.ssh_configuration_id.clone(),
             ssh_profiles: Vec::new(),
             ssh_load_error: None,
@@ -324,11 +325,36 @@ impl SourceForm {
         }
     }
 
+    /// Publish persisted metadata without enabling SSH or choosing another session.
+    pub(super) fn refresh_ssh_configurations(
+        &mut self,
+        profiles: Vec<SshProfile>,
+        cx: &mut Context<Self>,
+    ) {
+        self.ssh_catalog_revision += 1;
+        let selected_changed = self.ssh_selected.as_ref().is_some_and(|id| {
+            self.ssh_profiles.iter().find(|p| &p.id == id) != profiles.iter().find(|p| &p.id == id)
+        });
+        self.ssh_profiles = profiles;
+        self.ssh_load_error = None;
+        if selected_changed && self.transport == 1 && !self.model.read(cx).saving {
+            // Apply invalidates a completed/in-flight test, but never changes the route.
+            self.model.update(cx, |model, cx| model.edit_form(cx));
+        }
+        cx.notify();
+    }
+
+    pub(super) fn can_use_ssh_session(&self, cx: &App) -> bool {
+        !self.model.read(cx).saving && self.endpoint_mode != 1
+    }
+
     /// The manager calls this only after persisting a configuration and choosing Use.
     pub(super) fn set_ssh_configuration(&mut self, profile: SshProfile, cx: &mut Context<Self>) {
-        if self.model.read(cx).saving {
+        if !self.can_use_ssh_session(cx) {
             return;
         }
+        self.ssh_catalog_revision += 1;
+        self.ssh_custom = false;
         self.transport = 1;
         self.ssh_selected = Some(profile.id.clone());
         self.parse_ssh_config = profile.parse_config;
@@ -378,15 +404,18 @@ impl SourceForm {
             })
             .unwrap_or_else(|| {
                 if self.ssh_selected.is_some() {
-                    "Saved SSH configuration (unavailable)".into()
+                    "Saved SSH session (unavailable)".into()
+                } else if self.ssh_custom {
+                    "Custom SSH connection (legacy)".into()
                 } else {
-                    "Custom SSH connection".into()
+                    "Select SSH session…".into()
                 }
             });
         let profiles = self.ssh_profiles.clone();
         let selected = self.ssh_selected.clone();
+        let custom = self.ssh_custom;
         let entity = cx.entity().downgrade();
-        let disabled = self.model.read(cx).saving;
+        let disabled = self.model.read(cx).saving || self.transport != 1 || self.endpoint_mode == 1;
         let trigger = Button::new("source-ssh-profile")
             .debug_selector(|| "source-ssh-profile".into())
             .label(label.clone())
@@ -400,9 +429,9 @@ impl SourceForm {
                     PopupMenuItem::element(|_, _| {
                         div()
                             .debug_selector(|| "source-ssh-custom".into())
-                            .child("Custom SSH connection")
+                            .child("Custom SSH connection (legacy)")
                     })
-                    .checked(selected.is_none())
+                    .checked(selected.is_none() && custom)
                     .disabled(disabled)
                     .on_click(move |_, _, cx| {
                         let _ = custom_entity
@@ -442,9 +471,16 @@ impl SourceForm {
                     div()
                         .w_full()
                         .flex()
+                        .flex_wrap()
                         .gap(px(8.))
                         .child(trigger)
-                        .child(self.button("source-manage-ssh", "…", false, 0, cx)),
+                        .child(self.button(
+                            "source-manage-ssh",
+                            "Manage SSH Sessions",
+                            false,
+                            0,
+                            cx,
+                        )),
                 )
                 .when_some(self.ssh_load_error.clone(), |container, error| {
                     container.child(div().text_color(palette.error).child(error))
@@ -616,6 +652,10 @@ impl SourceForm {
         profile.tls = self.tls;
         profile.save_password =
             self.save_password && self.authentication == Authentication::UserPassword;
+        ensure!(
+            self.transport != 1 || self.ssh_selected.is_some() || self.ssh_custom,
+            "Select an SSH session or create one in Manage SSH Sessions before testing or saving"
+        );
         profile.transport = match self.transport {
             1 => Transport::Ssh {
                 host: self.value("source-tunnel-host", cx),
@@ -642,6 +682,20 @@ impl SourceForm {
             },
             _ => Transport::Direct,
         };
+        if self.transport == 1
+            && self.ssh_catalog_revision > 0
+            && let Some(id) = &self.ssh_selected
+        {
+            let session = self
+                .ssh_profiles
+                .iter()
+                .find(|session| &session.id == id)
+                .context(
+                    "Selected SSH session is unavailable; choose another in Manage SSH Sessions",
+                )?;
+            session.validate()?;
+            profile.transport = session.transport();
+        }
         profile.validate()?;
         Ok(profile)
     }
@@ -726,7 +780,8 @@ impl SourceForm {
                 super::ssh_manager::show(cx.entity(), self.ssh_selected.clone(), cx);
                 return;
             }
-            "source-ssh-custom" => {
+            "source-ssh-custom" if self.transport == 1 => {
+                self.ssh_custom = true;
                 self.ssh_selected = None;
                 self.ssh_combo_open = false;
                 self.last_values
@@ -832,7 +887,11 @@ impl SourceForm {
                 self.driver_open = false;
             }
             "source-direct" => self.transport = 0,
-            "source-ssh" if self.endpoint_mode != 1 => self.transport = 1,
+            "source-ssh" if self.endpoint_mode != 1 => {
+                self.transport = if self.transport == 1 { 0 } else { 1 };
+                self.ssh_combo_open = false;
+                self.key_picker_open = false;
+            }
             "source-http" if self.endpoint_mode != 1 => self.transport = 2,
             "source-https" if self.endpoint_mode != 1 => self.transport = 3,
             "source-tls-verify" if self.endpoint_mode != 1 => {
@@ -1387,7 +1446,6 @@ impl Render for SourceForm {
                                     0,
                                     cx,
                                 ))
-                                .child(self.button("source-ssh", "SSH", self.transport == 1, 0, cx))
                                 .child(self.button(
                                     "source-http",
                                     "HTTP CONNECT",
@@ -1405,8 +1463,24 @@ impl Render for SourceForm {
                             cx,
                         ),
                     );
+                    body = body
+                        .child(
+                            self.row(
+                                "",
+                                Checkbox::new("source-ssh")
+                                    .debug_selector(|| "source-ssh".into())
+                                    .label("Enable SSH")
+                                    .checked(self.transport == 1)
+                                    .disabled(self.model.read(cx).saving)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.activate("source-ssh", cx)
+                                    })),
+                                cx,
+                            ),
+                        )
+                        .child(self.ssh_profile_control(cx));
                     if self.transport == 1 {
-                        body = body.child(self.ssh_profile_control(cx)).child(
+                        body = body.child(
                             self.row(
                                 "Local port",
                                 div()
@@ -1415,7 +1489,7 @@ impl Render for SourceForm {
                                 cx,
                             ),
                         );
-                        if self.ssh_selected.is_none() {
+                        if self.ssh_custom && self.ssh_selected.is_none() {
                             body = body
                                 .child(self.host_port_row(
                                     "SSH host",
@@ -2117,6 +2191,8 @@ mod tests {
         let (form, _, cx) = fixture(cx);
         click(cx, "source-tab-ssh");
         click(cx, "source-ssh");
+        click(cx, "source-ssh-profile");
+        click(cx, "source-ssh-custom");
         form.update(cx, |form, cx| {
             form.key_picker_open = true;
             form.ssh_keys = vec![dalan_app::ssh_keys::SshKeyCandidate {
@@ -2209,6 +2285,121 @@ mod tests {
         assert_eq!(custom.ssh_configuration_id, None);
         assert_eq!(custom.transport, profile.transport());
         assert!(cx.debug_bounds("source-tunnel-host").is_some());
+    }
+
+    #[gpui::test]
+    fn enable_ssh_requires_explicit_session_and_toggle_retains_choice(cx: &mut TestAppContext) {
+        let (form, model, cx) = fixture(cx);
+        click(cx, "source-tab-ssh");
+        assert!(cx.debug_bounds("source-manage-ssh").is_some());
+        assert!(cx.debug_bounds("source-tunnel-host").is_none());
+        click(cx, "source-ssh-profile");
+        assert!(cx.debug_bounds("source-ssh-custom").is_none()); // Disabled until enabled.
+        click(cx, "source-ssh");
+        assert!(cx.debug_bounds("source-tunnel-host").is_none());
+        assert!(
+            cx.update(|_, app| form.read(app).profile(app))
+                .unwrap_err()
+                .to_string()
+                .contains("Manage SSH Sessions")
+        );
+        click(cx, "source-test");
+        assert!(model.read_with(cx, |m, _| {
+            !m.form_busy
+                && m.form_feedback
+                    .as_ref()
+                    .unwrap()
+                    .contains("Select an SSH session")
+        }));
+        let session = SshProfile {
+            host: "jump.example".into(),
+            ..SshProfile::default()
+        };
+        form.update(cx, |form, cx| {
+            form.set_ssh_configuration(session.clone(), cx)
+        });
+        click(cx, "source-ssh");
+        let disabled = cx.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(disabled.transport, Transport::Direct);
+        assert!(disabled.ssh_configuration_id.is_none());
+        click(cx, "source-ssh");
+        let enabled = cx.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(enabled.transport, session.transport());
+        assert_eq!(enabled.ssh_configuration_id, Some(session.id));
+    }
+
+    #[gpui::test]
+    fn session_refresh_uses_latest_settings_and_missing_reference_fails_closed(
+        cx: &mut TestAppContext,
+    ) {
+        let (form, model, cx) = fixture(cx);
+        let mut session = SshProfile::default();
+        form.update(cx, |form, cx| {
+            form.set_ssh_configuration(session.clone(), cx)
+        });
+        model.update(cx, |m, _| {
+            m.form_feedback = Some("Old test succeeded".into())
+        });
+        session.host = "new-jump.example".into();
+        form.update(cx, |form, cx| {
+            form.refresh_ssh_configurations(vec![session.clone()], cx)
+        });
+        assert!(model.read_with(cx, |m, _| m.form_feedback.is_none()));
+        let current = cx.update(|_, app| form.read(app).profile(app).unwrap());
+        assert_eq!(current.transport, session.transport());
+        assert_eq!(current.ssh_configuration_id, Some(session.id.clone()));
+        form.update(cx, |form, cx| form.refresh_ssh_configurations(vec![], cx));
+        assert!(
+            cx.update(|_, app| form.read(app).profile(app))
+                .unwrap_err()
+                .to_string()
+                .contains("unavailable")
+        );
+        click(cx, "source-tab-ssh");
+        click(cx, "source-ssh");
+        assert_eq!(
+            cx.update(|_, app| form.read(app).profile(app).unwrap())
+                .transport,
+            Transport::Direct
+        );
+    }
+
+    #[gpui::test]
+    fn ssh_checkbox_keyboard_and_compact_session_controls_are_bounded(cx: &mut TestAppContext) {
+        let (form, model, cx) = fixture(cx);
+        click(cx, "source-tab-ssh");
+        cx.simulate_resize(gpui::size(px(780.), px(560.)));
+        cx.run_until_parked();
+        click(cx, "source-ssh");
+        assert_eq!(form.read_with(cx, |f, _| f.transport), 1);
+        // Kit pointer activation preserves focus; Tab order reaches the checkbox
+        // after the three route buttons (the tab strip uses its own roving focus).
+        cx.update(|window, app| {
+            window.blur(app);
+            for _ in 0..4 {
+                window.focus_next(app);
+            }
+        });
+        let keystroke = gpui::Keystroke::parse("space").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        cx.run_until_parked();
+        assert_eq!(form.read_with(cx, |f, _| f.transport), 0);
+        for id in ["source-ssh", "source-ssh-profile", "source-manage-ssh"] {
+            let bounds = cx.debug_bounds(id).unwrap();
+            assert!(bounds.left() >= px(0.) && bounds.right() <= px(780.));
+            assert!(bounds.top() >= px(34.) && bounds.bottom() <= px(560.));
+        }
+        model.update(cx, |m, cx| {
+            m.saving = true;
+            cx.notify();
+        });
+        click(cx, "source-ssh");
+        assert_eq!(form.read_with(cx, |f, _| f.transport), 0);
     }
 
     #[gpui::test]
