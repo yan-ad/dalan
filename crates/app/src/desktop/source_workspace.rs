@@ -24,11 +24,37 @@ actions!(workspace, [NewConsole, CloseTab, NextTab, PreviousTab]);
 
 pub(super) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("cmd-t", NewConsole, Some("Shell")),
         KeyBinding::new("cmd-shift-n", NewConsole, Some("Shell")),
         KeyBinding::new("cmd-w", CloseTab, Some("Workspace")),
         KeyBinding::new("cmd-alt-right", NextTab, Some("Workspace")),
         KeyBinding::new("cmd-alt-left", PreviousTab, Some("Workspace")),
     ]);
+}
+
+/// Source identity colors are explicit metadata, not a replacement Kit palette.
+fn tab_color(id: &str, configured: Option<&str>) -> gpui::Hsla {
+    if let Some(value) = configured
+        .and_then(|v| v.strip_prefix('#'))
+        .filter(|v| v.len() == 6)
+        .and_then(|v| u32::from_str_radix(v, 16).ok())
+    {
+        return gpui::rgb(value).into();
+    }
+    let hash = id.bytes().fold(2166136261u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(16777619)
+    });
+    gpui::hsla((hash % 360) as f32 / 360., 0.60, 0.52, 1.)
+}
+fn contextual_tab_label(tab: &dalan_app::workspace_tabs::TabDescriptor, source: &str) -> String {
+    let database = tab.database.as_deref().unwrap_or("No database");
+    match &tab.kind {
+        WorkspaceOpen::Table { table, .. } => format!("{table}@{database}"),
+        WorkspaceOpen::Console { .. } => format!(
+            "{source}@{database} · {}",
+            tab.label.strip_prefix("Console ").unwrap_or(&tab.label)
+        ),
+    }
 }
 
 #[derive(Default)]
@@ -432,28 +458,98 @@ impl Render for SourceWorkspace {
                     let dirty = state.is_some_and(|state| {
                         state.query_console && !state.query_sql.trim().is_empty()
                     });
-                    let glyph = if matches!(descriptor.kind, WorkspaceOpen::Console { .. }) {
-                        "icons/square-code.svg"
-                    } else {
-                        "icons/table.svg"
-                    };
+                    let profile = self
+                        .model
+                        .read(cx)
+                        .profiles
+                        .iter()
+                        .find(|p| p.id == descriptor.source);
+                    let source = profile
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("Unavailable source");
+                    let color =
+                        tab_color(&descriptor.source, profile.and_then(|p| p.color.as_deref()));
+                    let selected = Some(&id) == active.as_ref();
                     let label = format!(
                         "{}{}{}",
-                        descriptor.label,
+                        contextual_tab_label(descriptor, source),
                         if running { " · running" } else { "" },
                         if dirty { " •" } else { "" }
                     );
+                    let detail = format!(
+                        "{} / {} / {}{}{}",
+                        source,
+                        descriptor
+                            .database
+                            .as_deref()
+                            .unwrap_or("No database selected"),
+                        descriptor.label,
+                        if running { " · running" } else { "" },
+                        if dirty { " · unsaved SQL" } else { "" }
+                    );
+                    let engine = profile.map(|p| p.engine);
+                    let tab_width = (label.chars().count() as f32 * 7.0 + 50.).clamp(100., 280.);
+                    let prefix = div()
+                        .id(SharedString::from(format!("workspace-tab-prefix-{id}")))
+                        .flex()
+                        .items_center()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("workspace-tab-color-{id}")))
+                                .debug_selector({
+                                    let id = id.clone();
+                                    move || format!("workspace-tab-color-{id}")
+                                })
+                                .absolute()
+                                .top(px(-4.))
+                                .left(px(-1.))
+                                .w(px(tab_width))
+                                .h(px(24.))
+                                .bg(color.opacity(if selected { 0.24 } else { 0.09 })),
+                        )
+                        .when(selected, |prefix| {
+                            prefix.child(
+                                div()
+                                    .absolute()
+                                    .top(px(18.))
+                                    .left(px(-1.))
+                                    .w(px(tab_width))
+                                    .h(px(2.))
+                                    .bg(color),
+                            )
+                        })
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("workspace-driver-{id}")))
+                                .debug_selector({
+                                    let id = id.clone();
+                                    move || format!("workspace-driver-{id}")
+                                })
+                                .when_some(engine, |icon, engine| {
+                                    icon.child(super::icons::provider_icon(engine))
+                                })
+                                .when(engine.is_none(), |icon| {
+                                    icon.child(
+                                        Icon::empty().path("icons/database.svg").size(px(16.)),
+                                    )
+                                }),
+                        );
                     let close_id = id.clone();
                     // Kit 0.7.1 Tab has no closable/on_close API. Its suffix slot
                     // hosts a Kit button, keeping close activation separate from selection.
                     let selector = format!("workspace-tab-{id}");
                     Tab::new()
                         .label(label)
+                        .tooltip(move |window, cx| {
+                            gpui::component::tooltip::Tooltip::new(detail.clone()).build(window, cx)
+                        })
                         // Kit's `icon` selects its icon-only rendering branch,
                         // which deliberately ignores `label` and the width cap.
                         // A prefix keeps the native label/ellipsis layout active.
-                        .prefix(Icon::empty().path(glyph).size(px(14.)))
+                        .prefix(prefix)
                         .min_w(px(100.))
+                        .w(px(tab_width))
                         .debug_selector(move || selector.clone())
                         .suffix(
                             KitButton::new(SharedString::from(format!("workspace-close-{id}")))
@@ -483,7 +579,7 @@ impl Render for SourceWorkspace {
                             .flex_1()
                             .min_w(px(0.))
                             .track_scroll(&self.tab_scroll)
-                            .max_width(px(220.))
+                            .max_width(px(280.))
                             .selected_index(index)
                             .children(tabs)
                             .on_click(cx.listener(move |this, index: &usize, _, cx| {
@@ -498,7 +594,7 @@ impl Render for SourceWorkspace {
                             .debug_selector(|| "new-query-console".into())
                             .icon(Icon::empty().path("icons/plus.svg"))
                             .disabled(!can_console)
-                            .tooltip("New query console (Cmd-Shift-N)")
+                            .tooltip("New query console (Cmd-T)")
                             .on_click(cx.listener(|this, _, _, cx| this.new_console(cx))),
                     ),
             );
@@ -698,6 +794,82 @@ mod tests {
     }
 
     #[gpui::test]
+    fn source_tints_and_driver_prefixes_span_native_tabs_without_covering_close(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, root, _listener, cx) = fixture(cx);
+        root.update(cx, |m, cx| {
+            m.profiles[0].name = "PROD FLAT".into();
+            m.profiles[0].color = Some("#C76ADA".into());
+            cx.notify();
+        });
+        let (id, _) = console(&workspace, cx);
+        cx.refresh().unwrap();
+        let selector = Box::leak(format!("workspace-tab-{id}").into_boxed_str());
+        let tab = cx.debug_bounds(selector).unwrap();
+        let tint = cx
+            .debug_bounds(Box::leak(
+                format!("workspace-tab-color-{id}").into_boxed_str(),
+            ))
+            .unwrap();
+        assert_eq!(
+            tint, tab,
+            "source wash must cover the whole native tab, not only its icon"
+        );
+        let driver = cx
+            .debug_bounds(Box::leak(format!("workspace-driver-{id}").into_boxed_str()))
+            .unwrap();
+        let close = cx
+            .debug_bounds(Box::leak(format!("workspace-close-{id}").into_boxed_str()))
+            .unwrap();
+        assert!(driver.left() >= tab.left() && driver.right() < close.left());
+        assert!(close.right() <= tab.right());
+        cx.update(|window, _| {
+            assert_eq!(
+                window.within("workspace-tabs").find(0usize).label(),
+                Some("PROD FLAT@inventory · 1")
+            )
+        });
+        root.update(cx, |m, cx| {
+            m.profiles[0].name = "STG".into();
+            m.profiles[0].color = Some("#58B8A0".into());
+            cx.notify();
+        });
+        pump_workers(cx);
+        cx.refresh().unwrap();
+        cx.update(|window, _| {
+            assert_eq!(
+                window.within("workspace-tabs").find(0usize).label(),
+                Some("STG@inventory · 1")
+            )
+        });
+        assert_eq!(tab_color("id", Some("#C76ADA")), gpui::rgb(0xC76ADA).into());
+        assert_eq!(tab_color("id", None), tab_color("id", Some("invalid")));
+        assert_ne!(tab_color("id", None), tab_color("other", None));
+        let (second, _) = console(&workspace, cx);
+        cx.refresh().unwrap();
+        for tab_id in [&id, &second] {
+            let bounds = cx
+                .debug_bounds(Box::leak(
+                    format!("workspace-tab-{tab_id}").into_boxed_str(),
+                ))
+                .unwrap();
+            let wash = cx
+                .debug_bounds(Box::leak(
+                    format!("workspace-tab-color-{tab_id}").into_boxed_str(),
+                ))
+                .unwrap();
+            assert_eq!(wash, bounds, "active/inactive full source tint");
+        }
+        cx.update(|window, _| {
+            assert_eq!(
+                window.within("workspace-tabs").find(1usize).label(),
+                Some("STG@inventory · 2")
+            )
+        });
+    }
+
+    #[gpui::test]
     fn table_and_console_tabs_keep_labels_and_close_controls_visible(cx: &mut TestAppContext) {
         let (workspace, root, _listener, cx) = fixture(cx);
         let (table, _) = open_table(&workspace, &root, "items", cx);
@@ -710,7 +882,14 @@ mod tests {
             // Pair them with real production tab geometry below: the old
             // icon-only branch had correct accessibility labels but 28px tabs.
             let tabs = window.within("workspace-tabs");
-            for (index, label) in ["items", "Console 1", "Console 2"].into_iter().enumerate() {
+            for (index, label) in [
+                "items@inventory",
+                "New source@inventory · 1",
+                "New source@inventory · 2",
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let tab = tabs.find(index);
                 assert_eq!(tab.label(), Some(label));
                 assert!(tab.visible());
@@ -723,7 +902,7 @@ mod tests {
             let close = cx
                 .debug_bounds(Box::leak(format!("workspace-close-{id}").into_boxed_str()))
                 .unwrap();
-            assert!(tab.size.width >= px(100.) && tab.size.width <= px(220.));
+            assert!(tab.size.width >= px(100.) && tab.size.width <= px(280.));
             assert_eq!(tab.size.height, px(24.), "keep Kit's native small height");
             assert!(close.size.width > px(0.));
             assert!(close.origin.x >= tab.origin.x);
@@ -772,13 +951,13 @@ mod tests {
         let close = cx
             .debug_bounds(Box::leak(format!("workspace-close-{id}").into_boxed_str()))
             .unwrap();
-        assert_eq!(tab.size.width, px(220.));
+        assert_eq!(tab.size.width, px(280.));
         assert!(close.right() <= tab.right());
         assert!(close.size.width > px(0.));
         cx.update(|window, _| {
             assert_eq!(
                 window.within("workspace-tabs").find(0usize).label(),
-                Some(name)
+                Some(format!("{name}@inventory").as_str())
             );
         });
     }

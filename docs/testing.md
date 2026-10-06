@@ -1,5 +1,11 @@
 # Test strategy and release evidence
 
+## Contextual tabs and Cmd-T
+
+Tabs display provider icons, Source@Database · console number / Table@Database labels, retained dirty/running indicators and full contextual tooltips. Saved source colors override stable source-UUID fallback colors; subtle inactive/active washes and a colored active underline preserve Kit text contrast. Native small tabs remain 24 px high, with 100–280 px width bounds/ellipsis, scrolling and independent close controls.
+
+Added geometry checks require source washes to cover full active/inactive tabs and driver prefixes to remain separate from close buttons; metadata name/color changes update presentation without recreating tabs. Cmd-T is tested from both empty shell and native editor, inheriting active target and preserving the previous draft; Cmd-Shift-N remains an alias. Local validation passed **165 headless unit tests + one native-wire integration test, 212 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped. This is simulated layout/behavior evidence, not native pixel certification.
+
 ## DBX toolbar Stage 1 validation
 
 [Stage 1 toolbar behavior](dbx-toolbar-parity.md) is implemented. **Local validation passed: 165 headless unit tests + one native-wire integration test, 211 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy, and signed debug bundle/plist/signature checks. Hosted CI remains deliberately skipped; no private profiles, auth files or live databases were required. Historical totals below remain evidence for their recorded revisions, not this change.

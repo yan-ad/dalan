@@ -819,7 +819,7 @@ impl Render for SourceExplorer {
             .child(toolbar_button(
                 "explorer-new-console",
                 Icon::Query,
-                "New read-only query console (Cmd-Shift-N)",
+                "New read-only query console (Cmd-T)",
                 console_disabled,
                 cx,
                 |this: &mut Self, cx| {

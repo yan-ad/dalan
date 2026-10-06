@@ -6,11 +6,11 @@ Status: experimental MySQL/MariaDB database workspace. This is a restricted read
 
 Open a BASE TABLE in Database Explorer to create its table tab. Identity is `(SourceUUID, database, table name)`, not just the display name. Reopening the same table activates the existing tab, preserving filters, requests, grid scroll and results. Different sources/databases can have identically named tables without colliding. Views remain listed but unavailable in the table browser.
 
-Use **New Query Console** (query icon) in the explorer toolbar or **Cmd-Shift-N**. With tabs open, the strip's plus creates a console from the active tab's source/database context. The explorer action uses the clicked/selected source or database, with the source profile's database as fallback; otherwise it starts with **No default database**. With no default, use fully qualified table names. The console database chooser offers cached names and does not trigger discovery; changing it is guarded while running. No native New Query Console menu item is claimed.
+Use **New Query Console** (query icon) in the explorer toolbar or **Cmd-T** (Cmd-Shift-N remains an alias). With tabs open, the strip's plus creates a console from the active tab's source/database context. The explorer action uses the clicked/selected source or database, with the source profile's database as fallback; otherwise it starts with **No default database**. With no default, use fully qualified table names. The console database chooser offers cached names and does not trigger discovery; changing it is guarded while running. No native New Query Console menu item is claimed.
 
-All table/console tabs share a **32-tab maximum**. At capacity, opening another table/console reports an error; activating an existing table still works. Consoles have unique session identities and monotonically numbered **Console N** labels; closing one does not recycle its name in the current workspace.
+All table/console tabs share a **32-tab maximum**. At capacity, opening another table/console reports an error; activating an existing table still works. Consoles have unique session identities and a monotonically allocated console number; closing one does not recycle its number in the current workspace. Visible query labels use **Source@Database · N** (or No database), while table labels use **Table@Database**.
 
-The compact Kit tab strip uses prefix table/query icons so table names and Console N labels remain visible (Kit `Tab.icon` suppresses labels). Tabs share 100–220 px bounds with ellipsis/full tooltips, a nonempty-draft dot and a real running indicator, with overflow scrolling. Small ghost close buttons stop propagation, so closing an inactive tab does not activate it. The explorer has three toolbar icons and horizontal scrolling at its 200 px minimum width. Kit's default theme replaces Carbonfox runtime styling. This is database-only chrome, not Files/Git/version-control UI or a visual copy of DataGrip.
+The compact Kit tab strip uses provider/driver prefix icons so context labels remain visible (Kit `Tab.icon` suppresses labels). Tabs use the saved source color, or a deterministic source-UUID color when none is configured, as a 9% inactive/24% active tint with an active colored underline. Kit text colors remain unchanged. Tabs share 100–280 px bounds with ellipsis/full source/database/console tooltips, a nonempty-draft dot and a real running indicator, with overflow scrolling. Small ghost close buttons stop propagation, so closing an inactive tab does not activate it. The explorer has three toolbar icons and horizontal scrolling at its 200 px minimum width. Kit's default theme replaces Carbonfox runtime styling. This is database-only chrome, not Files/Git/version-control UI or a visual copy of DataGrip.
 
 The database chooser uses actual Kit `ComboboxState<SearchableVec<DbChoice>>` with search and a virtual list, including the 1,000-name fixture. `Option<String>` values distinguish no default from a real database named “No default database”; selection uses values rather than stale indices. Catalog-unchanged busy/result notifications retain the same state and menu. Running guards restore selection rather than change execution context. Search is cached-only and never discovers databases.
 
@@ -18,7 +18,7 @@ The database chooser uses actual Kit `ComboboxState<SearchableVec<DbChoice>>` wi
 
 | Action | Shortcut / behavior |
 | --- | --- |
-| New console | Cmd-Shift-N; explorer query icon or populated-strip plus |
+| New console | Cmd-T (Cmd-Shift-N alias); explorer query icon or populated-strip plus |
 | Previous / next tab | Cmd-Alt-Left / Cmd-Alt-Right |
 | Close active tab | Cmd-W or its close x |
 | Run | Cmd-Enter or play icon |

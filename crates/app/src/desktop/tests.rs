@@ -609,7 +609,7 @@ fn new_console_shortcut_opens_once_and_uses_selected_database(cx: &mut TestAppCo
         cx.notify();
     });
     cx.run_until_parked();
-    cx.simulate_keystrokes("cmd-shift-n");
+    cx.simulate_keystrokes("cmd-t");
     cx.run_until_parked();
     let workspace = shell.read_with(cx, |shell, _| shell.workspace.clone());
     assert_eq!(
@@ -624,6 +624,13 @@ fn new_console_shortcut_opens_once_and_uses_selected_database(cx: &mut TestAppCo
     });
     cx.simulate_input("SELECT 1");
     cx.run_until_parked();
+    // Cmd-T must work from the native editor too, not just the empty shell.
+    cx.simulate_keystrokes("cmd-t");
+    cx.run_until_parked();
+    assert_eq!(workspace.read_with(cx, |w, _| w.tab_count()), 2);
+    cx.simulate_keystrokes("cmd-w");
+    cx.run_until_parked();
+    assert_eq!(workspace.read_with(cx, |w, _| w.tab_count()), 1);
     cx.simulate_keystrokes("cmd-w");
     cx.run_until_parked();
     assert!(cx.debug_bounds("confirm-close-console").is_some());
