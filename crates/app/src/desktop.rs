@@ -130,11 +130,14 @@ impl RenderOnce for NewConnectionButton {
             .debug_selector(|| "new-connection".into())
             .small()
             .ghost()
-            .label("New Connection")
+            .w(px(22.))
+            .h(px(TITLEBAR_HEIGHT))
+            .p_0()
+            .rounded(gpui::component::button::ButtonRounded::None)
             .icon(KitIcon::empty().path("icons/plus.svg"))
             .disabled(self.disabled)
-            .tooltip("Create or import database connections")
-            .dropdown_caret(true)
+            .accessibility_label("Add data source")
+            .tooltip("Add data source: create manually or import connections")
             .dropdown_menu(|menu, _, _| {
                 menu.item(
                     PopupMenuItem::element(|_, _| {
@@ -310,7 +313,11 @@ impl Shell {
         let model = cx.new(|_| source_model::SourceModel::for_tests(vec![]));
         #[cfg(not(all(test, feature = "ui-tests")))]
         let model = cx.new(source_model::SourceModel::new);
-        let explorer = cx.new(|cx| source_browser::SourceExplorer::new(model.clone(), cx));
+        let explorer = cx.new(|cx| {
+            let mut explorer = source_browser::SourceExplorer::new(model.clone(), cx);
+            explorer.set_external_actions();
+            explorer
+        });
         let workspace = cx.new(|cx| source_workspace::SourceWorkspace::new(model.clone(), cx));
         let source_subscription = cx.observe(&model, |_, _, cx| cx.notify());
         let close_workspace = workspace.clone();
@@ -414,10 +421,45 @@ impl Shell {
         self.tracked_button(id, button, cx)
     }
 
+    fn database_actions(&self, visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let disabled = self.sources.read(cx).saving || self.sources.read(cx).connector_busy;
+        let button = self
+            .kit_button("database-toggle")
+            .icon(if visible {
+                gpui::assets::IconName::PanelLeftClose
+            } else {
+                gpui::assets::IconName::PanelLeftOpen
+            })
+            .w(px(22.))
+            .h(px(TITLEBAR_HEIGHT))
+            .p_0()
+            .rounded(gpui::component::button::ButtonRounded::None)
+            .selected(visible)
+            .accessibility_label("Toggle database sidebar")
+            .tooltip("Toggle database sidebar (Cmd-B)")
+            .on_click(
+                cx.listener(|this, _, window, cx| this.apply(Control::ToggleDatabase, window, cx)),
+            );
+        div()
+            .id("database-header-actions")
+            .debug_selector(|| "database-header-actions".into())
+            .flex()
+            .items_center()
+            .gap_0()
+            .h(px(TITLEBAR_HEIGHT))
+            .flex_shrink_0()
+            .child(self.tracked_button("database-toggle", button, cx))
+            .child(NewConnectionButton {
+                owner: cx.entity().downgrade(),
+                disabled,
+            })
+            .child(source_browser::explorer_header_actions(
+                self.explorer.clone(),
+                cx,
+            ))
+    }
+
     fn titlebar(&self, database_visible: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let disabled = self.sources.read(cx).saving
-            || self.sources.read(cx).connector_busy
-            || (self.sources.read(cx).busy && self.sources.read(cx).profiles.is_empty());
         div()
             .id("titlebar")
             .debug_selector(|| "titlebar".into())
@@ -428,17 +470,7 @@ impl Shell {
             .bg(colors(cx).chrome)
             .when(!database_visible, |bar| {
                 bar.child(div().w(px(84.)).h_full().flex_shrink_0())
-                    .child(self.button(
-                        "database-toggle",
-                        Control::ToggleDatabase,
-                        false,
-                        "icons/database.svg",
-                        cx,
-                    ))
-            })
-            .child(NewConnectionButton {
-                owner: cx.entity().downgrade(),
-                disabled,
+                    .child(self.database_actions(false, cx))
             })
             .child(
                 div()
@@ -506,13 +538,7 @@ impl Shell {
                     .items_center()
                     .bg(colors(cx).panel)
                     .child(div().w(px(84.)).h_full().flex_shrink_0())
-                    .child(self.button(
-                        "database-toggle",
-                        Control::ToggleDatabase,
-                        true,
-                        "icons/database.svg",
-                        cx,
-                    ))
+                    .child(self.database_actions(true, cx))
                     .child(
                         div()
                             .flex_1()

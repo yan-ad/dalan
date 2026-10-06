@@ -41,10 +41,10 @@ fn add_source_opens_real_form_and_cancel_returns_browser(cx: &mut TestAppContext
     let (_, cx) = fixture(cx);
     let toggle = cx.debug_bounds("database-toggle").unwrap();
     let create = cx.debug_bounds("new-connection").unwrap();
-    assert!(create.left() > toggle.right());
+    assert_eq!(create.left(), toggle.right());
     assert_eq!(cx.debug_bounds("database-pane").unwrap().top(), px(0.));
     assert!(create.size.height <= px(TITLEBAR_HEIGHT));
-    assert!(create.size.width > px(CONTROL_HEIGHT));
+    assert_eq!(create.size.width, px(22.));
     click(cx, "new-connection");
     click(cx, "connection-create-manually");
     assert!(
@@ -299,8 +299,9 @@ fn tab_order_reaches_every_visible_control_in_both_directions(cx: &mut TestAppCo
     let (view, cx) = fixture(cx);
     let order = [
         "database-toggle",
-        "database-resize",
         "new-connection",
+        "toggle-tree-expansion",
+        "database-resize",
         "acp-toggle",
         "theme-toggle",
         "layout-menu",
@@ -309,7 +310,10 @@ fn tab_order_reaches_every_visible_control_in_both_directions(cx: &mut TestAppCo
     for id in order {
         cx.simulate_keystrokes("tab");
         handles.push(cx.update(|window, app| window.focused(app).expect("tab focus")));
-        if !matches!(id, "layout-menu" | "new-connection") {
+        if !matches!(
+            id,
+            "layout-menu" | "new-connection" | "toggle-tree-expansion"
+        ) {
             assert!(
                 cx.update(|window, app| view.read(app).controls[id].is_focused(window)),
                 "{id}"
@@ -423,7 +427,7 @@ fn titlebar_database_toggle_replaces_brand_without_duplicate_controls(cx: &mut T
     let button = cx.debug_bounds("database-toggle").unwrap();
     assert_eq!(button.origin.x, px(84.0));
     assert!(button.origin.y < px(TITLEBAR_HEIGHT));
-    assert_eq!(button.size.width, px(CONTROL_HEIGHT));
+    assert_eq!(button.size.width, px(22.));
     assert!(cx.debug_bounds("product-name").is_none());
     click(cx, "database-toggle");
     assert!(!state(&view, cx).database_visible);
@@ -476,7 +480,7 @@ fn menu_trigger_escape_and_outside_click_dismiss(cx: &mut TestAppContext) {
 #[gpui::test]
 fn keyboard_activation_native_menu_navigation_and_shortcuts(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
-    cx.simulate_keystrokes("tab tab tab tab tab tab");
+    cx.simulate_keystrokes("tab tab tab tab tab tab tab");
     press(cx, "enter");
     cx.run_until_parked();
     assert!(state(&view, cx).menu_open);
@@ -602,6 +606,66 @@ fn sidebar_reaches_traffic_lights_and_search_stays_below_toggle_when_resized(
 }
 
 #[gpui::test]
+fn compact_database_actions_stay_in_one_row_when_hidden_and_search_addons_are_inside(
+    cx: &mut TestAppContext,
+) {
+    let (shell, cx) = fixture(cx);
+    let sources = shell.read_with(cx, |s, _| s.sources.clone());
+    let profile = dalan_drivers::SourceProfile::default();
+    let id = profile.id.clone();
+    sources.update(cx, |m, cx| {
+        m.profiles.push(profile);
+        m.explorer_source = Some(id.clone());
+        m.tree.databases.insert(id, vec!["fixture".into()]);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    for hidden in [false, true, false] {
+        if state(&shell, cx).database_visible == hidden {
+            click(cx, "database-toggle");
+        }
+        let bar = cx.debug_bounds("database-header-actions").unwrap();
+        let mut right = bar.left();
+        for id in [
+            "database-toggle",
+            "new-connection",
+            "refresh-source",
+            "toggle-tree-expansion",
+            "explorer-new-console",
+        ] {
+            let b = cx.debug_bounds(id).unwrap();
+            assert_eq!(b.left(), right, "{id}");
+            assert_eq!(b.size.width, px(22.));
+            assert!(b.top() >= bar.top() && b.bottom() <= bar.bottom());
+            right = b.right();
+        }
+        assert_eq!(bar.size.width, px(110.));
+        assert!(right <= px(200.));
+        assert_eq!(
+            cx.debug_bounds("source-explorer-toolbar").unwrap().top(),
+            bar.top()
+        );
+        if !hidden {
+            let search = cx.debug_bounds("source-explorer-search").unwrap();
+            let prefix = cx.debug_bounds("source-search-icon").unwrap();
+            let regex = cx.debug_bounds("source-explorer-regex").unwrap();
+            assert!(prefix.left() >= search.left() && prefix.right() < regex.left());
+            assert!(regex.right() <= search.right());
+            assert!(prefix.top() >= search.top() && regex.bottom() <= search.bottom());
+            click(cx, "source-explorer-regex");
+        }
+    }
+    click(cx, "database-toggle");
+    click(cx, "new-connection");
+    assert!(cx.debug_bounds("connection-create-manually").is_some());
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    click(cx, "explorer-new-console");
+    assert!(cx.debug_bounds("query-run").is_some());
+    assert!(!state(&shell, cx).database_visible);
+}
+
+#[gpui::test]
 fn transient_feedback_overlay_never_reserves_workspace_height(cx: &mut TestAppContext) {
     let (shell, cx) = fixture(cx);
     let model = shell.read_with(cx, |s, _| s.sources.clone());
@@ -632,7 +696,7 @@ fn layout_trigger_is_icon_sized_and_popover_still_operates(cx: &mut TestAppConte
     click(cx, "layout-menu");
     assert!(!state(&view, cx).menu_open);
     cx.update(|window, app| view.read(app).root_focus.clone().focus(window, app));
-    cx.simulate_keystrokes("tab tab tab tab tab tab");
+    cx.simulate_keystrokes("tab tab tab tab tab tab tab");
     press(cx, "enter");
     assert!(state(&view, cx).menu_open);
     cx.simulate_keystrokes("escape");

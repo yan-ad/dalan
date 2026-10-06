@@ -27,6 +27,7 @@ use super::{
 /// Wheel/keyboard repaint never clones a catalog or rebuilds either projection.
 pub(super) struct SourceExplorer {
     model: Entity<SourceModel>,
+    external_actions: bool,
     rows: Vec<TreeRow>,
     search: Entity<TextInput>,
     search_query: String,
@@ -348,7 +349,8 @@ impl SourceExplorer {
             this.refresh_search_rows(cx);
             cx.notify();
         });
-        Self {
+        let this = Self {
+            external_actions: false,
             model,
             rows,
             search,
@@ -367,9 +369,52 @@ impl SourceExplorer {
             #[cfg(test)]
             projection_rebuilds: 0,
             _subscription: subscription,
-        }
+        };
+        this.compose_search(cx);
+        this
     }
 
+    pub(super) fn set_external_actions(&mut self) {
+        self.external_actions = true;
+    }
+    fn compose_search(&self, cx: &mut Context<Self>) {
+        let owner = cx.entity().downgrade();
+        let enabled = self.regex_enabled;
+        self.search.update(cx, |input, cx| {
+            input.set_composition(
+                move |input, _, _| {
+                    let owner = owner.clone();
+                    input
+                        .prefix(
+                            div()
+                                .id("source-search-icon")
+                                .debug_selector(|| "source-search-icon".into())
+                                .flex()
+                                .items_center()
+                                .child(
+                                    gpui::component::Icon::new(gpui::assets::IconName::Search)
+                                        .size(px(14.)),
+                                ),
+                        )
+                        .suffix(
+                            KitButton::new("source-explorer-regex")
+                                .debug_selector(|| "source-explorer-regex".into())
+                                .icon(gpui::assets::IconName::Regex)
+                                .accessibility_label("Regular expression search")
+                                .ghost()
+                                .compact()
+                                .tab_index(19)
+                                .selected(enabled)
+                                .tooltip("Regular expression (use ^name$ for exact match)")
+                                .on_click(move |_, _, cx| {
+                                    let _ = owner.update(cx, |view, cx| view.toggle_regex(cx));
+                                }),
+                        )
+                },
+                cx,
+            )
+        });
+    }
     fn compile_query(&mut self) {
         self.active_regex = None;
         self.search_error = None;
@@ -408,6 +453,7 @@ impl SourceExplorer {
 
     fn toggle_regex(&mut self, cx: &mut Context<Self>) {
         self.regex_enabled = !self.regex_enabled;
+        self.compose_search(cx);
         self.search_query = bounded_search_query(&self.search.read(cx).value(), self.regex_enabled);
         self.compile_query();
         self.refresh_search_rows(cx);
@@ -828,6 +874,91 @@ impl SourceExplorer {
     }
 }
 
+pub(super) fn explorer_header_actions(
+    explorer: Entity<SourceExplorer>,
+    cx: &mut gpui::App,
+) -> impl IntoElement {
+    let view = explorer.read(cx);
+    let model = view.model.read(cx);
+    let expanded = model.tree.has_visible_expansion(&model.profiles);
+    let refresh = refresh_disabled(model);
+    let query = model.saving
+        || model
+            .explorer_source
+            .as_ref()
+            .or(model.selected_source.as_ref())
+            .is_none();
+    let mut row = div()
+        .id("source-explorer-toolbar")
+        .debug_selector(|| "source-explorer-toolbar".into())
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .h(px(TITLEBAR_HEIGHT))
+        .gap_0();
+    for (id, label, icon, disabled, action) in [
+        (
+            "refresh-source",
+            "Refresh selected source schemas",
+            Icon::Refresh,
+            refresh,
+            0,
+        ),
+        (
+            "toggle-tree-expansion",
+            if expanded {
+                "Collapse all loaded objects"
+            } else {
+                "Expand loaded objects"
+            },
+            if expanded {
+                Icon::CollapseTree
+            } else {
+                Icon::ExpandTree
+            },
+            false,
+            1,
+        ),
+        (
+            "explorer-new-console",
+            "New query (Cmd-T)",
+            Icon::Query,
+            query,
+            2,
+        ),
+    ] {
+        let owner = explorer.downgrade();
+        row = row.child(
+            KitButton::new(id)
+                .debug_selector(move || id.into())
+                .icon(icon.kit_name())
+                .ghost()
+                .small()
+                .rounded(gpui::component::button::ButtonRounded::None)
+                .w(px(22.))
+                .h(px(TITLEBAR_HEIGHT))
+                .p_0()
+                .tooltip(label)
+                .accessibility_label(label)
+                .disabled(disabled)
+                .on_click(move |_, _, cx| {
+                    let _ = owner.update(cx, |view, cx| {
+                        view.model.update(cx, |model, cx| match action {
+                            0 => {
+                                if !refresh_disabled(model) {
+                                    model.refresh_explorer(cx);
+                                }
+                            }
+                            1 => model.toggle_tree_expansion(cx),
+                            _ => model.request_query_console(cx),
+                        })
+                    });
+                }),
+        );
+    }
+    row
+}
+
 impl Render for SourceExplorer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = colors(cx);
@@ -959,18 +1090,7 @@ impl Render for SourceExplorer {
                             cx.stop_propagation();
                         }
                     }))
-                    .child(div().flex_1().min_w(px(0.)).child(self.search.clone()))
-                    .child(
-                        KitButton::new("source-explorer-regex")
-                            .debug_selector(|| "source-explorer-regex".into())
-                            .label(".*")
-                            .ghost()
-                            .compact()
-                            .tab_index(19)
-                            .selected(self.regex_enabled)
-                            .tooltip("Regular expression (use ^name$ for exact match)")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_regex(cx))),
-                    ),
+                    .child(div().flex_1().min_w(px(0.)).child(self.search.clone())),
             );
         if let Some(error) = &self.search_error {
             root = root.child(
@@ -983,7 +1103,9 @@ impl Render for SourceExplorer {
                     .child(error.clone()),
             );
         }
-        root = root.child(toolbar);
+        if !self.external_actions {
+            root = root.child(toolbar);
+        }
         if self.rows.is_empty() {
             root = root.child(div().p(px(8.)).text_color(palette.muted).child(
                 if self.search_query.trim().is_empty() {

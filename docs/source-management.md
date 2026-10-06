@@ -155,9 +155,9 @@ Connector picker cancellation is silent. Transfer errors/review warnings appear 
 
 ## Full-height explorer and regex search
 
-The explorer spans the window from top to bottom, with the database toggle beside the native traffic lights. Search sits directly beneath this 34 px chrome row, ahead of the explorer toolbar. If the explorer is hidden or temporarily suppressed in a compact layout, the toggle moves into the full-width titlebar so it remains accessible. The divider/resizer also spans the full window height.
+The explorer spans the window from top to bottom, with the database toggle beside the native traffic lights. The 34 px chrome row now holds Sidebar, Add Data Source, Refresh, Expand/Collapse Tree and New Query as adjacent icon-only actions with tooltips. Search sits directly beneath it; there is no separate toolbar row in the main workspace. If the explorer is hidden or temporarily suppressed in a compact layout, the whole action group moves into the full-width titlebar, so Add/Refresh/tree/query controls remain accessible. The divider/resizer also spans the full window height.
 
-Normal search is case-insensitive substring matching against cached metadata. The `.*` toggle enables case-insensitive regular expressions; use `^name$` for an exact object-name match. Rust regex syntax does not support look-around/backreferences. Patterns are limited to 256 Unicode characters and bounded compilation memory. Invalid/oversized patterns display a sanitized error and restore the ordinary cached tree without altering expansions, selected database/results or performing I/O. Escape clears the text/error while preserving the regex-mode choice.
+Normal search is case-insensitive substring matching against cached metadata. Kit’s composed Input places a leading Search icon and a trailing regex icon inside the field; the regex toggle enables case-insensitive regular expressions; use `^name$` for an exact object-name match. Rust regex syntax does not support look-around/backreferences. Patterns are limited to 256 Unicode characters and bounded compilation memory. Invalid/oversized patterns display a sanitized error and restore the ordinary cached tree without altering expansions, selected database/results or performing I/O. Escape clears the text/error while preserving the regex-mode choice.
 
 ## Built-in driver versions
 

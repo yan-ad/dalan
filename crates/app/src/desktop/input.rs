@@ -14,6 +14,8 @@ use gpui::{
 };
 use std::{ops::Range, time::Duration};
 
+type InputComposition = std::rc::Rc<dyn Fn(Input, &mut Window, &mut App) -> Input>;
+
 pub(super) struct TextInput {
     fallback_focus: FocusHandle,
     input_focus: Option<FocusHandle>,
@@ -28,6 +30,7 @@ pub(super) struct TextInput {
     reveal_task: Option<gpui::Task<()>>,
     window: Option<AnyWindowHandle>,
     tab_order: isize,
+    composition: Option<InputComposition>,
 }
 
 impl TextInput {
@@ -53,6 +56,7 @@ impl TextInput {
             reveal_task: None,
             window: None,
             tab_order: 0,
+            composition: None,
         }
     }
 
@@ -130,6 +134,14 @@ impl TextInput {
             .clone()
     }
 
+    pub(super) fn set_composition(
+        &mut self,
+        build: impl Fn(Input, &mut Window, &mut App) -> Input + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.composition = Some(std::rc::Rc::new(build));
+        cx.notify();
+    }
     pub(super) fn set_tab_order(&mut self, index: isize) {
         self.tab_order = index;
     }
@@ -211,6 +223,13 @@ impl Render for TextInput {
             .child(
                 Input::new(&state)
                     .small()
+                    .map(|input| {
+                        if let Some(build) = &self.composition {
+                            build(input, window, cx)
+                        } else {
+                            input
+                        }
+                    })
                     .on_paste(move |item, window, cx| {
                         let Some(text) = item.text() else {
                             return false;

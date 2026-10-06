@@ -1,5 +1,11 @@
 # Test strategy and release evidence
 
+## Compact persistent database action row and composed search
+
+Consolidated Sidebar/Add/Refresh/Tree expansion/New Query into a gapless 110 px icon row beside traffic lights, with 22 px controls, actual sidebar visibility glyphs and retained tooltips/accessibility names. The group stays available in the main titlebar when the sidebar is hidden. Composed Kit Input prefix/suffix slots place Search and Regex inside one retained field instead of an external button; cached filtering, regex errors/Escape and privacy adapters remain unchanged.
+
+Added event/geometry coverage checks ordered adjacency/full-height hit targets in visible/hidden/restored layouts, in-field addon bounds, Add dropdown access and New Query with hidden explorer. Updated native Tab traversal and preserved menu/shortcut controls; standalone explorer harnesses retain their explicit action row while the production shell removes the duplicate row. Local verification passed **227 headless unit tests + one native-wire integration test, 238 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped. Geometry is simulation evidence, not native visual certification.
+
 ## MongoDB URI autofill and manual TLS defaults
 
 Reproduced pre-network rejection of credential-bearing MongoDB URLs and all URL query parameters. Explicit form paste now extracts credentials into masked fields, scrubs URL/history, selects User & Password and autofills endpoint fields. Restricted directConnection/authSource/tls options are validated and materialized into native driver options; URI auth source defaults to database/admin. Persisted-profile validation still refuses URL credentials. New manual sources default TLS Disabled, without rewriting saved verified profiles or weakening conservative foreign imports/secure-scheme requirements.
