@@ -7,6 +7,7 @@ pub mod result_budget;
 pub mod schema_cache;
 pub mod shell_state;
 pub mod source_store;
+pub mod sql_statements;
 pub mod sql_tools;
 pub mod ssh_config_store;
 pub mod table_edits;

@@ -2,9 +2,19 @@
 //! syntax highlighting and undo/redo are owned by Kit, not by this view.
 
 use gpui::component::input::{Editor, EditorState};
+use gpui::component::{
+    ActiveTheme, Disableable,
+    button::{Button, ButtonRounded, ButtonVariants},
+};
 use gpui::{App, Context, Entity, FocusHandle, Focusable, Subscription, Window, div, prelude::*};
 
 const MAX_BYTES: usize = 64 * 1024;
+
+pub(super) enum SqlEditorEvent {
+    RunStatement(usize, u64),
+    Stop,
+}
+impl gpui::EventEmitter<SqlEditorEvent> for SqlEditor {}
 
 pub(super) struct SqlEditor {
     // The public constructor has no Window. Create the Kit state on first render
@@ -18,6 +28,12 @@ pub(super) struct SqlEditor {
     pub(super) soft_wrap: bool,
     edit_revision: u64,
     language: &'static str,
+    gutter_statements: Vec<dalan_app::sql_statements::SqlStatement>,
+    gutter_busy: bool,
+    gutter_running: Option<usize>,
+    gutter_revision: u64,
+    gutter_snapshot: String,
+    gutter_offsets: Vec<usize>,
     pub(super) validation_error: Option<String>,
 }
 
@@ -35,10 +51,52 @@ impl SqlEditor {
             soft_wrap: false,
             edit_revision: 0,
             language: "sql",
+            gutter_statements: vec![],
+            gutter_busy: false,
+            gutter_running: None,
+            gutter_revision: 0,
+            gutter_snapshot: String::new(),
+            gutter_offsets: vec![],
             validation_error: oversized.then(limit_message),
         }
     }
 
+    pub(super) fn set_statement_controls(
+        &mut self,
+        statements: Vec<dalan_app::sql_statements::SqlStatement>,
+        busy: bool,
+        running: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.gutter_statements != statements
+            || self.gutter_busy != busy
+            || self.gutter_running != running
+            || self.gutter_revision != self.edit_revision;
+        if !changed {
+            return;
+        }
+        self.gutter_statements = statements;
+        self.gutter_busy = busy;
+        self.gutter_running = running;
+        self.gutter_revision = self.edit_revision;
+        self.gutter_snapshot = self.content.clone();
+        let starts = std::iter::once(0)
+            .chain(self.gutter_snapshot.match_indices('\n').map(|(i, _)| i + 1))
+            .collect::<Vec<_>>();
+        self.gutter_offsets = self
+            .gutter_statements
+            .iter()
+            .map(|s| starts.get(s.start_line).copied().unwrap_or(s.range.start))
+            .collect();
+        cx.notify();
+    }
+
+    pub(super) fn cursor_offset(&self, cx: &App) -> usize {
+        self.state
+            .as_ref()
+            .map(|s| s.read(cx).cursor())
+            .unwrap_or(0)
+    }
     pub(super) fn set_engine(
         &mut self,
         engine: dalan_drivers::DbEngine,
@@ -299,7 +357,7 @@ impl Render for SqlEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.ensure_state(window, cx);
 
-        div()
+        let root = div()
             .id("dalan-sql-editor")
             .debug_selector(|| "dalan-sql-editor".into())
             .p_0()
@@ -310,6 +368,17 @@ impl Render for SqlEditor {
             .w_full()
             .h_full()
             .overflow_hidden()
+            .flex()
+            .relative()
+            .child(
+                div()
+                    .id("statement-run-gutter")
+                    .debug_selector(|| "statement-run-gutter".into())
+                    .w(gpui::px(22.))
+                    .h_full()
+                    .flex_shrink_0()
+                    .bg(cx.theme().background),
+            )
             .child(
                 Editor::new(&state)
                     .appearance(false)
@@ -317,9 +386,114 @@ impl Render for SqlEditor {
                     .rounded_none()
                     .p_0()
                     .h_full()
+                    .w_full()
+                    .flex_1()
+                    .min_w_0()
                     .tab_index(20)
                     .aria_label("SQL editor"),
+            );
+        let owner = cx.entity().downgrade();
+        let statements = self.gutter_statements.clone();
+        let busy = self.gutter_busy;
+        let running = self.gutter_running;
+        let revision = self.gutter_revision;
+        let offsets = self.gutter_offsets.clone();
+        root.child(
+            gpui::canvas(
+                move |bounds, window, cx| {
+                    let input = state.read(cx);
+                    let line = input.line_height().unwrap_or(gpui::px(18.));
+                    let offset = input.scroll_offset();
+                    let mut controls = Vec::new();
+                    let mut seen_lines = std::collections::HashSet::new();
+                    for (index, statement) in statements.iter().enumerate() {
+                        let shared_line = statements
+                            .iter()
+                            .take(index)
+                            .any(|s| s.start_line == statement.start_line);
+                        let is_running = busy && running == Some(index + 1);
+                        let line_running = busy
+                            && statements.iter().enumerate().any(|(i, s)| {
+                                s.start_line == statement.start_line && running == Some(i + 1)
+                            });
+                        if (shared_line && !is_running)
+                            || (line_running && !is_running)
+                            || !seen_lines.insert(statement.start_line)
+                        {
+                            continue;
+                        }
+                        // First meaningful byte may follow a leading comment. Resolve its
+                        // physical start line through Kit's actual visible/wrapped layout.
+                        let start = offsets[index];
+                        let point = input.range_to_bounds(&(start..start));
+                        if let Some(caret) = point {
+                            let top = caret.top() + offset.y - bounds.top();
+                            if top >= gpui::px(0.) && top + line <= bounds.size.height {
+                                controls.push((index, top, line));
+                            }
+                        }
+                    }
+                    controls
+                        .into_iter()
+                        .map(|(index, top, line)| {
+                            let owner = owner.clone();
+                            let stopping = busy && running == Some(index + 1);
+                            let mut control = Button::new(gpui::SharedString::from(format!(
+                                "query-line-run-{index}"
+                            )))
+                            .debug_selector(move || format!("query-line-run-{index}"))
+                            .ghost()
+                            .compact()
+                            .rounded(ButtonRounded::None)
+                            .icon(if stopping {
+                                gpui::assets::IconName::Square
+                            } else {
+                                gpui::assets::IconName::Play
+                            })
+                            .w(gpui::px(22.))
+                            .h(line)
+                            .p_0()
+                            .disabled(busy && !stopping)
+                            .tooltip(if stopping {
+                                "Stop query"
+                            } else {
+                                "Run this statement"
+                            })
+                            .on_click(move |_, _, cx| {
+                                let _ = owner.update(cx, |editor, cx| {
+                                    if !stopping && editor.edit_revision != revision {
+                                        return;
+                                    }
+                                    cx.emit(if stopping {
+                                        SqlEditorEvent::Stop
+                                    } else {
+                                        SqlEditorEvent::RunStatement(index, revision)
+                                    });
+                                });
+                            })
+                            .into_any_element();
+                            control.prepaint_as_root(
+                                gpui::point(bounds.left(), bounds.top() + top),
+                                bounds.size.into(),
+                                window,
+                                cx,
+                            );
+                            control
+                        })
+                        .collect::<Vec<_>>()
+                },
+                |_, controls, window, cx| {
+                    for mut control in controls {
+                        control.paint(window, cx);
+                    }
+                },
             )
+            .absolute()
+            .left_0()
+            .top_0()
+            .w(gpui::px(22.))
+            .h_full(),
+        )
     }
 }
 
@@ -740,6 +914,44 @@ mod tests {
             "actual edits must still propagate"
         );
         drop(subscription);
+    }
+
+    #[gpui::test]
+    fn statement_gutter_uses_visible_native_line_geometry_after_scroll(cx: &mut TestAppContext) {
+        let sql = (0..30)
+            .map(|i| format!("SELECT {i};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (editor, visual) = fixture(cx, &sql);
+        let statements =
+            dalan_app::sql_statements::split_statements(&sql, dalan_drivers::DbEngine::MySql)
+                .unwrap();
+        editor.update(visual, |e, cx| {
+            e.set_statement_controls(statements, false, None, cx)
+        });
+        visual.simulate_resize(gpui::size(gpui::px(800.), gpui::px(180.)));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("query-line-run-0").is_some());
+        let state = editor.read_with(visual, |e, _| e.state.as_ref().unwrap().clone());
+        visual.update(|_, app| {
+            state.update(app, |s, cx| {
+                s.set_scroll_offset(gpui::point(gpui::px(0.), gpui::px(-200.)), cx)
+            })
+        });
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("query-line-run-0").is_none());
+        let controls = (0..30)
+            .filter_map(|i| {
+                visual.debug_bounds(Box::leak(format!("query-line-run-{i}").into_boxed_str()))
+            })
+            .collect::<Vec<_>>();
+        assert!(!controls.is_empty());
+        let gutter = visual.debug_bounds("statement-run-gutter").unwrap();
+        for bounds in controls {
+            assert!(bounds.top() >= gutter.top() && bounds.bottom() <= gutter.bottom());
+        }
     }
 
     #[gpui::test]

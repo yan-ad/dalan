@@ -22,7 +22,7 @@ Status: product and technical plan, not a release promise. This is the canonical
 | Plugins | No plugin host, SDK, package installer, or marketplace | All plugin milestones below |
 | AI | ACP SDK boundary and disconnected panel | Agent launch, negotiation, authentication, sessions, streaming, permissions |
 
-These are scoped implementations, not DataGrip/Compass parity. SQL consoles accept one restricted SELECT, MongoDB a restricted JSON find object, Redis an allowlisted JSON command array; this plan does not broaden them to arbitrary SQL, shell or write execution. See the [native support matrix](docs/native-drivers.md), including direct-only MongoDB/Redis, MongoDB VerifyCa rejection, and official-driver wire-cap limitations. Owned loopback fixtures are not the unrun actual native multi-database server/TLS matrix; final totals await primary verification.
+These are scoped implementations, not DataGrip/Compass parity. SQL consoles execute individually validated SELECTs, with prevalidated sequential batches, MongoDB a restricted JSON find object, Redis an allowlisted JSON command array; this plan does not broaden them to arbitrary SQL, shell or write execution. See the [native support matrix](docs/native-drivers.md), including direct-only MongoDB/Redis, MongoDB VerifyCa rejection, and official-driver wire-cap limitations. Owned loopback fixtures are not the unrun actual native multi-database server/TLS matrix; final totals await primary verification.
 
 ## Platform coverage and release plan
 

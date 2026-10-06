@@ -1,5 +1,11 @@
 # Test strategy and release evidence
 
+## Statement gutter, Run chooser and sequential batches
+
+Added source-preserving dialect statement spans/numbered ellipsized labels, visible Kit Run/Stop gutter buttons before line numbers, and a real Kit toolbar chooser with All Query / numbered statements. Cmd-Enter executes selection/current statement. All Query validates all bounded statements before credentials/network and executes sequentially, with first-error stop, generation-guarded progress/cancellation and individual retained result selectors. It is not a shared transaction or a write-console expansion.
+
+Ten pure splitter regressions cover Unicode/comments/quotes/semicolons/dollar quoting and statement/input bounds. Model tests cover whole-batch prevalidation before auth access, bounded result retention, progress and cancellation preservation. UI tests exercise actual chooser/gutter actions, no-network unsafe statement rejection, running Stop/stale edited-draft cancellation and native gutter scroll geometry. Existing caret/undo/performance work-count checks remain intact. Local verification passed **237 headless unit tests + one native-wire integration test, 243 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. No private data/server/auth file access was needed. Synthetic/model checks do not certify all-script success on live server matrices. CI remains skipped.
+
 ## Compact persistent database action row and composed search
 
 Consolidated Sidebar/Add/Refresh/Tree expansion/New Query into a gapless 110 px icon row beside traffic lights, with 22 px controls, actual sidebar visibility glyphs and retained tooltips/accessibility names. The group stays available in the main titlebar when the sidebar is hidden. Composed Kit Input prefix/suffix slots place Search and Regex inside one retained field instead of an external button; cached filtering, regex errors/Escape and privacy adapters remain unchanged.

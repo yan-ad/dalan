@@ -8,7 +8,7 @@ use gpui::{
 use super::{
     data_grid::DataGrid,
     source_model::SourceModel,
-    sql_editor::SqlEditor,
+    sql_editor::{SqlEditor, SqlEditorEvent},
     theme::{STATUS_HEIGHT, TOOLBAR_HEIGHT},
 };
 
@@ -83,6 +83,10 @@ pub(super) struct QueryConsole {
     editor: Entity<SqlEditor>,
     grid: Entity<DataGrid>,
     last_text: String,
+    statements: Vec<dalan_app::sql_statements::SqlStatement>,
+    statement_error: Option<String>,
+    running_statement: Option<usize>,
+    parsed_engine: dalan_drivers::DbEngine,
     databases: Vec<Option<String>>,
     database_combo: Option<Entity<DatabaseComboState>>,
     database_items_changed: bool,
@@ -120,6 +124,9 @@ impl QueryConsole {
                 {
                     this.refresh_databases(cx);
                 }
+                if this.parsed_engine != this.model.read(cx).selected_engine() {
+                    this.refresh_statements(cx);
+                }
                 cx.notify();
             }),
             cx.observe(&catalog, |this, _, cx| {
@@ -134,6 +141,7 @@ impl QueryConsole {
                     this.last_text = text.clone();
                     this.model
                         .update(cx, |model, cx| model.set_query_sql(text, cx));
+                    this.refresh_statements(cx);
                     cx.notify();
                 }
             }),
@@ -144,6 +152,10 @@ impl QueryConsole {
             editor,
             grid,
             last_text,
+            statements: vec![],
+            statement_error: None,
+            running_statement: None,
+            parsed_engine: dalan_drivers::DbEngine::MySql,
             databases: Vec::new(),
             database_combo: None,
             database_items_changed: false,
@@ -153,6 +165,17 @@ impl QueryConsole {
             _subscriptions: subscriptions,
         };
         this.refresh_databases(cx);
+        this.refresh_statements(cx);
+        let editor = this.editor.clone();
+        this._subscriptions
+            .push(cx.subscribe(&editor, |this, _, event, cx| match event {
+                SqlEditorEvent::Stop => this.cancel(cx),
+                SqlEditorEvent::RunStatement(index, revision) => {
+                    if this.editor.read(cx).edit_revision() == *revision {
+                        this.run_statement(*index, cx);
+                    }
+                }
+            }));
         this
     }
 
@@ -599,6 +622,60 @@ impl QueryConsole {
         })
     }
 
+    fn refresh_statements(&mut self, cx: &mut Context<Self>) {
+        self.parsed_engine = self.model.read(cx).selected_engine();
+        match dalan_app::sql_statements::split_statements(
+            &self.editor.read(cx).value(),
+            self.parsed_engine,
+        ) {
+            Ok(statements) => {
+                self.statements = statements;
+                self.statement_error = None;
+            }
+            Err(error) => {
+                self.statements.clear();
+                self.statement_error = Some(error.to_string());
+            }
+        }
+    }
+    fn run_statement(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.model.read(cx).busy
+            || self.model.read(cx).saving
+            || self.catalog.read(cx).saving
+            || self.file_busy
+        {
+            return;
+        }
+        let Some(statement) = self.statements.get(index) else {
+            return;
+        };
+        let text = self.editor.read(cx).value();
+        let Some(sql) = text.get(statement.range.clone()).map(str::to_owned) else {
+            return;
+        };
+        self.running_statement = Some(index + 1);
+        self.model.update(cx, |m, cx| m.run_query(sql, cx));
+        cx.notify();
+    }
+    fn run_all(&mut self, cx: &mut Context<Self>) {
+        if self.model.read(cx).busy
+            || self.model.read(cx).saving
+            || self.catalog.read(cx).saving
+            || self.file_busy
+        {
+            return;
+        }
+        let text = self.editor.read(cx).value();
+        let statements = self
+            .statements
+            .iter()
+            .filter_map(|s| text.get(s.range.clone()).map(str::to_owned))
+            .collect::<Vec<_>>();
+        self.running_statement = None;
+        self.model
+            .update(cx, |m, cx| m.run_query_batch(statements, cx));
+        cx.notify();
+    }
     fn run(&mut self, cx: &mut Context<Self>) {
         if self.model.read(cx).busy
             || self.model.read(cx).saving
@@ -615,7 +692,18 @@ impl QueryConsole {
             });
             return;
         }
+        if self.statements.len() > 1 && editor.selected_text(cx).is_none() {
+            let offset = editor.cursor_offset(cx);
+            let index = self
+                .statements
+                .iter()
+                .position(|s| s.range.start <= offset && offset <= s.range.end)
+                .unwrap_or(0);
+            self.run_statement(index, cx);
+            return;
+        }
         let sql = editor.selected_text(cx).unwrap_or_else(|| editor.value());
+        self.running_statement = Some(1);
         // Keep validation in the model: rejected SQL must never access saved auth
         // or the network, including runs issued through keyboard actions.
         self.model.update(cx, |model, cx| model.run_query(sql, cx));
@@ -669,6 +757,20 @@ impl Render for QueryConsole {
         let engine = self.model.read(cx).selected_engine();
         self.editor
             .update(cx, |e, cx| e.set_engine(engine, window, cx));
+        let busy = self.model.read(cx).busy;
+        let running = if self.model.read(cx).query_running_statement.is_some() {
+            self.model.read(cx).query_running_statement
+        } else {
+            self.running_statement
+        };
+        self.editor.update(cx, |e, cx| {
+            e.set_statement_controls(
+                self.statements.clone(),
+                busy,
+                if busy { running } else { None },
+                cx,
+            )
+        });
         let is_mysql = matches!(
             engine,
             dalan_drivers::DbEngine::MySql | dalan_drivers::DbEngine::MariaDb
@@ -755,51 +857,104 @@ impl Render for QueryConsole {
             .border_b_1()
             .border_color(theme.border)
             .gap_0();
-        toolbar = toolbar
-            .child(
-                KitButton::new("query-run")
-                    .small()
-                    .rounded(ButtonRounded::None)
-                    .h(px(TOOLBAR_HEIGHT))
-                    .ghost()
-                    .debug_selector(|| "query-run".into())
-                    .icon(Icon::empty().path(if busy {
-                        "icons/circle-stop.svg"
-                    } else {
-                        "icons/play.svg"
-                    }))
-                    .disabled(
-                        model.saving
-                            || self.catalog.read(cx).saving
-                            || self.file_busy
-                            || (!busy && self.editor.read(cx).value().trim().is_empty()),
-                    )
-                    .tooltip(if busy {
-                        "Stop query (Cmd-.)"
-                    } else {
-                        "Run selection or entire query (Cmd-Enter)"
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.model.read(cx).busy {
-                            this.cancel(cx);
-                        } else {
-                            this.run(cx);
-                            this.focus(window, cx);
-                        }
-                    })),
+        let run_button = KitButton::new("query-run")
+            .small()
+            .rounded(ButtonRounded::None)
+            .h(px(TOOLBAR_HEIGHT))
+            .ghost()
+            .debug_selector(|| "query-run".into())
+            .icon(Icon::empty().path(if busy {
+                "icons/circle-stop.svg"
+            } else {
+                "icons/play.svg"
+            }))
+            .disabled(
+                model.saving
+                    || self.catalog.read(cx).saving
+                    || self.file_busy
+                    || (!busy && self.editor.read(cx).value().trim().is_empty()),
             )
-            .child(
-                KitButton::new("query-cancel")
-                    .small()
-                    .rounded(ButtonRounded::None)
-                    .h(px(TOOLBAR_HEIGHT))
-                    .ghost()
-                    .debug_selector(|| "query-cancel".into())
-                    .icon(Icon::empty().path("icons/circle-stop.svg"))
-                    .disabled(!busy)
-                    .tooltip("Cancel query (Cmd-.)")
-                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
-            );
+            .tooltip(if busy {
+                "Stop query (Cmd-.)"
+            } else {
+                "Run selection or entire query (Cmd-Enter)"
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.model.read(cx).busy {
+                    this.cancel(cx);
+                } else {
+                    this.run(cx);
+                    this.focus(window, cx);
+                }
+            }));
+        let run_control = if self.statements.len() > 1 && !busy {
+            let owner = cx.entity().downgrade();
+            let statements = self.statements.clone();
+            let revision = self.editor.read(cx).edit_revision();
+            run_button
+                .dropdown_caret(true)
+                .dropdown_menu(move |mut menu, _, _| {
+                    let all = owner.clone();
+                    menu = menu
+                        .item(
+                            PopupMenuItem::element(|_, _| {
+                                div()
+                                    .debug_selector(|| "query-run-all".into())
+                                    .child("All Query")
+                            })
+                            .on_click(move |_, window, cx| {
+                                let _ = all.update(cx, |this, cx| {
+                                    if this.editor.read(cx).edit_revision() != revision {
+                                        return;
+                                    }
+                                    this.run_all(cx);
+                                    this.focus(window, cx);
+                                });
+                            }),
+                        )
+                        .separator();
+                    for (index, statement) in statements.iter().enumerate() {
+                        let owner = owner.clone();
+                        let label = statement.label.clone();
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, _| {
+                                div()
+                                    .debug_selector(move || format!("query-run-statement-{index}"))
+                                    .w(px(360.))
+                                    .max_w(px(360.))
+                                    .min_w_0()
+                                    .text_ellipsis()
+                                    .child(label.clone())
+                            })
+                            .on_click(move |_, window, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    if this.editor.read(cx).edit_revision() != revision {
+                                        return;
+                                    }
+                                    this.run_statement(index, cx);
+                                    this.focus(window, cx);
+                                });
+                            }),
+                        );
+                    }
+                    menu
+                })
+                .into_any_element()
+        } else {
+            run_button.into_any_element()
+        };
+        toolbar = toolbar.child(run_control).child(
+            KitButton::new("query-cancel")
+                .small()
+                .rounded(ButtonRounded::None)
+                .h(px(TOOLBAR_HEIGHT))
+                .ghost()
+                .debug_selector(|| "query-cancel".into())
+                .icon(Icon::empty().path("icons/circle-stop.svg"))
+                .disabled(!busy)
+                .tooltip("Cancel query (Cmd-.)")
+                .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+        );
         if full {
             for (id, label, icon) in [
                 (
@@ -967,6 +1122,11 @@ impl Render for QueryConsole {
             .on_action(cx.listener(|this,_:&OpenSql,window,cx|this.tool("query-open-sql",window,cx)))
             .on_action(cx.listener(|this,_:&PasteInCondition,window,cx|this.tool("query-paste-in",window,cx)))
             .child(toolbar)
+            .when_some(self.statement_error.clone(),|el,error|el.child(notice(error,theme.danger)))
+            .when(self.model.read(cx).query_batch_results.len()>1,|console|{
+                let mut results=div().id("query-batch-tabs").overflow_x_scroll().debug_selector(||"query-batch-tabs".into()).h(px(28.)).flex_shrink_0().flex().gap_0();
+                for(index,result)in self.model.read(cx).query_batch_results.iter().enumerate(){let number=result.number;let disabled=result.result.is_none();results=results.child(KitButton::new(gpui::SharedString::from(format!("query-batch-result-{index}"))).debug_selector(move||format!("query-batch-result-{index}")).small().ghost().label(format!("Query {number}")).tooltip(result.sql.clone()).selected(self.model.read(cx).query_batch_selected==Some(index)).disabled(disabled).on_click(cx.listener(move|this,_,_,cx|this.model.update(cx,|m,cx|m.select_query_batch_result(index,cx)))));}console.child(results)
+            })
             .child(
                 div()
                     .id("query-editor-pane")
@@ -1287,6 +1447,84 @@ mod tests {
             model.update(visual, |m, cx| m.run_query("SELECT 1".into(), cx));
             assert!(model.read_with(visual, |m, _| m.error.is_some() && !m.busy));
         }
+    }
+
+    #[gpui::test]
+    fn multi_query_toolbar_chooser_and_gutter_target_individual_statements(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, model) = fixture(cx);
+        let editor = view.read_with(cx, |v, _| v.editor.clone());
+        let sql = "UPDATE first_table SET value=1;\n\nDELETE FROM second_table;";
+        editor.update(cx, |e, cx| e.set_value(sql.into(), cx));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| ConsoleTestRoot(view.clone()));
+            gpui::base::Root::new(content, window, cx)
+        });
+        cx.simulate_resize(gpui::size(px(900.), px(600.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("query-line-run-0").is_some());
+        assert!(cx.debug_bounds("query-line-run-1").is_some());
+        let first = cx.debug_bounds("query-line-run-0").unwrap();
+        let second = cx.debug_bounds("query-line-run-1").unwrap();
+        let gutter = cx.debug_bounds("statement-run-gutter").unwrap();
+        assert!(first.left() >= gutter.left() && first.right() <= gutter.right());
+        assert!(second.top() > first.bottom());
+        click_tool(cx, "query-run");
+        assert!(cx.debug_bounds("query-run-statement-1").is_some());
+        assert!(cx.debug_bounds("query-run-all").is_some());
+        assert!(!model.read_with(cx, |m, _| m.busy));
+        click_tool(cx, "query-run-statement-1");
+        assert!(model.read_with(cx, |m, _| m.error.is_some() && !m.busy));
+        assert_eq!(view.read_with(cx, |v, _| v.running_statement), Some(2));
+        model.update(cx, |m, cx| {
+            m.error = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click_tool(cx, "query-line-run-0");
+        assert!(model.read_with(cx, |m, _| m.error.is_some() && !m.busy));
+        assert_eq!(view.read_with(cx, |v, _| v.running_statement), Some(1));
+        model.update(cx, |m, cx| {
+            m.error = None;
+            cx.notify();
+        });
+        click_tool(cx, "query-run");
+        click_tool(cx, "query-run-all");
+        assert!(model.read_with(cx, |m, _| m.error.is_some()
+            && !m.busy
+            && m.query_batch_completed == 0));
+        assert_eq!(editor.read_with(cx, |e, _| e.value()), sql);
+    }
+    #[gpui::test]
+    fn running_statement_gutter_turns_stop_and_stale_draft_can_still_cancel(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, model) = fixture(cx);
+        let editor = view.read_with(cx, |v, _| v.editor.clone());
+        editor.update(cx, |e, cx| e.set_value("SELECT 1;\n\nSELECT 2;".into(), cx));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| ConsoleTestRoot(view.clone()));
+            gpui::base::Root::new(content, window, cx)
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        model.update(cx, |m, cx| {
+            m.busy = true;
+            m.query_running_statement = Some(2);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click_tool(cx, "query-line-run-0");
+        assert!(model.read_with(cx, |m, _| m.busy));
+        editor.update(cx, |e, cx| {
+            e.set_value("SELECT 10;\n\nSELECT 20;".into(), cx)
+        });
+        cx.run_until_parked();
+        click_tool(cx, "query-line-run-1");
+        assert!(!model.read_with(cx, |m, _| m.busy));
+        assert!(model.read_with(cx, |m, _| m.query_running_statement.is_none()));
     }
 
     #[gpui::test]

@@ -129,6 +129,57 @@ struct RefreshOutcome {
     warning: Option<String>,
 }
 
+/// Completion metadata remains available even when a result page is evicted.
+#[derive(Clone)]
+pub(super) struct BatchQueryResult {
+    /// One-based statement number in the submitted batch.
+    pub number: usize,
+    pub sql: String,
+    pub result: Option<dalan_drivers::QueryResult>,
+}
+
+enum BatchProgress {
+    Begin(usize, String),
+    Complete(usize, String, Option<dalan_drivers::QueryResult>),
+}
+
+// Retain at most eight pages / 4 MiB. The visible page and single queued
+// completion each consume at most another 2 MiB (8 MiB aggregate page budget).
+const BATCH_PAGE_BYTES: usize = 2 * 1024 * 1024;
+const BATCH_RETAINED_BYTES: usize = 4 * 1024 * 1024;
+
+fn query_result_bytes(result: &dalan_drivers::QueryResult) -> usize {
+    use dalan_drivers::CellValue;
+    let page = &result.page;
+    std::mem::size_of_val(result)
+        + page.columns.capacity() * std::mem::size_of::<dalan_drivers::ColumnInfo>()
+        + page
+            .columns
+            .iter()
+            .map(|c| c.name.capacity() + c.data_type.capacity())
+            .sum::<usize>()
+        + page.rows.capacity() * std::mem::size_of::<Vec<CellValue>>()
+        + page
+            .rows
+            .iter()
+            .map(|row| {
+                row.capacity() * std::mem::size_of::<CellValue>()
+                    + row
+                        .iter()
+                        .map(|cell| match cell {
+                            CellValue::Null => 0,
+                            CellValue::Text(s)
+                            | CellValue::Binary(s)
+                            | CellValue::Number(s)
+                            | CellValue::Temporal(s) => s.capacity(),
+                        })
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+        + result.warnings.capacity() * std::mem::size_of::<String>()
+        + result.warnings.iter().map(String::capacity).sum::<usize>()
+}
+
 pub(super) struct SourceModel {
     pub workspace_open: Option<WorkspaceOpen>,
     pub workspace_open_generation: u64,
@@ -139,6 +190,16 @@ pub(super) struct SourceModel {
     /// SQL identifying the successfully loaded result page, never an in-flight request.
     pub query_submitted_sql: Option<String>,
     pub query_running_sql: Option<String>,
+    pub query_batch_results: Vec<BatchQueryResult>,
+    pub query_batch_completed: usize,
+    /// One-based running statement, cleared on completion or cancellation.
+    pub query_running_statement: Option<usize>,
+    /// Zero-based index into query_batch_results.
+    pub query_batch_selected: Option<usize>,
+    batch_pending: Option<(
+        Arc<std::sync::Mutex<tokio::sync::mpsc::Receiver<BatchProgress>>>,
+        String,
+    )>,
     pub query_elapsed_ms: Option<u64>,
     pub query_warnings: Vec<String>,
     pub query_dirty: bool,
@@ -538,6 +599,9 @@ impl SourceModel {
             self.invalidate();
             self.page = None;
             self.query_submitted_sql = None;
+            self.query_batch_results.clear();
+            self.query_batch_completed = 0;
+            self.query_batch_selected = None;
             self.query_dirty = true;
             self.query_elapsed_ms = None;
             self.query_warnings.clear();
@@ -587,6 +651,9 @@ impl SourceModel {
         self.result_evicted = false;
         self.page = None;
         self.query_submitted_sql = None;
+        self.query_batch_results.clear();
+        self.query_batch_completed = 0;
+        self.query_batch_selected = None;
         self.error = None;
         self.query_elapsed_ms = None;
         self.query_warnings.clear();
@@ -614,6 +681,9 @@ impl SourceModel {
         self.page = None;
         self.result_evicted = false;
         self.query_submitted_sql = None;
+        self.query_batch_results.clear();
+        self.query_batch_completed = 0;
+        self.query_batch_selected = None;
         self.query_elapsed_ms = None;
         self.query_warnings.clear();
         self.error = None;
@@ -691,7 +761,7 @@ impl SourceModel {
         cx.notify();
     }
     pub fn run_query(&mut self, sql: String, cx: &mut Context<Self>) {
-        if self.saving {
+        if self.saving || self.busy {
             return;
         }
         if self.workspace_invalidated {
@@ -727,6 +797,9 @@ impl SourceModel {
         self.invalidate();
         self.busy = true;
         self.error = None;
+        self.query_batch_results.clear();
+        self.query_batch_completed = 0;
+        self.query_batch_selected = None;
         self.query_running_sql = Some(sql.clone());
         self.query_dirty = self.query_submitted_sql.as_ref() != Some(&self.query_sql);
         let request = dalan_drivers::QueryRequest {
@@ -762,6 +835,227 @@ impl SourceModel {
         );
         cx.notify();
     }
+    /// Execute individually validated requests in order, with fresh connections and
+    /// no shared transaction/snapshot. A failure stops the batch; nothing retries.
+    pub fn run_query_batch(&mut self, statements: Vec<String>, cx: &mut Context<Self>) {
+        if statements.len() == 1 {
+            self.run_query(statements.into_iter().next().unwrap(), cx);
+            return;
+        }
+        if self.saving || self.busy {
+            return;
+        }
+        if self.workspace_invalidated {
+            self.error = Some("Source configuration changed or was removed. Copy your draft into a new console before running.".into());
+            cx.notify();
+            return;
+        }
+        if statements.is_empty()
+            || statements.len() > 64
+            || statements.iter().map(String::len).sum::<usize>() > 65536
+        {
+            self.error = Some("A batch must contain between 1 and 64 statements.".into());
+            cx.notify();
+            return;
+        }
+        let Some(profile) = self.selected_profile() else {
+            self.error = Some("Select a source to run a read-only request.".into());
+            cx.notify();
+            return;
+        };
+        // Preflight the entire batch before resolving a profile, accessing secrets,
+        // canceling existing work, or opening any database connection.
+        for (index, sql) in statements.iter().enumerate() {
+            if let Err(error) = dalan_drivers::validate_for_engine(profile.engine, sql) {
+                self.error = Some(format!("Statement {}: {error}", index + 1));
+                cx.notify();
+                return;
+            }
+        }
+        let mut profile = match profile.resolved() {
+            Ok(profile) => profile,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        profile.database = self.selected_database.clone();
+        let id = profile.id.clone();
+        let session = self.session_password(&id);
+        let secret_store = self.secret_store.clone();
+        self.invalidate();
+        let generation = self.generation;
+        self.busy = true;
+        self.error = None;
+        self.query_batch_results.clear();
+        self.query_batch_completed = 0;
+        self.query_batch_selected = None;
+        self.page = None;
+        self.result_evicted = false;
+        self.query_submitted_sql = None;
+        self.query_elapsed_ms = None;
+        self.query_warnings.clear();
+        self.query_running_statement = Some(1);
+        self.query_running_sql = statements.first().cloned();
+        let submitted = self.query_sql.clone();
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let receiver = Arc::new(std::sync::Mutex::new(receiver));
+        self.batch_pending = Some((receiver.clone(), submitted.clone()));
+        let progress_receiver = receiver.clone();
+        let progress_sql = submitted.clone();
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            loop {
+                let keep_polling = this
+                    .update(cx, |model, cx| {
+                        if model.generation != generation {
+                            return false;
+                        }
+                        let mut receiver = progress_receiver.lock().unwrap();
+                        loop {
+                            match receiver.try_recv() {
+                                Ok(event) => {
+                                    model.apply_batch_progress(event, &progress_sql);
+                                    cx.notify();
+                                }
+                                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                                    return model.busy;
+                                }
+                                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                                    return false;
+                                }
+                            }
+                        }
+                    })
+                    .unwrap_or(false);
+                if !keep_polling {
+                    break;
+                }
+                executor.timer(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .detach();
+        self.run(
+            async move {
+                let profile = Self::resolve_connection_profile(profile).await?;
+                let password = Self::resolve_password(&profile, session, secret_store).await?;
+                for (index, sql) in statements.into_iter().enumerate() {
+                    let number = index + 1;
+                    sender
+                        .send(BatchProgress::Begin(number, sql.clone()))
+                        .await
+                        .map_err(|_| anyhow!("Batch cancelled"))?;
+                    let request = dalan_drivers::QueryRequest {
+                        sql: sql.clone(),
+                        limit: profile.options.page_size,
+                    };
+                    match dalan_drivers::execute_read_only(&profile, &password, &request).await {
+                        Ok(result) => {
+                            let result =
+                                (query_result_bytes(&result) <= BATCH_PAGE_BYTES).then_some(result);
+                            sender
+                                .send(BatchProgress::Complete(number, sql, result))
+                                .await
+                                .map_err(|_| anyhow!("Batch cancelled"))?;
+                        }
+                        Err(error) => {
+                            return Ok((password, Some(format!("Statement {number}: {error}"))));
+                        }
+                    }
+                }
+                Ok((password, None))
+            },
+            cx,
+            move |model, result, cx| {
+                // The completion callback can beat the polling task; publish every
+                // queued completion before clearing the running state.
+                let mut receiver = receiver.lock().unwrap();
+                while let Ok(event) = receiver.try_recv() {
+                    model.apply_batch_progress(event, &submitted);
+                }
+                model.batch_pending = None;
+                model.busy = false;
+                model.query_running_statement = None;
+                model.query_running_sql = None;
+                match result {
+                    Ok((password, error)) => {
+                        model.remember_password(id, password);
+                        model.error = error;
+                    }
+                    Err(error) => model.error = Some(error.to_string()),
+                }
+                cx.notify();
+            },
+        );
+        cx.notify();
+    }
+
+    fn apply_batch_progress(&mut self, event: BatchProgress, submitted: &str) {
+        match event {
+            BatchProgress::Begin(number, sql) => {
+                self.query_running_statement = Some(number);
+                self.query_running_sql = Some(sql);
+            }
+            BatchProgress::Complete(number, sql, result) => {
+                self.query_batch_completed = number;
+                self.query_batch_results.push(BatchQueryResult {
+                    number,
+                    sql,
+                    result,
+                });
+                while self
+                    .query_batch_results
+                    .iter()
+                    .filter(|r| r.result.is_some())
+                    .count()
+                    > 8
+                    || self
+                        .query_batch_results
+                        .iter()
+                        .filter_map(|r| r.result.as_ref())
+                        .map(query_result_bytes)
+                        .sum::<usize>()
+                        > BATCH_RETAINED_BYTES
+                {
+                    if let Some(oldest) = self
+                        .query_batch_results
+                        .iter_mut()
+                        .find(|r| r.result.is_some())
+                    {
+                        oldest.result = None;
+                    }
+                }
+                let index = self.query_batch_results.len() - 1;
+                if let Some(result) = self.query_batch_results[index].result.clone() {
+                    self.finish_query(submitted.into(), result);
+                    self.query_batch_selected = Some(index);
+                } else {
+                    self.page = None;
+                    self.result_evicted = true;
+                    self.query_batch_selected = None;
+                    self.query_submitted_sql = Some(submitted.into());
+                    self.query_warnings=vec!["This query result exceeded the retained batch-page budget; earlier retained results remain selectable.".into()];
+                }
+            }
+        }
+    }
+
+    /// Select a retained page; evicted completions remain metadata-only.
+    pub fn select_query_batch_result(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(result) = self
+            .query_batch_results
+            .get(index)
+            .and_then(|r| r.result.clone())
+        else {
+            return;
+        };
+        let submitted = self.query_submitted_sql.clone().unwrap_or_default();
+        self.finish_query(submitted, result);
+        self.query_batch_selected = Some(index);
+        cx.notify();
+    }
+
     fn finish_query(&mut self, sql: String, result: dalan_drivers::QueryResult) {
         self.page = Some(Arc::new(result.page));
         self.result_evicted = false;
@@ -774,6 +1068,12 @@ impl SourceModel {
     pub fn cancel_query(&mut self, cx: &mut Context<Self>) {
         if !self.busy {
             return;
+        }
+        if let Some((receiver, submitted)) = self.batch_pending.take() {
+            let mut receiver = receiver.lock().unwrap();
+            while let Ok(event) = receiver.try_recv() {
+                self.apply_batch_progress(event, &submitted);
+            }
         }
         self.invalidate();
         self.query_dirty = self.query_submitted_sql.as_ref() != Some(&self.query_sql);
@@ -1295,6 +1595,11 @@ impl SourceModel {
             query_sql: String::new(),
             query_submitted_sql: None,
             query_running_sql: None,
+            query_batch_results: Vec::new(),
+            query_batch_completed: 0,
+            query_running_statement: None,
+            query_batch_selected: None,
+            batch_pending: None,
             query_elapsed_ms: None,
             query_warnings: vec![],
             query_dirty: false,
@@ -1409,6 +1714,8 @@ impl SourceModel {
 
     fn invalidate(&mut self) {
         self.query_running_sql = None;
+        self.query_running_statement = None;
+        self.batch_pending = None;
         self.generation += 1;
         if let Some(task) = self.operation.take() {
             task.abort();
@@ -2029,6 +2336,9 @@ impl SourceModel {
             return false;
         }
         self.page = None;
+        for result in &mut self.query_batch_results {
+            result.result = None;
+        }
         self.result_evicted = true;
         cx.notify();
         true
@@ -2039,8 +2349,14 @@ impl SourceModel {
     pub fn retained_page_bytes(&self) -> usize {
         use dalan_drivers::{CellValue, ColumnInfo};
         use std::mem::size_of;
+        let batch = self
+            .query_batch_results
+            .iter()
+            .filter_map(|r| r.result.as_ref())
+            .map(query_result_bytes)
+            .sum::<usize>();
         let Some(page) = &self.page else {
-            return 0;
+            return batch;
         };
         let mut bytes = size_of::<TablePage>()
             + page.columns.capacity() * size_of::<ColumnInfo>()
@@ -2060,7 +2376,7 @@ impl SourceModel {
                 };
             }
         }
-        bytes
+        bytes + batch
     }
 
     #[cfg(all(test, feature = "ui-tests"))]
@@ -2270,6 +2586,92 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[gpui::test]
+    fn batch_preflights_every_statement_before_secrets_or_connections(cx: &mut TestAppContext) {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let profile = SourceProfile {
+            host: "127.0.0.1".into(),
+            port: server.local_addr().unwrap().port(),
+            save_password: true,
+            ..Default::default()
+        };
+        let store = Arc::new(TestPasswordStore {
+            value: None,
+            deny: true,
+            reads: Default::default(),
+        });
+        let model = cx.new(|_| {
+            let mut model = SourceModel::for_tests(vec![profile.clone()]);
+            model.selected_source = Some(profile.id.clone());
+            model.secret_store = store.clone();
+            model
+        });
+        model.update(cx, |model, cx| {
+            model.run_query_batch(vec!["SELECT 1".into(), "DELETE FROM items".into()], cx);
+            assert!(!model.busy);
+            assert!(model.error.as_ref().unwrap().starts_with("Statement 2:"));
+            assert!(model.operation.is_none());
+        });
+        pump_workers(cx);
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(server.accept().is_err());
+    }
+
+    #[gpui::test]
+    fn batch_progress_retains_bounded_pages_and_cancelled_completions(cx: &mut TestAppContext) {
+        let model = cx.new(|_| SourceModel::for_tests(vec![]));
+        model.update(cx, |model, cx| {
+            for number in 1..=12 {
+                model.apply_batch_progress(
+                    BatchProgress::Begin(number, format!("SELECT {number}")),
+                    "batch",
+                );
+                assert_eq!(model.query_running_statement, Some(number));
+                model.apply_batch_progress(
+                    BatchProgress::Complete(
+                        number,
+                        format!("SELECT {number}"),
+                        Some(previous_query_result()),
+                    ),
+                    "batch",
+                );
+            }
+            assert_eq!(model.query_batch_completed, 12);
+            assert_eq!(model.query_batch_results.len(), 12);
+            assert_eq!(
+                model
+                    .query_batch_results
+                    .iter()
+                    .filter(|r| r.result.is_some())
+                    .count(),
+                8
+            );
+            assert_eq!(model.query_batch_results[0].number, 1);
+            assert_eq!(model.query_batch_results[0].sql, "SELECT 1");
+            assert!(model.query_batch_results[0].result.is_none());
+            model.select_query_batch_result(4, cx);
+            assert_eq!(model.query_batch_selected, Some(4));
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            assert!(
+                sender
+                    .try_send(BatchProgress::Complete(
+                        13,
+                        "SELECT 13".into(),
+                        Some(previous_query_result())
+                    ))
+                    .is_ok()
+            );
+            model.batch_pending = Some((Arc::new(std::sync::Mutex::new(receiver)), "batch".into()));
+            model.busy = true;
+            model.cancel_query(cx);
+            assert_eq!(model.query_batch_completed, 13);
+            assert_eq!(model.query_running_statement, None);
+            assert!(model.batch_pending.is_none());
+            assert_eq!(model.query_submitted_sql.as_deref(), Some("batch"));
+        });
     }
 
     fn previous_query_result() -> dalan_drivers::QueryResult {

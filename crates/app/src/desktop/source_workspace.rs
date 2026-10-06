@@ -62,6 +62,7 @@ struct TabRenderState {
     busy: bool,
     has_sql: bool,
     page: Option<usize>,
+    batch_count: usize,
     source: Option<String>,
     database: Option<String>,
     error: bool,
@@ -72,6 +73,11 @@ fn tab_render_state(model: &SourceModel) -> TabRenderState {
     TabRenderState {
         busy: model.busy,
         has_sql: !model.query_sql.trim().is_empty(),
+        batch_count: model
+            .query_batch_results
+            .iter()
+            .filter(|r| r.result.is_some())
+            .count(),
         page: model
             .page
             .as_ref()
