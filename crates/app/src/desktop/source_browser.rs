@@ -30,6 +30,9 @@ pub(super) struct SourceExplorer {
     rows: Vec<TreeRow>,
     search: Entity<TextInput>,
     search_query: String,
+    regex_enabled: bool,
+    search_error: Option<String>,
+    active_regex: Option<regex::Regex>,
     search_index: Option<Vec<TreeRow>>,
     _search_subscription: Subscription,
     active_key: Option<TreeKey>,
@@ -153,10 +156,42 @@ fn build_search_projection(tree: &ExplorerTree, profiles: &[SourceProfile]) -> V
 
 /// Include matching branches and each matching descendant's ancestors. Only
 /// output rows are cloned; typing neither clones metadata nor performs I/O.
+#[cfg(test)]
 fn filter_search_projection(
     index: &[TreeRow],
     query: &str,
     profiles: &[SourceProfile],
+) -> Vec<TreeRow> {
+    filter_search_projection_with_regex(index, query, profiles, None)
+}
+
+/// Keep one extra character in regex mode to reject oversized input, never
+/// silently interpreting a truncated pattern. The input widget retains all text.
+fn bounded_search_query(value: &str, regex_enabled: bool) -> String {
+    value
+        .chars()
+        .take(if regex_enabled { 257 } else { 256 })
+        .collect()
+}
+
+fn compile_search_regex(query: &str) -> Result<regex::Regex, String> {
+    let invalid = || "Invalid regular expression".to_owned();
+    if query.chars().count() > 256 {
+        return Err(invalid());
+    }
+    regex::RegexBuilder::new(query)
+        .case_insensitive(true)
+        .size_limit(1024 * 1024)
+        .dfa_size_limit(1024 * 1024)
+        .build()
+        .map_err(|_| invalid())
+}
+
+fn filter_search_projection_with_regex(
+    index: &[TreeRow],
+    query: &str,
+    profiles: &[SourceProfile],
+    regex: Option<&regex::Regex>,
 ) -> Vec<TreeRow> {
     let query = query
         .chars()
@@ -164,6 +199,10 @@ fn filter_search_projection(
         .collect::<String>()
         .trim()
         .to_lowercase();
+    let matches = |label: &str| match regex {
+        Some(regex) => regex.is_match(label),
+        None => label.to_lowercase().contains(&query),
+    };
     let mut keep = vec![false; index.len()];
     let mut ancestors = Vec::<usize>::with_capacity(4);
     let mut matching_depth = None;
@@ -181,14 +220,8 @@ fn filter_search_projection(
             && profiles
                 .iter()
                 .find(|profile| profile.id == row.key.source())
-                .is_some_and(|profile| {
-                    profile
-                        .engine
-                        .display_name()
-                        .to_lowercase()
-                        .contains(&query)
-                });
-        if row.label.to_lowercase().contains(&query) || engine_match || matching_depth.is_some() {
+                .is_some_and(|profile| matches(profile.engine.display_name()));
+        if matches(&row.label) || engine_match || matching_depth.is_some() {
             keep[i] = true;
             for &parent in &ancestors {
                 keep[parent] = true;
@@ -287,26 +320,13 @@ impl SourceExplorer {
             input
         });
         let search_subscription = cx.observe(&search, |this, search, cx| {
-            let query = search
-                .read(cx)
-                .value()
-                .chars()
-                .take(256)
-                .collect::<String>();
+            let query = bounded_search_query(&search.read(cx).value(), this.regex_enabled);
             if this.search_query == query {
                 return;
             }
             this.search_query = query;
-            let model = this.model.read(cx);
-            let rows = if this.search_query.trim().is_empty() {
-                model.tree.flatten(&model.profiles)
-            } else {
-                let index = this
-                    .search_index
-                    .get_or_insert_with(|| build_search_projection(&model.tree, &model.profiles));
-                filter_search_projection(index, &this.search_query, &model.profiles)
-            };
-            this.replace_rows(rows);
+            this.compile_query();
+            this.refresh_search_rows(cx);
             this.scroll
                 .scroll_to_item_strict(0, gpui::ScrollStrategy::Top);
             cx.notify();
@@ -318,14 +338,6 @@ impl SourceExplorer {
             }
             let model = model.read(cx);
             this.search_index = None;
-            let rows = if this.search_query.trim().is_empty() {
-                model.tree.flatten(&model.profiles)
-            } else {
-                let index = build_search_projection(&model.tree, &model.profiles);
-                let rows = filter_search_projection(&index, &this.search_query, &model.profiles);
-                this.search_index = Some(index);
-                rows
-            };
             if this
                 .menu_source
                 .as_ref()
@@ -333,7 +345,7 @@ impl SourceExplorer {
             {
                 this.menu_source = None;
             }
-            this.replace_rows(rows);
+            this.refresh_search_rows(cx);
             cx.notify();
         });
         Self {
@@ -341,6 +353,9 @@ impl SourceExplorer {
             rows,
             search,
             search_query: String::new(),
+            regex_enabled: false,
+            search_error: None,
+            active_regex: None,
             search_index: None,
             _search_subscription: search_subscription,
             active_key: None,
@@ -353,6 +368,52 @@ impl SourceExplorer {
             projection_rebuilds: 0,
             _subscription: subscription,
         }
+    }
+
+    fn compile_query(&mut self) {
+        self.active_regex = None;
+        self.search_error = None;
+        if self.regex_enabled && !self.search_query.is_empty() {
+            match compile_search_regex(&self.search_query) {
+                Ok(regex) => self.active_regex = Some(regex),
+                Err(error) => self.search_error = Some(error),
+            }
+        }
+    }
+
+    fn refresh_search_rows(&mut self, cx: &mut Context<Self>) {
+        let model = self.model.read(cx);
+        // Invalid patterns restore the ordinary cached tree and expansion state.
+        // Never fall back to treating invalid regex syntax as a literal query.
+        let rows = if self.search_error.is_some()
+            || (if self.regex_enabled {
+                self.search_query.is_empty()
+            } else {
+                self.search_query.trim().is_empty()
+            }) {
+            model.tree.flatten(&model.profiles)
+        } else {
+            let index = self
+                .search_index
+                .get_or_insert_with(|| build_search_projection(&model.tree, &model.profiles));
+            filter_search_projection_with_regex(
+                index,
+                &self.search_query,
+                &model.profiles,
+                self.active_regex.as_ref(),
+            )
+        };
+        self.replace_rows(rows);
+    }
+
+    fn toggle_regex(&mut self, cx: &mut Context<Self>) {
+        self.regex_enabled = !self.regex_enabled;
+        self.search_query = bounded_search_query(&self.search.read(cx).value(), self.regex_enabled);
+        self.compile_query();
+        self.refresh_search_rows(cx);
+        self.scroll
+            .scroll_to_item_strict(0, gpui::ScrollStrategy::Top);
+        cx.notify();
     }
 
     fn replace_rows(&mut self, rows: Vec<TreeRow>) {
@@ -878,16 +939,13 @@ impl Render for SourceExplorer {
             .text_size(px(12.))
             .text_color(palette.text)
             .bg(palette.panel)
-            .border_1()
-            .border_color(palette.panel)
-            .focus(|style| style.border_color(palette.focus))
-            .child(toolbar)
             .child(
                 div()
                     .id("source-explorer-search")
                     .debug_selector(|| "source-explorer-search".into())
                     .flex_shrink_0()
                     .h(px(32.))
+                    .min_w(px(0.))
                     .px(px(6.))
                     .flex()
                     .items_center()
@@ -901,8 +959,31 @@ impl Render for SourceExplorer {
                             cx.stop_propagation();
                         }
                     }))
-                    .child(self.search.clone()),
+                    .child(div().flex_1().min_w(px(0.)).child(self.search.clone()))
+                    .child(
+                        KitButton::new("source-explorer-regex")
+                            .debug_selector(|| "source-explorer-regex".into())
+                            .label(".*")
+                            .ghost()
+                            .compact()
+                            .tab_index(19)
+                            .selected(self.regex_enabled)
+                            .tooltip("Regular expression (use ^name$ for exact match)")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_regex(cx))),
+                    ),
             );
+        if let Some(error) = &self.search_error {
+            root = root.child(
+                div()
+                    .id("source-explorer-search-error")
+                    .debug_selector(|| "source-explorer-search-error".into())
+                    .flex_shrink_0()
+                    .px(px(6.))
+                    .text_color(palette.muted)
+                    .child(error.clone()),
+            );
+        }
+        root = root.child(toolbar);
         if self.rows.is_empty() {
             root = root.child(div().p(px(8.)).text_color(palette.muted).child(
                 if self.search_query.trim().is_empty() {
@@ -1644,6 +1725,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn regex_search_exact_unicode_and_invalid_bounds_are_explicit() {
+        let (tree, profiles) = search_fixture();
+        let index = build_search_projection(&tree, &profiles);
+        let regex = compile_search_regex("^événements名字$").unwrap();
+        let rows = filter_search_projection_with_regex(
+            &index,
+            "^événements名字$",
+            &profiles,
+            Some(&regex),
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+            vec![
+                "Production warehouse",
+                "Analytics",
+                "Tables",
+                "Événements名字"
+            ]
+        );
+        let regex = compile_search_regex("^MySQL$").unwrap();
+        assert_eq!(
+            filter_search_projection_with_regex(&index, "^MySQL$", &profiles, Some(&regex)).len(),
+            index.len()
+        );
+        assert!(compile_search_regex("[").is_err());
+        assert!(compile_search_regex(&"x".repeat(257)).is_err());
+        assert!(compile_search_regex("(?=object)").is_err());
+        assert_eq!(bounded_search_query(&"x".repeat(300), true).len(), 257);
+    }
+    #[gpui::test]
+    fn regex_toggle_invalid_pattern_and_escape_preserve_cached_state(cx: &mut TestAppContext) {
+        let (tree, profiles) = search_fixture();
+        let model = cx.new(|_| {
+            let mut m = SourceModel::for_tests(profiles);
+            m.tree = tree;
+            m.page = Some(std::sync::Arc::new(page()));
+            m
+        });
+        let original = model.read_with(cx, |m, _| m.page.clone().unwrap());
+        let (explorer, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
+        cx.simulate_resize(gpui::size(px(320.), px(570.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        let search = explorer.read_with(cx, |v, _| v.search.clone());
+        search.update(cx, |i, cx| i.set_value("^Événements名字$", cx));
+        cx.run_until_parked();
+        click(cx, "source-explorer-regex");
+        assert!(explorer.read_with(cx, |v, _| v.regex_enabled
+            && v.search_error.is_none()
+            && v.rows.len() == 4));
+        search.update(cx, |i, cx| i.set_value("[", cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("source-explorer-search-error").is_some());
+        assert_eq!(explorer.read_with(cx, |v, _| v.rows.len()), 1);
+        model.read_with(cx, |m, _| {
+            assert!(std::sync::Arc::ptr_eq(m.page.as_ref().unwrap(), &original));
+            assert!(m.tree.loading.is_empty());
+            assert!(m.tree.expanded_sources.is_empty());
+            assert!(m.selected_source.is_none());
+        });
+        cx.update(|window, app| search.read(app).focus_handle().focus(window, app));
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("source-explorer-search-error").is_none());
+        assert!(explorer.read_with(cx, |v, _| v.search_query.is_empty() && v.regex_enabled));
+        let row = cx.debug_bounds("source-explorer-search").unwrap();
+        let toggle = cx.debug_bounds("source-explorer-regex").unwrap();
+        assert!(toggle.right() <= row.right());
+    }
+
     #[gpui::test]
     fn native_sidebar_search_reuses_index_virtualizes_and_escape_restores_tree(
         cx: &mut TestAppContext,
@@ -2351,8 +2503,12 @@ mod tests {
         cx.run_until_parked();
         let toolbar = cx.debug_bounds("source-explorer-toolbar").unwrap();
         assert_eq!(toolbar.size.height, px(TOOLBAR_HEIGHT));
-        // Reserve the explorer's keyboard-focus outline without shifting layout on focus.
-        assert_eq!(toolbar.top(), px(1.));
+        // Search is the first row, immediately below sidebar titlebar in the shell.
+        assert_eq!(
+            cx.debug_bounds("source-explorer-search").unwrap().top(),
+            px(0.)
+        );
+        assert_eq!(toolbar.top(), px(32.));
         let mut previous = toolbar.left();
         for id in [
             "refresh-source",

@@ -426,14 +426,16 @@ impl Shell {
             .flex()
             .items_center()
             .bg(colors(cx).chrome)
-            .child(div().w(px(84.0)).h_full().flex_shrink_0())
-            .child(self.button(
-                "database-toggle",
-                Control::ToggleDatabase,
-                database_visible,
-                "icons/database.svg",
-                cx,
-            ))
+            .when(!database_visible, |bar| {
+                bar.child(div().w(px(84.)).h_full().flex_shrink_0())
+                    .child(self.button(
+                        "database-toggle",
+                        Control::ToggleDatabase,
+                        false,
+                        "icons/database.svg",
+                        cx,
+                    ))
+            })
             .child(NewConnectionButton {
                 owner: cx.entity().downgrade(),
                 disabled,
@@ -482,7 +484,7 @@ impl Shell {
             .child(div().w(px(8.0)))
     }
 
-    fn sidebar(&self, width: f32, cx: &Context<Self>) -> impl IntoElement {
+    fn sidebar(&self, width: f32, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("database-pane")
             .debug_selector(|| "database-pane".into())
@@ -494,6 +496,37 @@ impl Shell {
             .overflow_hidden()
             .rounded(px(PANE_RADIUS))
             .bg(colors(cx).panel)
+            .child(
+                div()
+                    .id("sidebar-titlebar")
+                    .debug_selector(|| "sidebar-titlebar".into())
+                    .h(px(TITLEBAR_HEIGHT))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .bg(colors(cx).panel)
+                    .child(div().w(px(84.)).h_full().flex_shrink_0())
+                    .child(self.button(
+                        "database-toggle",
+                        Control::ToggleDatabase,
+                        true,
+                        "icons/database.svg",
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .window_control_area(gpui::WindowControlArea::Drag)
+                            .on_mouse_down(MouseButton::Left, |event, window, _| {
+                                if event.click_count == 2 {
+                                    window.zoom_window();
+                                } else {
+                                    window.start_window_move();
+                                }
+                            }),
+                    ),
+            )
             .child(
                 div()
                     .flex_1()
@@ -690,42 +723,58 @@ impl Render for Shell {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.drag = None),
             )
-            .child(self.titlebar(layout.database.is_some(), cx))
             .child(
                 div()
                     .flex_1()
-                    .min_h(px(0.0))
+                    .min_h_0()
                     .flex()
-                    .pb(px(0.0))
-                    .px(px(OUTER_PADDING))
                     .when_some(layout.database, |body, width| {
                         body.child(self.sidebar(width, cx))
                             .child(self.separator(width, cx))
                     })
                     .child(
                         div()
-                            .id("main-content")
-                            .debug_selector(|| "main-content".into())
                             .flex_1()
-                            .min_w(px(0.0))
+                            .min_w_0()
                             .h_full()
-                            .rounded(px(PANE_RADIUS))
-                            .bg(colors(cx).background)
-                            .overflow_hidden()
-                            .child(self.workspace.clone()),
-                    )
-                    .when_some(layout.acp, |body, width| {
-                        body.child(
-                            div()
-                                .w(px(PANE_GAP))
-                                .h_full()
-                                .flex_shrink_0()
-                                .flex()
-                                .justify_center()
-                                .child(div().w(px(1.0)).h_full().bg(colors(cx).border)),
-                        )
-                        .child(self.acp_panel(width, cx))
-                    }),
+                            .flex()
+                            .flex_col()
+                            .child(self.titlebar(layout.database.is_some(), cx))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .flex()
+                                    .pb(px(0.))
+                                    .px(px(OUTER_PADDING))
+                                    .child(
+                                        div()
+                                            .id("main-content")
+                                            .debug_selector(|| "main-content".into())
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h_full()
+                                            .rounded(px(PANE_RADIUS))
+                                            .bg(colors(cx).background)
+                                            .overflow_hidden()
+                                            .child(self.workspace.clone()),
+                                    )
+                                    .when_some(layout.acp, |body, width| {
+                                        body.child(
+                                            div()
+                                                .w(px(PANE_GAP))
+                                                .h_full()
+                                                .flex_shrink_0()
+                                                .flex()
+                                                .justify_center()
+                                                .child(
+                                                    div().w(px(1.)).h_full().bg(colors(cx).border),
+                                                ),
+                                        )
+                                        .child(self.acp_panel(width, cx))
+                                    }),
+                            ),
+                    ),
             )
             .when_some(
                 self.sources

@@ -1,5 +1,9 @@
 # Test strategy and release evidence
 
+## Full-height explorer chrome and regex search
+
+Shell layout now separates the full-height left sidebar from the right workspace/titlebar, keeping the DB toggle beside traffic lights and search immediately below. Tests cover top/bottom bounds, full-height divider, compact resize, hide/show fallback, adjusted keyboard traversal and preserved layout controls. Regex regressions cover case-insensitive anchored Unicode/engine matches, invalid/oversized/unsupported syntax, visible toggle/error, Escape restoration and unchanged cached expansions/results with no I/O. Literal search and the 50,000-object lazy index regressions remain intact. Local verification passed **203 headless unit tests + one native-wire integration test, 222 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped. This is simulated layout/behavior evidence, not native traffic-light/visual certification.
+
 ## Staged SQL table mutations
 
 DBX-inspired first write stage supports local cell changes/NULL, row add/clone/delete/restore and explicit Apply/Discard on eligible SQL base tables. Preview originals are retained, with whole-table type/key/truncation guards, metadata fingerprints, typed bound values and 100-operation/64 KiB-cell/2 MiB-batch caps. Backends lock/reread metadata, compare complete original rows, require exactly one affected row per operation, and commit the batch once. MySQL requires InnoDB/strict mode; PostgreSQL uses a dedicated writable transaction. Schema/target changes and uncertain commits cannot be silently retried.

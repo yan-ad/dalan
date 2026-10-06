@@ -1483,6 +1483,7 @@ dependencies = [
  "dalan-drivers",
  "futures",
  "gpui-kit",
+ "regex",
  "roxmltree 0.21.1",
  "rusqlite",
  "serde",

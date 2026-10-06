@@ -41,7 +41,8 @@ fn add_source_opens_real_form_and_cancel_returns_browser(cx: &mut TestAppContext
     let (_, cx) = fixture(cx);
     let toggle = cx.debug_bounds("database-toggle").unwrap();
     let create = cx.debug_bounds("new-connection").unwrap();
-    assert_eq!(create.left(), toggle.right());
+    assert!(create.left() > toggle.right());
+    assert_eq!(cx.debug_bounds("database-pane").unwrap().top(), px(0.));
     assert!(create.size.height <= px(TITLEBAR_HEIGHT));
     assert!(create.size.width > px(CONTROL_HEIGHT));
     click(cx, "new-connection");
@@ -298,11 +299,11 @@ fn tab_order_reaches_every_visible_control_in_both_directions(cx: &mut TestAppCo
     let (view, cx) = fixture(cx);
     let order = [
         "database-toggle",
+        "database-resize",
         "new-connection",
         "acp-toggle",
         "theme-toggle",
         "layout-menu",
-        "database-resize",
     ];
     let mut handles = Vec::new();
     for id in order {
@@ -466,7 +467,7 @@ fn menu_trigger_escape_and_outside_click_dismiss(cx: &mut TestAppContext) {
 #[gpui::test]
 fn keyboard_activation_native_menu_navigation_and_shortcuts(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
-    cx.simulate_keystrokes("tab tab tab tab tab");
+    cx.simulate_keystrokes("tab tab tab tab tab tab");
     press(cx, "enter");
     cx.run_until_parked();
     assert!(state(&view, cx).menu_open);
@@ -544,7 +545,12 @@ fn system_theme_shell_is_compact_and_flush(cx: &mut TestAppContext) {
     let content = cx.debug_bounds("main-content").unwrap();
     assert_eq!(title.size.height, px(TITLEBAR_HEIGHT));
     assert_eq!(pane.origin.x, px(0.0));
-    assert_eq!(pane.origin.y, title.size.height);
+    assert_eq!(pane.origin.y, px(0.));
+    assert_eq!(
+        cx.debug_bounds("source-explorer-search").unwrap().top(),
+        px(TITLEBAR_HEIGHT)
+    );
+    assert_eq!(title.left(), pane.right() + px(PANE_GAP));
     assert_eq!(content.origin.x, pane.size.width + px(PANE_GAP));
     assert_eq!(content.origin.x + content.size.width, px(1280.0));
     assert_eq!(content.bottom(), px(800.));
@@ -555,6 +561,35 @@ fn system_theme_shell_is_compact_and_flush(cx: &mut TestAppContext) {
     assert_eq!(cx.debug_bounds("main-content").unwrap().bottom(), px(800.));
     assert_eq!(cx.debug_bounds("acp-panel").unwrap().bottom(), px(800.));
     assert_eq!(TITLEBAR_HEIGHT, 34.0);
+}
+
+#[gpui::test]
+fn sidebar_reaches_traffic_lights_and_search_stays_below_toggle_when_resized(
+    cx: &mut TestAppContext,
+) {
+    let (_, cx) = fixture(cx);
+    for width in [1280., 720.] {
+        cx.simulate_resize(size(px(width), px(600.)));
+        cx.run_until_parked();
+        let pane = cx.debug_bounds("database-pane").unwrap();
+        let chrome = cx.debug_bounds("sidebar-titlebar").unwrap();
+        let toggle = cx.debug_bounds("database-toggle").unwrap();
+        let search = cx.debug_bounds("source-explorer-search").unwrap();
+        let separator = cx.debug_bounds("database-resize").unwrap();
+        assert_eq!(pane.top(), px(0.));
+        assert_eq!(pane.bottom(), px(600.));
+        assert_eq!(chrome.top(), px(0.));
+        assert_eq!(chrome.size.height, px(TITLEBAR_HEIGHT));
+        assert_eq!(toggle.left(), px(84.));
+        assert!(toggle.bottom() <= chrome.bottom());
+        assert_eq!(search.top(), chrome.bottom());
+        assert_eq!(separator.top(), px(0.));
+        assert_eq!(separator.bottom(), px(600.));
+        click(cx, "database-toggle");
+        assert!(cx.debug_bounds("database-pane").is_none());
+        assert_eq!(cx.debug_bounds("database-toggle").unwrap().left(), px(84.));
+        click(cx, "database-toggle");
+    }
 }
 
 #[gpui::test]
@@ -588,7 +623,7 @@ fn layout_trigger_is_icon_sized_and_popover_still_operates(cx: &mut TestAppConte
     click(cx, "layout-menu");
     assert!(!state(&view, cx).menu_open);
     cx.update(|window, app| view.read(app).root_focus.clone().focus(window, app));
-    cx.simulate_keystrokes("tab tab tab tab tab");
+    cx.simulate_keystrokes("tab tab tab tab tab tab");
     press(cx, "enter");
     assert!(state(&view, cx).menu_open);
     cx.simulate_keystrokes("escape");
