@@ -14,7 +14,7 @@ use super::{
 
 use gpui::component::{
     ActiveTheme, Disableable, Icon, IndexPath, Sizable,
-    button::{Button as KitButton, ButtonVariants},
+    button::{Button as KitButton, ButtonRounded, ButtonVariants},
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     menu::{DropdownMenu, PopupMenuItem},
     searchable_list::{SearchableListItem, SearchableVec},
@@ -406,6 +406,8 @@ impl QueryConsole {
             .label(label.clone())
             .tooltip(label)
             .small()
+            .rounded(ButtonRounded::None)
+            .h(px(TOOLBAR_HEIGHT))
             .ghost()
             .dropdown_caret(true)
             .disabled(disabled)
@@ -470,6 +472,8 @@ impl QueryConsole {
             .debug_selector(move || id.into())
             .icon(icon)
             .small()
+            .rounded(ButtonRounded::None)
+            .h(px(TOOLBAR_HEIGHT))
             .ghost()
             .tooltip(label)
             .disabled(disabled)
@@ -729,11 +733,13 @@ impl Render for QueryConsole {
             .min_w_0()
             .border_b_1()
             .border_color(theme.border)
-            .gap(px(2.));
+            .gap_0();
         toolbar = toolbar
             .child(
                 KitButton::new("query-run")
                     .small()
+                    .rounded(ButtonRounded::None)
+                    .h(px(TOOLBAR_HEIGHT))
                     .ghost()
                     .debug_selector(|| "query-run".into())
                     .icon(Icon::empty().path(if busy {
@@ -764,6 +770,8 @@ impl Render for QueryConsole {
             .child(
                 KitButton::new("query-cancel")
                     .small()
+                    .rounded(ButtonRounded::None)
+                    .h(px(TOOLBAR_HEIGHT))
                     .ghost()
                     .debug_selector(|| "query-cancel".into())
                     .icon(Icon::empty().path("icons/circle-stop.svg"))
@@ -829,6 +837,11 @@ impl Render for QueryConsole {
                     .child(
                         Combobox::new(&database_combo)
                             .small()
+                            .appearance(false)
+                            .rounded_none()
+                            .border_0()
+                            .h(px(TOOLBAR_HEIGHT))
+                            .py_0()
                             .w(px(database_width))
                             .menu_max_h(px(224.))
                             .search_placeholder("Search databases...")
@@ -843,7 +856,7 @@ impl Render for QueryConsole {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(6.))
+                                    .gap(px(4.))
                                     .child(Icon::empty().path("icons/database.svg").size(px(14.)))
                                     .child(
                                         div()
@@ -879,6 +892,8 @@ impl Render for QueryConsole {
                     .debug_selector(|| "query-set-default".into())
                     .label(if is_default { "Default" } else { "Set Default" })
                     .small()
+                    .rounded(ButtonRounded::None)
+                    .h(px(TOOLBAR_HEIGHT))
                     .ghost()
                     .disabled(
                         disabled || selected_database.is_none() || self.catalog.read(cx).form_open,
@@ -892,6 +907,8 @@ impl Render for QueryConsole {
         toolbar = toolbar.child(
             KitButton::new("query-export")
                 .small()
+                .rounded(ButtonRounded::None)
+                .h(px(TOOLBAR_HEIGHT))
                 .ghost()
                 .debug_selector(|| "query-export".into())
                 .icon(Icon::empty().path("icons/download.svg"))
@@ -932,6 +949,8 @@ impl Render for QueryConsole {
             .child(
                 div()
                     .id("query-editor-pane")
+                    .debug_selector(||"query-editor-pane".into())
+                    .p_0().rounded_none()
                     .h(relative(0.42))
                     .min_h(px(120.))
                     .max_h(px(400.))
@@ -1033,6 +1052,52 @@ mod tests {
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
         cx.run_until_parked();
     }
+    #[gpui::test]
+    fn flat_console_controls_are_adjacent_and_editor_has_no_outer_inset(cx: &mut TestAppContext) {
+        let (view, _) = fixture(cx);
+        let editor = view.read_with(cx, |v, _| v.editor.clone());
+        editor.update(cx, |e, cx| e.set_value("UPDATE items SET id=1".into(), cx));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| ConsoleTestRoot(view.clone()));
+            gpui::base::Root::new(content, window, cx)
+        });
+        for width in [1200., 560.] {
+            cx.simulate_resize(gpui::size(px(width), px(720.)));
+            cx.refresh().unwrap();
+            cx.run_until_parked();
+            let toolbar = cx.debug_bounds("query-toolbar").unwrap();
+            let run = cx.debug_bounds("query-run").unwrap();
+            let cancel = cx.debug_bounds("query-cancel").unwrap();
+            assert_eq!(run.left(), toolbar.left());
+            assert_eq!(run.right(), cancel.left());
+            assert_eq!(run.size.height, px(TOOLBAR_HEIGHT));
+            assert_eq!(cancel.size.height, px(TOOLBAR_HEIGHT));
+            if width > 800. {
+                let format = cx.debug_bounds("query-format").unwrap();
+                assert_eq!(cancel.right(), format.left());
+            }
+            let source = cx.debug_bounds("query-source").unwrap();
+            let database = cx.debug_bounds("query-database").unwrap();
+            let clear = cx.debug_bounds("query-clear-database").unwrap();
+            assert_eq!(source.right(), database.left());
+            assert_eq!(database.right(), clear.left());
+            assert!(clear.right() <= toolbar.right());
+            let pane = cx.debug_bounds("query-editor-pane").unwrap();
+            let adapter = cx.debug_bounds("dalan-sql-editor").unwrap();
+            assert_eq!(pane.left(), adapter.left());
+            assert_eq!(pane.right(), adapter.right());
+            assert_eq!(pane.top(), adapter.top());
+            assert_eq!(adapter.bottom(), pane.bottom() - px(1.));
+            cx.update(|window, app| view.update(app, |v, cx| v.focus(window, cx)));
+            cx.simulate_keystrokes("cmd-enter");
+            cx.run_until_parked();
+        }
+        let source = include_str!("sql_editor.rs");
+        assert!(source.contains(".appearance(false)") && source.contains(".bordered(false)"));
+        let source = include_str!("query_console.rs");
+        assert!(source.contains(".rounded(ButtonRounded::None)") && source.contains(".gap_0()"));
+    }
+
     #[gpui::test]
     fn toolbar_local_tools_preserve_sql_undo_and_preference_only_changes_format(
         cx: &mut TestAppContext,

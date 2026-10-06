@@ -16,7 +16,7 @@ use super::{
 
 use gpui::component::{
     ActiveTheme, Disableable, Icon, Sizable,
-    button::{Button as KitButton, ButtonVariants},
+    button::{Button as KitButton, ButtonRounded, ButtonVariants},
     tab::{Tab, TabBar},
 };
 
@@ -566,6 +566,7 @@ impl Render for SourceWorkspace {
                             KitButton::new(SharedString::from(format!("workspace-close-{id}")))
                                 .debug_selector(move || format!("workspace-close-{close_id}"))
                                 .xsmall()
+                                .rounded(ButtonRounded::None)
                                 .ghost()
                                 .icon(Icon::empty().path("icons/x.svg"))
                                 .tooltip("Close tab (Cmd-W)")

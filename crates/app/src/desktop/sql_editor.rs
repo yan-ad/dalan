@@ -296,6 +296,10 @@ impl Render for SqlEditor {
 
         div()
             .id("dalan-sql-editor")
+            .debug_selector(|| "dalan-sql-editor".into())
+            .p_0()
+            .rounded_none()
+            .border_0()
             .flex_1()
             .min_h_0()
             .w_full()
@@ -303,6 +307,10 @@ impl Render for SqlEditor {
             .overflow_hidden()
             .child(
                 Editor::new(&state)
+                    .appearance(false)
+                    .bordered(false)
+                    .rounded_none()
+                    .p_0()
                     .h_full()
                     .tab_index(20)
                     .aria_label("SQL editor"),

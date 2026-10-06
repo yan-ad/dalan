@@ -1,5 +1,9 @@
 # Test strategy and release evidence
 
+## Flat SQL editor chrome
+
+Removed rounded/card styling and inter-button gaps from the SQL/JSON console workspace only, using Kit ButtonRounded::None and its borderless editor/Combobox appearance APIs. Added a geometry regression requiring adjacent Run/Cancel/tool and source/database/clear controls, full-height hit targets, and editor-to-pane flush edges at 1200 px and compact 560 px widths. Retained input text/gutter padding and global theme/dialog styling are unchanged. Caret, Cmd-Enter, undo/selection and cached database picker regressions remain intact. Local verification passed **203 headless unit tests + one native-wire integration test, 223 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped. Layout simulation does not claim native visual pixel certification.
+
 ## Full-height explorer chrome and regex search
 
 Shell layout now separates the full-height left sidebar from the right workspace/titlebar, keeping the DB toggle beside traffic lights and search immediately below. Tests cover top/bottom bounds, full-height divider, compact resize, hide/show fallback, adjusted keyboard traversal and preserved layout controls. Regex regressions cover case-insensitive anchored Unicode/engine matches, invalid/oversized/unsupported syntax, visible toggle/error, Escape restoration and unchanged cached expansions/results with no I/O. Literal search and the 50,000-object lazy index regressions remain intact. Local verification passed **203 headless unit tests + one native-wire integration test, 222 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. Hosted CI remains skipped. This is simulated layout/behavior evidence, not native traffic-light/visual certification.

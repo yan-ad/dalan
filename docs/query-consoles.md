@@ -138,3 +138,7 @@ Changing a source’s connection settings invalidates its affected tabs and canc
 ### Caret and Run dispatch
 
 Focus restoration uses Kit’s `EditorState::focus` so lazy editor initialization starts the caret blink lifecycle. `Cmd-Enter` captures Kit’s secondary Enter action within the focused SQL editor before the inner input consumes it, then calls the same safe Run path as the toolbar. Ordinary Enter still inserts a newline; selection and undo are retained. Completion notifications never steal focus from results. See [caret/shortcut evidence](testing.md#sql-caret-initialization-and-cmd-enter-regression) for test scope and the separate long-line horizontal-scroll limitation.
+
+### Flat editor chrome
+
+Console-only Kit styling uses square ghost toolbar controls with zero inter-control gap and full toolbar-height hit targets. The database Combobox keeps its searchable/keyboard behavior but has no rounded input frame; the source selector and tab close controls are also square. The retained Kit editor is borderless and fills the pane without an outer inset/card background. Native text padding, line-number gutter, caret/selection and hover/focus behavior remain; source/settings dialogs and global System/Light/Dark theme defaults are unchanged.
