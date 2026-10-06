@@ -1489,6 +1489,7 @@ mod ui_tests {
         Entity<SourceForm>,
         &'a mut VisualTestContext,
     ) {
+        cx.update(|cx| cx.set_reduce_motion(true));
         cx.update(bind_keys);
         let model = cx.new(|_| SourceModel::for_tests(vec![]));
         model.update(cx, |model, cx| model.new_source(cx));

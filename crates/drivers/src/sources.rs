@@ -143,16 +143,28 @@ pub enum ConnectionTarget {
     },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct MongoOptions {
     pub direct_connection: bool,
     pub auth_source: String,
+    pub auth_mechanism: Option<String>,
+    pub retry_writes: Option<bool>,
+    pub retry_reads: Option<bool>,
+    pub load_balanced: Option<bool>,
+    pub server_selection_timeout_ms: Option<u64>,
+    pub connect_timeout_ms: Option<u64>,
 }
 impl Default for MongoOptions {
     fn default() -> Self {
         Self {
             direct_connection: true,
             auth_source: "admin".into(),
+            auth_mechanism: None,
+            retry_writes: None,
+            retry_reads: None,
+            load_balanced: None,
+            server_selection_timeout_ms: None,
+            connect_timeout_ms: None,
         }
     }
 }
@@ -244,11 +256,76 @@ pub fn parse_mongo_uri(raw: &str) -> Result<ParsedMongoUri> {
                     "true" => true,
                     "false" => false,
                     _ => return Err(anyhow::anyhow!("directConnection must be true or false")),
-                }
+                };
             }
             "authsource" => {
                 identifier(&value)?;
                 options.auth_source = value.into_owned();
+            }
+            "authmechanism" => {
+                ensure!(
+                    !value.is_empty() && value.len() <= 64 && !value.chars().any(char::is_control),
+                    "Invalid authMechanism"
+                );
+                options.auth_mechanism = Some(value.into_owned());
+            }
+            "retrywrites" => {
+                options.retry_writes = match value.as_ref() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => return Err(anyhow::anyhow!("retryWrites must be true or false")),
+                };
+            }
+            "retryreads" => {
+                options.retry_reads = match value.as_ref() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => return Err(anyhow::anyhow!("retryReads must be true or false")),
+                };
+            }
+            "loadbalanced" => {
+                options.load_balanced = match value.as_ref() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => return Err(anyhow::anyhow!("loadBalanced must be true or false")),
+                };
+            }
+            "serverselectiontimeoutms" => {
+                let ms: u64 = value.parse().map_err(|_| {
+                    anyhow::anyhow!("serverSelectionTimeoutMS must be a positive integer")
+                })?;
+                options.server_selection_timeout_ms = Some(ms);
+            }
+            "connecttimeoutms" => {
+                let ms: u64 = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("connectTimeoutMS must be a positive integer"))?;
+                options.connect_timeout_ms = Some(ms);
+            }
+            "sockettimeoutms" => {
+                let _ms: u64 = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("socketTimeoutMS must be a positive integer"))?;
+            }
+            "maxpoolsize" => {
+                let _n: u32 = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("maxPoolSize must be an integer"))?;
+            }
+            "minpoolsize" => {
+                let _n: u32 = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("minPoolSize must be an integer"))?;
+            }
+            "maxidletimems" => {
+                let _ms: u64 = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("maxIdleTimeMS must be a positive integer"))?;
+            }
+            "waitqueuetimeoutms" => {
+                let _ms: u64 = value.parse().map_err(|_| {
+                    anyhow::anyhow!("waitQueueTimeoutMS must be a positive integer")
+                })?;
             }
             "tls" | "ssl" => {
                 ensure!(tls.is_none(), "Duplicate MongoDB TLS option");
@@ -258,10 +335,32 @@ pub fn parse_mongo_uri(raw: &str) -> Result<ParsedMongoUri> {
                     _ => return Err(anyhow::anyhow!("TLS must be true or false")),
                 });
             }
+            "tlsinsecure" | "tlsallowinvalidcertificates" => {
+                let _b: bool = match value.as_ref() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(anyhow::anyhow!("tlsInsecure must be true or false")),
+                };
+            }
+            "readpreference" => {
+                ensure!(
+                    !value.is_empty() && value.len() <= 64,
+                    "Invalid readPreference"
+                );
+            }
+            "readpreferencetags"
+            | "replicaset"
+            | "appname"
+            | "compressors"
+            | "zlibcompressionlevel"
+            | "w"
+            | "wtimeoutms"
+            | "journal"
+            | "authmechanismproperties" => {
+                // standard MongoDB connection string options accepted
+            }
             _ => {
-                return Err(anyhow::anyhow!(
-                    "Unsupported MongoDB URI option; supported: directConnection, authSource, tls/ssl"
-                ));
+                return Err(anyhow::anyhow!("Unsupported MongoDB URI option: {key}"));
             }
         }
     }
@@ -276,6 +375,43 @@ pub fn parse_mongo_uri(raw: &str) -> Result<ParsedMongoUri> {
         options,
         tls,
     })
+}
+
+/// Helper to toggle or set `directConnection=true|false` on a MongoDB URI.
+pub fn set_mongo_uri_direct_connection(raw: &str, direct: bool) -> String {
+    if let Ok(mut url) = url::Url::parse(raw) {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        let mut found = false;
+        for (k, v) in url.query_pairs() {
+            if k.eq_ignore_ascii_case("directconnection") {
+                pairs.push((
+                    "directConnection".into(),
+                    if direct {
+                        "true".into()
+                    } else {
+                        "false".into()
+                    },
+                ));
+                found = true;
+            } else {
+                pairs.push((k.to_string(), v.to_string()));
+            }
+        }
+        if !found {
+            pairs.push((
+                "directConnection".into(),
+                if direct {
+                    "true".into()
+                } else {
+                    "false".into()
+                },
+            ));
+        }
+        url.query_pairs_mut().clear().extend_pairs(pairs.iter());
+        url.to_string()
+    } else {
+        raw.to_string()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -871,6 +1007,32 @@ mod tests {
             ..SourceProfile::default()
         };
         assert!(p.validate().is_err());
+    }
+    #[test]
+    fn parses_rich_mongodb_compass_connection_string() {
+        let uri = "mongodb://kaj_admin_mongo:B1s4.P4sT1@34.101.32.182:27017/admin?retryWrites=true&loadBalanced=false&serverSelectionTimeoutMS=5000&connectTimeoutMS=10000&authSource=admin&authMechanism=SCRAM-SHA-256&directConnection=true";
+        let parsed = parse_mongo_uri(uri).unwrap();
+        assert_eq!(parsed.username.as_deref(), Some("kaj_admin_mongo"));
+        assert_eq!(parsed.password.as_deref(), Some("B1s4.P4sT1"));
+        assert_eq!(parsed.options.auth_source, "admin");
+        assert_eq!(
+            parsed.options.auth_mechanism.as_deref(),
+            Some("SCRAM-SHA-256")
+        );
+        assert_eq!(parsed.options.retry_writes, Some(true));
+        assert_eq!(parsed.options.load_balanced, Some(false));
+        assert_eq!(parsed.options.server_selection_timeout_ms, Some(5000));
+        assert_eq!(parsed.options.connect_timeout_ms, Some(10000));
+        assert!(parsed.options.direct_connection);
+        assert!(!parsed.url.contains("B1s4.P4sT1"));
+        assert!(!parsed.url.contains("kaj_admin_mongo"));
+        assert!(parsed.url.contains("34.101.32.182:27017"));
+        assert!(parsed.url.contains("directConnection=true"));
+
+        let toggled = set_mongo_uri_direct_connection(&parsed.url, false);
+        assert!(toggled.contains("directConnection=false"));
+        let toggled_back = set_mongo_uri_direct_connection(&toggled, true);
+        assert!(toggled_back.contains("directConnection=true"));
     }
     #[test]
     fn new_profile_disables_tls_but_existing_verified_setting_is_retained() {

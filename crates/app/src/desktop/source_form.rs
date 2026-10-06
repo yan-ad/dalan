@@ -76,6 +76,7 @@ pub(super) struct SourceForm {
     jdbc_load_error: Option<String>,
     authentication_open: bool,
     tls_open: bool,
+    mongo_direct_connection: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -124,10 +125,14 @@ impl SourceForm {
             }
         };
         // Append new fields: the transport initialization above deliberately keeps its indices.
-        let endpoint_mode = match &profile.endpoint {
-            ConnectionMode::Default => 0,
-            ConnectionMode::UnixSocket { .. } => 1,
-            ConnectionMode::UrlOnly { .. } => 2,
+        let endpoint_mode = if profile.engine == DbEngine::MongoDb {
+            2
+        } else {
+            match &profile.endpoint {
+                ConnectionMode::Default => 0,
+                ConnectionMode::UnixSocket { .. } => 1,
+                ConnectionMode::UrlOnly { .. } => 2,
+            }
         };
         let socket = match &profile.endpoint {
             ConnectionMode::UnixSocket { path } => path.clone(),
@@ -135,8 +140,19 @@ impl SourceForm {
         };
         let url = match &profile.endpoint {
             ConnectionMode::UrlOnly { url } => url.clone(),
-            _ => profile.canonical_url().unwrap_or_default(),
+            _ => {
+                if profile.engine == DbEngine::MongoDb {
+                    "mongodb://localhost:27017/?directConnection=true".into()
+                } else {
+                    profile.canonical_url().unwrap_or_default()
+                }
+            }
         };
+        let mongo_direct_connection = profile
+            .mongo_options
+            .as_ref()
+            .map(|o| o.direct_connection)
+            .unwrap_or(true);
         let schemas = match &profile.schemas {
             SchemaSelection::All => String::new(),
             SchemaSelection::Selected(names) => names.join(", "),
@@ -338,6 +354,7 @@ impl SourceForm {
             jdbc_load_error: None,
             authentication_open: false,
             tls_open: false,
+            mongo_direct_connection,
             original: profile,
             model,
             inputs,
@@ -783,8 +800,10 @@ impl SourceForm {
         match dalan_drivers::sources::parse_mongo_uri(&raw) {
             Ok(parsed) => {
                 self.engine = DbEngine::MongoDb;
+                self.endpoint_mode = 2;
                 self.transport = 0;
                 self.ssh_selected = None;
+                self.mongo_direct_connection = parsed.options.direct_connection;
                 if let Ok(dalan_drivers::ConnectionTarget::Tcp {
                     host,
                     port,
@@ -831,13 +850,16 @@ impl SourceForm {
                 self.last_values.insert("source-url", parsed.url.clone());
                 self.inputs["source-url"].update(cx, |i, cx| i.set_value(parsed.url, cx));
             }
-            Err(_) => {
+            Err(error) => {
                 // Never leave rejected credentials in a plain URL field/history.
                 if raw.split('/').nth(2).is_some_and(|a| a.contains('@')) {
                     self.last_values.insert("source-url", String::new());
                     self.inputs["source-url"].update(cx, |i, cx| i.set_value("", cx));
                 }
-                self.model.update(cx,|m,cx|{m.form_feedback=Some("MongoDB URI could not be imported. Use a single mongodb:// host with directConnection, authSource and tls/ssl options only.".into());cx.notify();});
+                self.model.update(cx, |m, cx| {
+                    m.form_feedback = Some(format!("MongoDB URI could not be imported: {error}"));
+                    cx.notify();
+                });
             }
         }
     }
@@ -914,6 +936,23 @@ impl SourceForm {
         profile.engine = self.engine;
         if self.engine != DbEngine::MongoDb {
             profile.mongo_options = None;
+        } else {
+            profile.endpoint = ConnectionMode::UrlOnly {
+                url: self.value("source-url", cx),
+            };
+            let mut opts = self.original.mongo_options.clone().unwrap_or_default();
+            opts.direct_connection = self.mongo_direct_connection;
+            profile.mongo_options = Some(opts);
+            if let Ok(dalan_drivers::ConnectionTarget::Tcp {
+                host,
+                port,
+                database,
+            }) = profile.connection_target()
+            {
+                profile.host = host;
+                profile.port = port;
+                profile.database = database;
+            }
         }
         profile.tls = self.tls;
         profile.save_password =
@@ -1182,8 +1221,41 @@ impl SourceForm {
                     self.tls = TlsMode::Disabled;
                     self.ssh_selected = None;
                 }
+                if self.engine == DbEngine::MongoDb {
+                    self.endpoint_mode = 2;
+                    self.transport = 0;
+                    let current = self.value("source-url", cx);
+                    if !current.starts_with("mongodb://") {
+                        let default_url = "mongodb://localhost:27017/?directConnection=true";
+                        self.last_values
+                            .insert("source-url", default_url.to_string());
+                        self.inputs["source-url"].update(cx, |i, cx| i.set_value(default_url, cx));
+                        self.mongo_direct_connection = true;
+                    }
+                } else if self.value("source-url", cx).starts_with("mongodb://") {
+                    self.endpoint_mode = 0;
+                }
                 self.driver_open = false;
                 self.refresh_generated_url(cx);
+            }
+            "source-mongo-direct" => {
+                self.mongo_direct_connection = !self.mongo_direct_connection;
+                let current_url = self.inputs["source-url"].read(cx).value();
+                if current_url.starts_with("mongodb://") {
+                    let updated = dalan_drivers::sources::set_mongo_uri_direct_connection(
+                        &current_url,
+                        self.mongo_direct_connection,
+                    );
+                    self.last_values.insert("source-url", updated.clone());
+                    self.inputs["source-url"].update(cx, |i, cx| i.set_value(updated, cx));
+                }
+                if let Some(ref mut opts) = self.original.mongo_options {
+                    opts.direct_connection = self.mongo_direct_connection;
+                }
+                self.dirty = true;
+                self.model.update(cx, |model, cx| model.edit_form(cx));
+                cx.notify();
+                return;
             }
             "source-direct" => self.transport = 0,
             "source-ssh"
@@ -1683,131 +1755,186 @@ impl Render for SourceForm {
                     ),
                     cx,
                 ));
-                if self.engine != DbEngine::Jdbc {
-                    body = body.child(
-                        self.row(
-                            "Connection type",
+                if self.engine == DbEngine::MongoDb {
+                    body = body
+                        .child(self.field("source-url", "URI", 0, cx))
+                        .child(self.row(
+                            "",
+                            div().text_color(palette.muted).text_size(px(12.)).child(
+                                "Connection string controls host, port, credentials and database.",
+                            ),
+                            cx,
+                        ))
+                        .child(
+                            self.row(
+                                "",
+                                Checkbox::new("source-mongo-direct")
+                                    .debug_selector(|| "source-mongo-direct".into())
+                                    .label("Direct Connection")
+                                    .checked(self.mongo_direct_connection)
+                                    .disabled(self.model.read(cx).saving)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.activate("source-mongo-direct", cx);
+                                    })),
+                                cx,
+                            ),
+                        )
+                        .child(
+                            self.row(
+                                "",
+                                Checkbox::new("source-save-password")
+                                    .debug_selector(|| "source-save-password".into())
+                                    .label("Save password to local store")
+                                    .checked(self.save_password)
+                                    .disabled(
+                                        self.model.read(cx).saving
+                                            || self.authentication == Authentication::NoAuth,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.activate("source-save-password", cx);
+                                    })),
+                                cx,
+                            ),
+                        );
+                    if let Some(warning) = tls_warning(self.tls) {
+                        body = body.child(
                             div()
-                                .flex()
-                                .gap(px(8.))
-                                .child(self.button(
-                                    "source-mode-default",
-                                    "Default",
-                                    self.endpoint_mode == 0,
-                                    0,
-                                    cx,
-                                ))
-                                .child(self.button(
-                                    "source-mode-socket",
-                                    "Unix Socket",
-                                    self.endpoint_mode == 1,
-                                    0,
-                                    cx,
-                                ))
-                                .child(self.button(
-                                    "source-mode-url",
-                                    "URL-only",
-                                    self.endpoint_mode == 2,
-                                    0,
-                                    cx,
-                                )),
-                            cx,
-                        ),
-                    );
-                    if self.endpoint_mode == 0 {
-                        body = body.child(self.host_port_row(
-                            "Host",
-                            "source-host",
-                            "source-port",
-                            cx,
-                        ));
-                    } else if self.endpoint_mode == 1 {
-                        body = body.child(self.path_field("source-socket", "Socket path", "source-socket-browse", cx))
-                        .child(div().text_color(palette.warning).child("Unix socket connections use local socket permissions; TLS unavailable."));
+                                .id("source-tls-warning")
+                                .debug_selector(|| "source-tls-warning".into())
+                                .text_color(palette.warning)
+                                .child(warning),
+                        );
                     }
-                    if self.endpoint_mode != 1 {
-                        body = body.child(self.field("source-url", "Connection URL", 0, cx))
+                } else {
+                    if self.engine != DbEngine::Jdbc {
+                        body = body.child(
+                            self.row(
+                                "Connection type",
+                                div()
+                                    .flex()
+                                    .gap(px(8.))
+                                    .child(self.button(
+                                        "source-mode-default",
+                                        "Default",
+                                        self.endpoint_mode == 0,
+                                        0,
+                                        cx,
+                                    ))
+                                    .child(self.button(
+                                        "source-mode-socket",
+                                        "Unix Socket",
+                                        self.endpoint_mode == 1,
+                                        0,
+                                        cx,
+                                    ))
+                                    .child(self.button(
+                                        "source-mode-url",
+                                        "URL-only",
+                                        self.endpoint_mode == 2,
+                                        0,
+                                        cx,
+                                    )),
+                                cx,
+                            ),
+                        );
+                        if self.endpoint_mode == 0 {
+                            body = body.child(self.host_port_row(
+                                "Host",
+                                "source-host",
+                                "source-port",
+                                cx,
+                            ));
+                        } else if self.endpoint_mode == 1 {
+                            body = body.child(self.path_field("source-socket", "Socket path", "source-socket-browse", cx))
+                        .child(div().text_color(palette.warning).child("Unix socket connections use local socket permissions; TLS unavailable."));
+                        }
+                        if self.endpoint_mode != 1 {
+                            body = body.child(self.field("source-url", "Connection URL", 0, cx))
                         .child(self.row("", div().text_color(palette.muted).text_size(px(12.)).child(if self.endpoint_mode == 2 {
                             "URL controls host, port and database. Credentials are configured below."
                         } else { "Edit URL switches to URL-only. Generated URLs contain no credentials." }), cx));
+                        }
+                    } else {
+                        body = body
+                            .child(self.jdbc_driver_control(cx))
+                            .child(self.field("source-jdbc-java", "Java executable", 0, cx))
+                            .child(self.field("source-jdbc-url", "Vendor JDBC URL", 0, cx));
                     }
-                } else {
-                    body = body
-                        .child(self.jdbc_driver_control(cx))
-                        .child(self.field("source-jdbc-java", "Java executable", 0, cx))
-                        .child(self.field("source-jdbc-url", "Vendor JDBC URL", 0, cx));
-                }
-                body = body.child(self.row(
-                    "Authentication",
-                    self.combo(
-                        "source-authentication",
-                        if self.authentication == Authentication::UserPassword {
-                            "User & Password ▾"
-                        } else {
-                            "No Auth ▾"
-                        },
-                        self.authentication_open,
-                        &[
-                            (
-                                "source-auth-user-password",
-                                "User & Password",
-                                self.authentication == Authentication::UserPassword,
-                            ),
-                            (
-                                "source-auth-none",
-                                "No Auth",
-                                self.authentication == Authentication::NoAuth,
-                            ),
-                        ],
-                        cx,
-                    ),
-                    cx,
-                ));
-                if self.authentication == Authentication::UserPassword {
-                    body = body.child(self.field("source-user", "User", 0, cx)).child(
-                        self.row(
-                            "Password",
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .min_w(px(0.))
-                                .child(
-                                    div()
-                                        .id("source-password")
-                                        .debug_selector(|| "source-password".into())
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .child(self.inputs["source-password"].clone()),
-                                )
-                                .child(
-                                    Button::new("source-show-password")
-                                        .debug_selector(|| "source-show-password".into())
-                                        .label(
-                                            if self.inputs["source-password"]
-                                                .read(cx)
-                                                .password_revealed()
-                                            {
-                                                "Hide"
-                                            } else {
-                                                "Show"
-                                            },
-                                        )
-                                        .tooltip("Reveal password for 3 seconds")
-                                        .small()
-                                        .disabled(self.model.read(cx).saving)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.inputs["source-password"]
-                                                .update(cx, |input, cx| input.reveal_password(cx));
-                                        })),
-                                )
-                                .child(self.checkbox(cx)),
+                    body = body.child(self.row(
+                        "Authentication",
+                        self.combo(
+                            "source-authentication",
+                            if self.authentication == Authentication::UserPassword {
+                                "User & Password ▾"
+                            } else {
+                                "No Auth ▾"
+                            },
+                            self.authentication_open,
+                            &[
+                                (
+                                    "source-auth-user-password",
+                                    "User & Password",
+                                    self.authentication == Authentication::UserPassword,
+                                ),
+                                (
+                                    "source-auth-none",
+                                    "No Auth",
+                                    self.authentication == Authentication::NoAuth,
+                                ),
+                            ],
                             cx,
                         ),
-                    );
-                }
-                if self.engine != DbEngine::Jdbc && self.endpoint_mode != 2 {
-                    body = body.child(self.field("source-database", "Database (optional)", 0, cx));
+                        cx,
+                    ));
+                    if self.authentication == Authentication::UserPassword {
+                        body = body.child(self.field("source-user", "User", 0, cx)).child(
+                            self.row(
+                                "Password",
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .min_w(px(0.))
+                                    .child(
+                                        div()
+                                            .id("source-password")
+                                            .debug_selector(|| "source-password".into())
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .child(self.inputs["source-password"].clone()),
+                                    )
+                                    .child(
+                                        Button::new("source-show-password")
+                                            .debug_selector(|| "source-show-password".into())
+                                            .label(
+                                                if self.inputs["source-password"]
+                                                    .read(cx)
+                                                    .password_revealed()
+                                                {
+                                                    "Hide"
+                                                } else {
+                                                    "Show"
+                                                },
+                                            )
+                                            .tooltip("Reveal password for 3 seconds")
+                                            .small()
+                                            .disabled(self.model.read(cx).saving)
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.inputs["source-password"]
+                                                    .update(cx, |input, cx| {
+                                                        input.reveal_password(cx)
+                                                    });
+                                            })),
+                                    )
+                                    .child(self.checkbox(cx)),
+                                cx,
+                            ),
+                        );
+                    }
+                    if self.engine != DbEngine::Jdbc && self.endpoint_mode != 2 {
+                        body =
+                            body.child(self.field("source-database", "Database (optional)", 0, cx));
+                    }
                 }
             }
             1 => {
@@ -2743,6 +2870,59 @@ mod tests {
             assert!(!m.form_busy && !m.busy);
             let error = m.form_feedback.as_ref().unwrap();
             assert!(!error.contains("fixture-secret"));
+        });
+    }
+
+    #[gpui::test]
+    fn mongodb_compass_style_connection_string_and_direct_connection_toggle(
+        cx: &mut TestAppContext,
+    ) {
+        let (form, _, cx) = fixture(cx);
+        let uri = "mongodb://kaj_admin_mongo:B1s4.P4sT1@34.101.32.182:27017/admin?retryWrites=true&loadBalanced=false&serverSelectionTimeoutMS=5000&connectTimeoutMS=10000&authSource=admin&authMechanism=SCRAM-SHA-256&directConnection=true";
+        set(&form, cx, "source-url", uri);
+        cx.run_until_parked();
+        form.read_with(cx, |f, app| {
+            let profile = f.profile(app).unwrap();
+            assert_eq!(profile.engine, DbEngine::MongoDb);
+            assert_eq!(profile.username, "kaj_admin_mongo");
+            assert_eq!(f.password(app), "B1s4.P4sT1");
+            let mongo = profile.mongo_options.unwrap();
+            assert!(mongo.direct_connection);
+            assert_eq!(mongo.auth_source, "admin");
+            assert_eq!(mongo.auth_mechanism.as_deref(), Some("SCRAM-SHA-256"));
+            assert_eq!(mongo.retry_writes, Some(true));
+            assert_eq!(mongo.load_balanced, Some(false));
+            assert_eq!(mongo.server_selection_timeout_ms, Some(5000));
+            assert_eq!(mongo.connect_timeout_ms, Some(10000));
+            assert!(f.mongo_direct_connection);
+        });
+        // Checkbox is visible in DOM
+        assert!(cx.debug_bounds("source-mongo-direct").is_some());
+        // Manual fields are NOT rendered in DOM for MongoDB
+        assert!(cx.debug_bounds("source-host").is_none());
+        assert!(cx.debug_bounds("source-port").is_none());
+        assert!(cx.debug_bounds("source-user").is_none());
+        assert!(cx.debug_bounds("source-password").is_none());
+        assert!(cx.debug_bounds("source-database").is_none());
+
+        // Toggle Direct Connection checkbox off
+        click(cx, "source-mongo-direct");
+        form.read_with(cx, |f, app| {
+            assert!(!f.mongo_direct_connection);
+            let profile = f.profile(app).unwrap();
+            assert!(!profile.mongo_options.unwrap().direct_connection);
+            assert!(
+                f.value("source-url", app)
+                    .contains("directConnection=false")
+            );
+        });
+        // Toggle Direct Connection checkbox back on
+        click(cx, "source-mongo-direct");
+        form.read_with(cx, |f, app| {
+            assert!(f.mongo_direct_connection);
+            let profile = f.profile(app).unwrap();
+            assert!(profile.mongo_options.unwrap().direct_connection);
+            assert!(f.value("source-url", app).contains("directConnection=true"));
         });
     }
     #[gpui::test]

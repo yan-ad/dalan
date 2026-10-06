@@ -28,8 +28,9 @@ pub use mysql::{
     FilterOperator, SortDirection, TableFilter, TableInfo, TablePage, TableSort,
 };
 pub use sources::{
-    Authentication, ConnectionMode, ConnectionTarget, DbEngine, JdbcJar, JdbcOptions,
-    SchemaSelection, SourceOptions, SourceProfile, TlsMode, Transport,
+    Authentication, ConnectionMode, ConnectionTarget, DbEngine, JdbcJar, JdbcOptions, MongoOptions,
+    ParsedMongoUri, SchemaSelection, SourceOptions, SourceProfile, TlsMode, Transport,
+    parse_mongo_uri, set_mongo_uri_direct_connection,
 };
 
 use dalan_core::Engine;

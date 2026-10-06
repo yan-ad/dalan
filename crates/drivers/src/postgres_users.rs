@@ -126,10 +126,7 @@ pub enum PostgresPrivilegeScope {
 
 /// Escapes a PostgreSQL identifier safely inside double quotes.
 pub fn quote_identifier(ident: &str) -> Result<String> {
-    ensure!(
-        !ident.is_empty(),
-        "Identifier cannot be empty"
-    );
+    ensure!(!ident.is_empty(), "Identifier cannot be empty");
     ensure!(
         ident.len() <= 256 && !ident.contains('\0'),
         "Invalid identifier"
@@ -231,7 +228,9 @@ pub fn create_role_sql(name: &str, password: &str, can_login: bool) -> Result<St
     let quoted_name = quote_identifier(name)?;
     let quoted_pw = quote_literal(password);
     let login = if can_login { "LOGIN" } else { "NOLOGIN" };
-    Ok(format!("CREATE ROLE {quoted_name} {login} PASSWORD {quoted_pw};"))
+    Ok(format!(
+        "CREATE ROLE {quoted_name} {login} PASSWORD {quoted_pw};"
+    ))
 }
 
 /// Generates DDL to change a PostgreSQL role's password.
@@ -288,14 +287,29 @@ pub fn grant_privileges_sql(
     let quoted_role = quote_identifier(role)?;
     if let PostgresPrivilegeScope::Role { role: target_role } = scope {
         let quoted_target = quote_identifier(target_role)?;
-        let admin_opt = if with_grant_option { " WITH ADMIN OPTION" } else { "" };
-        return Ok(format!("GRANT {quoted_target} TO {quoted_role}{admin_opt};"));
+        let admin_opt = if with_grant_option {
+            " WITH ADMIN OPTION"
+        } else {
+            ""
+        };
+        return Ok(format!(
+            "GRANT {quoted_target} TO {quoted_role}{admin_opt};"
+        ));
     }
-    ensure!(!privileges.is_empty(), "At least one privilege must be selected");
+    ensure!(
+        !privileges.is_empty(),
+        "At least one privilege must be selected"
+    );
     let privs = privileges.join(", ");
     let target = privilege_target_sql(scope)?;
-    let grant_opt = if with_grant_option { " WITH GRANT OPTION" } else { "" };
-    Ok(format!("GRANT {privs} ON {target} TO {quoted_role}{grant_opt};"))
+    let grant_opt = if with_grant_option {
+        " WITH GRANT OPTION"
+    } else {
+        ""
+    };
+    Ok(format!(
+        "GRANT {privs} ON {target} TO {quoted_role}{grant_opt};"
+    ))
 }
 
 /// Generates a `REVOKE` statement across any supported PostgreSQL scope.
@@ -309,7 +323,10 @@ pub fn revoke_privileges_sql(
         let quoted_target = quote_identifier(target_role)?;
         return Ok(format!("REVOKE {quoted_target} FROM {quoted_role};"));
     }
-    ensure!(!privileges.is_empty(), "At least one privilege must be selected");
+    ensure!(
+        !privileges.is_empty(),
+        "At least one privilege must be selected"
+    );
     let privs = privileges.join(", ");
     let target = privilege_target_sql(scope)?;
     Ok(format!("REVOKE {privs} ON {target} FROM {quoted_role};"))

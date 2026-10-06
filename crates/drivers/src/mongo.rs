@@ -110,20 +110,32 @@ async fn client_options(profile: &SourceProfile, password: &str) -> Result<Clien
         .map_err(driver_error)?;
     let mongo = profile.mongo_options.clone().unwrap_or_default();
     options.direct_connection = Some(mongo.direct_connection);
-    options.connect_timeout = Some(Duration::from_secs(profile.options.connect_timeout_seconds));
-    options.server_selection_timeout = options.connect_timeout;
+    options.connect_timeout = mongo
+        .connect_timeout_ms
+        .map(Duration::from_millis)
+        .or_else(|| Some(Duration::from_secs(profile.options.connect_timeout_seconds)));
+    options.server_selection_timeout = mongo
+        .server_selection_timeout_ms
+        .map(Duration::from_millis)
+        .or(options.connect_timeout);
     options.max_pool_size = Some(2);
     options.min_pool_size = Some(0);
-    options.retry_reads = Some(false);
-    options.retry_writes = Some(false);
+    options.retry_reads = Some(mongo.retry_reads.unwrap_or(false));
+    options.retry_writes = Some(mongo.retry_writes.unwrap_or(false));
+    if let Some(lb) = mongo.load_balanced {
+        options.load_balanced = Some(lb);
+    }
     if profile.authentication == Authentication::UserPassword {
-        options.credential = Some(
-            Credential::builder()
-                .username(profile.username.clone())
-                .password(password.to_owned())
-                .source(mongo.auth_source)
-                .build(),
-        );
+        let mechanism = mongo
+            .auth_mechanism
+            .as_deref()
+            .and_then(|m| m.parse::<mongodb::options::AuthMechanism>().ok());
+        let mut cred = Credential::default();
+        cred.username = Some(profile.username.clone());
+        cred.password = Some(password.to_owned());
+        cred.source = Some(mongo.auth_source);
+        cred.mechanism = mechanism;
+        options.credential = Some(cred);
     }
     options.tls = Some(if profile.tls == TlsMode::Disabled {
         Tls::Disabled

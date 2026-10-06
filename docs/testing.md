@@ -1,5 +1,13 @@
 # Test strategy and release evidence
 
+## MongoDB Compass-style connection string URI and Direct Connection controls
+
+Added support for full MongoDB connection string URIs including options (`retryWrites`, `loadBalanced`, `serverSelectionTimeoutMS`, `connectTimeoutMS`, `authSource`, `authMechanism`, `directConnection`, `tls`/`ssl`, and standard driver parameters). Extended `parse_mongo_uri`, `MongoOptions`, and `set_mongo_uri_direct_connection` in `dalan-drivers`, and propagated parsed options (`auth_mechanism`, `retry_writes`, `load_balanced`, timeouts) into native `mongodb` `ClientOptions` and `Credential`.
+
+Switched MongoDB connection form UX in `SourceForm` to Compass style: hides manual host/port/user/password/database individual fields in favor of direct connection string URI input with two-way synchronized `Direct Connection` checkbox (`source-mongo-direct`) and session password preservation with scrubbed URL display. Unit tests cover full Compass URI parsing, credential extraction without URL retention, bidirectional Direct Connection toggling, and exclusion of manual fields from the DOM in MongoDB mode.
+
+Local verification passed **244 headless unit tests + one native-wire integration test, 248 production UI tests and 14 Python tests**, formatting, strict workspace/desktop Clippy and signed debug bundle/plist/signature checks. No private credentials or live servers were contacted. CI remains skipped.
+
 ## PostgreSQL User & Privileges driver and settings Cmd-W window close routing
 
 Ported DBX's PostgreSQL role administration query and DCL generation logic into native `dalan-drivers` (`postgres_users.rs` and `postgres.rs`). Added `list_roles`, `show_role_grants`, and `execute_role_admin` with safe SQL identifier quoting (`quote_identifier`) and literal escaping (`quote_literal`). The query architecture uses PostgreSQL's `pg_catalog.pg_roles` system catalog, `pg_auth_members`, and a unified CTE evaluating role attributes, parent/child role memberships, database-level privileges (`has_database_privilege`), schema-level privileges (`has_schema_privilege`), and table-level privileges (`information_schema.role_table_grants`). Six unit tests cover quoting, DDL generation (`CREATE ROLE`, `ALTER ROLE PASSWORD`, `ALTER ROLE LOGIN`, `DROP ROLE`), multi-scope grants (`DATABASE`, `SCHEMA`, `TABLE`, `ALL TABLES IN SCHEMA`, `ROLE`), and grant line categorization.

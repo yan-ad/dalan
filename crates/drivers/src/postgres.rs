@@ -791,8 +791,16 @@ pub async fn execute_role_admin(
     let timeout = profile.options.query_timeout_seconds;
     bounded_with(timeout, async {
         let session = Session::connect_mode(&profile, password, database, false).await?;
-        session.client.batch_execute(sql).await.map_err(driver_error)?;
-        session.client.batch_execute("COMMIT").await.map_err(driver_error)?;
+        session
+            .client
+            .batch_execute(sql)
+            .await
+            .map_err(driver_error)?;
+        session
+            .client
+            .batch_execute("COMMIT")
+            .await
+            .map_err(driver_error)?;
         let _ = session.finish().await;
         Ok(())
     })
