@@ -13,7 +13,7 @@ publish = false
 dalan-core = { path = "crates/core" }
 dalan-drivers = { path = "crates/drivers" }
 dalan-acp = { path = "crates/acp" }
-gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }
+gpui = { package = "gpui-kit", version = "=0.7.1", features = ["tree-sitter-sql"] }
 agent-client-protocol = { version = "=2.2.0", default-features = false }
 
 [workspace.lints.rust]

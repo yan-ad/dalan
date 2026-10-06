@@ -14,13 +14,14 @@ SPEC.loader.exec_module(bundle)
 class BundleTests(unittest.TestCase):
     def test_build_modes_keep_lockfile_and_shaders_explicit(self):
         debug = bundle.build_command(False, True)
-        release = bundle.build_command(True, False)
+        release = bundle.build_command(True, True)
         self.assertIn("--locked", debug)
         self.assertIn("runtime-shaders", debug)
         self.assertNotIn("--release", debug)
         self.assertIn("--release", release)
-        self.assertIn("desktop", release)
-        self.assertNotIn("runtime-shaders", release)
+        self.assertIn("runtime-shaders", release)
+        with self.assertRaisesRegex(ValueError, "offline shader"):
+            bundle.build_command(True, False)
 
     def test_only_matching_executable_is_selected(self):
         artifact = {"reason": "compiler-artifact", "package_id": "dalan", "target": {"name": "dalan", "kind": ["bin"]}, "executable": "/tmp/custom-target/debug/dalan"}
@@ -62,6 +63,9 @@ class BundleTests(unittest.TestCase):
             self.assertEqual((destination / "Contents/Resources/dbx-Apache-2.0.txt").read_bytes(),
                              (bundle.ROOT / "licenses/dbx-Apache-2.0.txt").read_bytes())
             self.assertIn("DBX", notices)
+            self.assertIn("GPUI Kit production component framework", notices)
+            self.assertEqual((destination / "Contents/Resources/gpui-kit-Apache-2.0.txt").read_bytes(),
+                             (bundle.ROOT / "licenses/gpui-kit-Apache-2.0.txt").read_bytes())
             binary = destination / "Contents/MacOS/Dalan"
             self.assertEqual(binary.read_bytes(), b"first build")
             self.assertEqual(binary.stat().st_mode & 0o777, 0o755)

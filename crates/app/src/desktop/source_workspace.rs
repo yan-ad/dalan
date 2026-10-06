@@ -6,16 +6,18 @@ use dalan_app::result_budget::{
 use dalan_app::workspace_tabs::{WorkspaceOpen, WorkspaceTabs};
 use gpui::{
     App, Context, Entity, FocusHandle, KeyBinding, SharedString, Subscription, Window, actions,
-    div, prelude::*, px, rgb,
+    div, prelude::*, px,
 };
 
 use super::{
-    icons::{Icon, icon},
-    query_console::QueryConsole,
-    source_browser::SourceBrowser,
-    source_dialog,
+    query_console::QueryConsole, source_browser::SourceBrowser, source_dialog,
     source_model::SourceModel,
-    theme::*,
+};
+
+use gpui::component::{
+    ActiveTheme, Disableable, Icon, Sizable,
+    button::Button as KitButton,
+    tab::{Tab, TabBar},
 };
 
 actions!(workspace, [NewConsole, CloseTab, NextTab, PreviousTab]);
@@ -335,7 +337,13 @@ impl Render for SourceWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.tabs.active().map(str::to_owned);
         if self.pending_confirmation_focus {
-            self.confirmation_focus.focus(window);
+            // KitButton owns its focus handle in keyed window state. Resolve
+            // that same handle rather than tracking a second toolbar handle.
+            self.confirmation_focus = window
+                .use_keyed_state("keep-query-draft", cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone();
+            self.confirmation_focus.focus(window, cx);
             self.pending_confirmation_focus = false;
             self.pending_focus = false;
         }
@@ -355,7 +363,7 @@ impl Render for SourceWorkspace {
             {
                 console.update(cx, |console, cx| console.focus(window, cx));
             } else {
-                self.focus.focus(window);
+                self.focus.focus(window, cx);
             }
             self.pending_focus = false;
         }
@@ -376,7 +384,7 @@ impl Render for SourceWorkspace {
             .min_w(px(0.0))
             .flex()
             .flex_col()
-            .bg(rgb(BACKGROUND))
+            .bg(cx.theme().background)
             .on_action(cx.listener(|this, _: &NewConsole, _, cx| {
                 cx.stop_propagation();
                 this.new_console(cx);
@@ -398,246 +406,122 @@ impl Render for SourceWorkspace {
                 this.cycle(true, cx);
             }));
         if !self.tabs.tabs().is_empty() {
-            let mut strip = div()
-                .id("workspace-tab-strip")
-                .debug_selector(|| "workspace-tab-strip".into())
-                .h(px(CONTROL_HEIGHT))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .min_w(px(0.0))
-                .bg(rgb(CHROME));
-            let mut tabs = div()
-                .id("workspace-tabs-scroll")
-                .flex_1()
-                .min_w(px(0.0))
-                .h_full()
-                .flex()
-                .track_scroll(&self.tab_scroll)
-                .overflow_x_scroll();
-            for descriptor in self.tabs.tabs().to_vec() {
-                let id = descriptor.id.clone();
-                let close_id = id.clone();
-                let keyboard_close_id = id.clone();
-                let keyboard_id = id.clone();
-                let is_active = active.as_ref() == Some(&id);
-                let state = self.views.get(&id).map(|tab| tab.model.read(cx));
-                let running = state.is_some_and(|state| state.busy);
-                let dirty = state
-                    .is_some_and(|state| state.query_console && !state.query_sql.trim().is_empty());
-                let glyph = if matches!(descriptor.kind, WorkspaceOpen::Console { .. }) {
-                    Icon::Query
-                } else {
-                    Icon::Table
-                };
-                let source_name = self
-                    .model
-                    .read(cx)
-                    .profiles
-                    .iter()
-                    .find(|source| source.id == descriptor.source)
-                    .map_or("Removed source", |source| source.name.as_str());
-                let tooltip = format!(
-                    "{source_name} / {} / {}{}",
-                    descriptor
-                        .database
-                        .as_deref()
-                        .unwrap_or("No default database"),
-                    descriptor.label,
-                    if running {
-                        " · running"
-                    } else if dirty {
-                        " · unsaved SQL draft"
+            let descriptors = self.tabs.tabs().to_vec();
+            let index = descriptors
+                .iter()
+                .position(|tab| Some(&tab.id) == active.as_ref())
+                .unwrap_or(0);
+            let tabs = descriptors
+                .iter()
+                .map(|descriptor| {
+                    let id = descriptor.id.clone();
+                    let state = self.views.get(&id).map(|tab| tab.model.read(cx));
+                    let running = state.is_some_and(|state| state.busy);
+                    let dirty = state.is_some_and(|state| {
+                        state.query_console && !state.query_sql.trim().is_empty()
+                    });
+                    let glyph = if matches!(descriptor.kind, WorkspaceOpen::Console { .. }) {
+                        "icons/square-code.svg"
                     } else {
-                        ""
-                    }
-                );
-                let tab_id: SharedString = format!("workspace-tab-{id}").into();
-                let selector = tab_id.clone();
-                tabs = tabs.child(
-                    div()
-                        .id(tab_id)
-                        .debug_selector(move || selector.to_string())
-                        .tab_index(20)
-                        .h_full()
-                        .min_w(px(80.0))
-                        .max_w(px(220.0))
-                        .flex_shrink_0()
-                        .px(px(8.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .border_b_1()
-                        .border_color(rgb(if is_active { FOCUS } else { CHROME }))
-                        .bg(rgb(if is_active { BACKGROUND } else { CHROME }))
-                        .text_size(px(12.0))
-                        .text_color(rgb(if is_active { TEXT } else { MUTED }))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(rgb(HOVER)))
-                        .focus(|style| style.border_color(rgb(FOCUS)))
-                        .tooltip(move |_, cx| cx.new(|_| TabTooltip(tooltip.clone())).into())
-                        .on_click(cx.listener(move |this, _, _, cx| this.activate(&id, cx)))
-                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                cx.stop_propagation();
-                                this.activate(&keyboard_id, cx);
-                            }
-                        }))
-                        .child(icon(glyph, MUTED))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .text_ellipsis()
-                                .child(descriptor.label),
-                        )
-                        .when(running, |tab| tab.child(icon(Icon::Loading, FOCUS)))
-                        .when(dirty, |tab| {
-                            tab.child(div().text_color(rgb(MUTED)).child("•"))
-                        })
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("workspace-close-{close_id}")))
-                                .debug_selector({
-                                    let id = close_id.clone();
-                                    move || format!("workspace-close-{id}")
-                                })
-                                .size(px(20.0))
-                                .tab_index(20)
-                                .flex_shrink_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .hover(|style| style.bg(rgb(HOVER)))
-                                .focus(|style| style.border_1().border_color(rgb(FOCUS)))
-                                .tooltip(|_, cx| {
-                                    cx.new(|_| super::ControlTooltip("Close tab (Cmd-W)"))
-                                        .into()
-                                })
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
-                                            cx.stop_propagation();
-                                            this.close_tab(&keyboard_close_id, false, cx);
-                                        }
-                                    },
-                                ))
+                        "icons/table.svg"
+                    };
+                    let label = format!(
+                        "{}{}{}",
+                        descriptor.label,
+                        if running { " · running" } else { "" },
+                        if dirty { " •" } else { "" }
+                    );
+                    let close_id = id.clone();
+                    // Kit 0.7.1 Tab has no closable/on_close API. Its suffix slot
+                    // hosts a Kit button, keeping close activation separate from selection.
+                    let selector = format!("workspace-tab-{id}");
+                    Tab::new()
+                        .label(label)
+                        .icon(Icon::empty().path(glyph))
+                        .debug_selector(move || selector.clone())
+                        .suffix(
+                            KitButton::new(SharedString::from(format!("workspace-close-{id}")))
+                                .debug_selector(move || format!("workspace-close-{close_id}"))
+                                .xsmall()
+                                .icon(Icon::empty().path("icons/x.svg"))
+                                .tooltip("Close tab (Cmd-W)")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    this.close_tab(&close_id, false, cx);
-                                }))
-                                .child(icon(Icon::Close, MUTED)),
-                        ),
-                );
-            }
-            strip = strip.child(tabs).child(
+                                    this.close_tab(&id, false, cx);
+                                })),
+                        )
+                })
+                .collect::<Vec<_>>();
+            root = root.child(
                 div()
-                    .id("new-query-console")
-                    .debug_selector(|| "new-query-console".into())
-                    .tab_index(20)
-                    .tab_stop(can_console)
-                    .size(px(CONTROL_HEIGHT))
-                    .flex_shrink_0()
+                    .id("workspace-tab-strip")
+                    .debug_selector(|| "workspace-tab-strip".into())
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(HOVER)))
-                    .focus(|style| style.border_1().border_color(rgb(FOCUS)))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| super::ControlTooltip("New query console (Cmd-Shift-N)"))
-                            .into()
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if can_console {
-                            this.new_console(cx);
-                        }
-                    }))
-                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                        if can_console && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                        {
-                            cx.stop_propagation();
-                            this.new_console(cx);
-                        }
-                    }))
-                    .child(icon(Icon::Add, if can_console { TEXT } else { MUTED })),
+                    .flex_shrink_0()
+                    .min_w(px(0.))
+                    .child(
+                        TabBar::new("workspace-tabs")
+                            .small()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .track_scroll(&self.tab_scroll)
+                            .max_width(px(220.))
+                            .selected_index(index)
+                            .children(tabs)
+                            .on_click(cx.listener(move |this, index: &usize, _, cx| {
+                                if let Some(tab) = descriptors.get(*index) {
+                                    this.activate(&tab.id, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        KitButton::new("new-query-console")
+                            .small()
+                            .debug_selector(|| "new-query-console".into())
+                            .icon(Icon::empty().path("icons/plus.svg"))
+                            .disabled(!can_console)
+                            .tooltip("New query console (Cmd-Shift-N)")
+                            .on_click(cx.listener(|this, _, _, cx| this.new_console(cx))),
+                    ),
             );
-            root = root.child(strip);
         }
         if let Some(id) = &self.close_confirmation {
             let target = id.clone();
-            let keyboard_target = target.clone();
-            root = root.child(
-                div()
-                    .id("confirm-close-console")
-                    .debug_selector(|| "confirm-close-console".into())
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .bg(rgb(HEADER))
-                    .text_color(rgb(MUTED))
-                    .text_size(px(12.0))
-                    .child("Discard this unsaved SQL draft?")
-                    .child(
-                        div()
-                            .id("discard-query-draft")
-                            .debug_selector(|| "discard-query-draft".into())
-                            .tab_index(20)
-                            .px(px(8.0))
-                            .h(px(CONTROL_HEIGHT))
-                            .flex()
-                            .items_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(rgb(HOVER)))
-                            .focus(|style| style.border_1().border_color(rgb(FOCUS)))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        cx.stop_propagation();
-                                        this.close_tab(&keyboard_target, true, cx);
-                                    }
-                                },
-                            ))
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| {
+            root =
+                root.child(
+                    div()
+                        .id("confirm-close-console")
+                        .debug_selector(|| "confirm-close-console".into())
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(10.))
+                        .py(px(4.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Discard this unsaved SQL draft?")
+                        .child(
+                            KitButton::new("discard-query-draft")
+                                .small()
+                                .label("Discard")
+                                .debug_selector(|| "discard-query-draft".into())
+                                .on_click(cx.listener(move |this, _, _, cx| {
                                     this.close_tab(&target, true, cx)
-                                }),
-                            )
-                            .child("Discard"),
-                    )
-                    .child(
-                        div()
-                            .id("keep-query-draft")
-                            .debug_selector(|| "keep-query-draft".into())
-                            .track_focus(&self.confirmation_focus)
-                            .px(px(8.0))
-                            .h(px(CONTROL_HEIGHT))
-                            .flex()
-                            .items_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(rgb(HOVER)))
-                            .focus(|style| style.border_1().border_color(rgb(FOCUS)))
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    cx.stop_propagation();
+                                })),
+                        )
+                        .child(
+                            KitButton::new("keep-query-draft")
+                                .small()
+                                .label("Keep open")
+                                .debug_selector(|| "keep-query-draft".into())
+                                .on_click(cx.listener(|this, _, _, cx| {
                                     this.close_confirmation = None;
                                     this.pending_focus = true;
                                     cx.notify();
-                                }
-                            }))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.close_confirmation = None;
-                                this.pending_focus = true;
-                                cx.notify();
-                            }))
-                            .child("Keep open"),
-                    ),
-            );
+                                })),
+                        ),
+                );
         }
         let content = match active.and_then(|id| self.views.get(&id).map(|tab| tab.view.clone())) {
             Some(TabView::Table(view)) => view.into_any_element(),
@@ -647,19 +531,6 @@ impl Render for SourceWorkspace {
         root.child(div().flex_1().min_h(px(0.0)).min_w(px(0.0)).child(content))
     }
 }
-struct TabTooltip(String);
-impl Render for TabTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px(px(8.0))
-            .py(px(5.0))
-            .bg(rgb(CHROME))
-            .text_color(rgb(TEXT))
-            .text_size(px(12.0))
-            .child(self.0.clone())
-    }
-}
-
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests {
     use super::*;
@@ -671,6 +542,13 @@ mod tests {
     };
     use std::{net::TcpListener, sync::Arc};
 
+    fn pump_workers(cx: &mut TestAppContext) {
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+
     fn fixture(
         cx: &mut TestAppContext,
     ) -> (
@@ -679,6 +557,7 @@ mod tests {
         TcpListener,
         &mut VisualTestContext,
     ) {
+        cx.update(gpui::init);
         cx.update(crate::desktop::bind_keys);
         // Own the loopback endpoint for the entire test. It never speaks the
         // database protocol, and each table request is cancelled before seeding.
@@ -711,10 +590,12 @@ mod tests {
             model.explorer_source = Some(source);
             model
         });
-        let (workspace, cx) = cx.add_window_view(|_, cx| SourceWorkspace::new(model.clone(), cx));
+        let workspace = cx.new(|cx| SourceWorkspace::new(model.clone(), cx));
+        let (_, cx) =
+            cx.add_window_view(|window, cx| gpui::base::Root::new(workspace.clone(), window, cx));
         cx.simulate_resize(gpui::size(px(900.), px(600.)));
         cx.refresh().unwrap();
-        cx.run_until_parked();
+        pump_workers(cx);
         (workspace, model, listener, cx)
     }
 
@@ -767,7 +648,7 @@ mod tests {
                 cx,
             )
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         let (id, model) = active(workspace, cx);
         model.update(cx, |model, cx| {
             model.cancel_query(cx);
@@ -775,7 +656,7 @@ mod tests {
             model.page = Some(snapshot(name));
             cx.notify();
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         (id, model)
     }
 
@@ -784,7 +665,7 @@ mod tests {
         cx: &mut VisualTestContext,
     ) -> (String, Entity<SourceModel>) {
         workspace.update(cx, |workspace, cx| workspace.new_console(cx));
-        cx.run_until_parked();
+        pump_workers(cx);
         cx.refresh().unwrap();
         active(workspace, cx)
     }
@@ -794,7 +675,7 @@ mod tests {
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("missing {selector}"));
         cx.simulate_click(bounds.center(), Modifiers::default());
-        cx.run_until_parked();
+        pump_workers(cx);
         cx.refresh().unwrap();
     }
 
@@ -811,7 +692,7 @@ mod tests {
                 model.page = Some(snapshot(&index.to_string()));
                 cx.notify();
             });
-            cx.run_until_parked();
+            pump_workers(cx);
             tabs.push((id, model));
         }
         workspace.read_with(cx, |workspace, cx| {
@@ -835,9 +716,9 @@ mod tests {
         assert!(tabs[8].1.read_with(cx, |model, _| model.page.is_some()));
         // Editor/cursor notifications must not walk the cells again.
         tabs[8].1.update(cx, |_, cx| cx.notify());
-        cx.run_until_parked();
+        pump_workers(cx);
         workspace.update(cx, |workspace, cx| workspace.activate(&tabs[0].0, cx));
-        cx.run_until_parked();
+        pump_workers(cx);
         tabs[0].1.read_with(cx, |model, _| {
             assert!(model.result_evicted);
             assert!(model.page.is_none());
@@ -863,7 +744,7 @@ mod tests {
                 model.saving = index == 2;
                 cx.notify();
             });
-            cx.run_until_parked();
+            pump_workers(cx);
             tabs.push((id, model));
         }
         for index in [0, 1, 2, 8] {
@@ -884,7 +765,7 @@ mod tests {
                 cx.notify();
             });
         }
-        cx.run_until_parked();
+        pump_workers(cx);
         assert!(
             tabs.iter()
                 .all(|(_, model)| model.read_with(cx, |model, _| model.page.is_some()))
@@ -903,7 +784,7 @@ mod tests {
             model.order_by = "column_0 DESC".into();
             assert!(model.evict_result_page(cx));
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         workspace.update(cx, |workspace, cx| {
             workspace.activate(&id, cx);
             let state = model.read(cx);
@@ -913,7 +794,7 @@ mod tests {
             assert!(state.page.is_none());
         });
         model.update(cx, |model, cx| model.cancel_query(cx));
-        cx.run_until_parked();
+        pump_workers(cx);
         neighbor.read_with(cx, |model, _| {
             assert!(model.page.is_some());
             assert!(!model.busy);
@@ -945,7 +826,7 @@ mod tests {
             model.page = Some(snapshot("filtered"));
             cx.notify();
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         let first_page = first.read_with(cx, |model, _| model.page.clone().unwrap());
         let first_view =
             workspace.read_with(cx, |workspace, _| match &workspace.views[&first_id].view {
@@ -958,7 +839,7 @@ mod tests {
             delta: ScrollDelta::Pixels(point(px(-300.), px(-900.))),
             ..Default::default()
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         cx.refresh().unwrap();
         let scrolled_cell = cx
             .debug_bounds("cell-40-2")
@@ -979,7 +860,7 @@ mod tests {
                 cx,
             )
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         workspace.read_with(cx, |workspace, _| {
             assert_eq!(workspace.tabs.active(), Some(first_id.as_str()));
             assert_eq!(workspace.views.len(), 2);
@@ -1038,7 +919,7 @@ mod tests {
             root.profiles[0].port = replacement_port;
             cx.notify();
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         workspace.read_with(cx, |workspace, cx| {
             for id in [&first_id, &neighbor_id] {
                 let model = workspace.views[id].model.read(cx);
@@ -1059,9 +940,9 @@ mod tests {
                 cx,
             );
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         cx.refresh().unwrap();
-        cx.run_until_parked();
+        pump_workers(cx);
         let (reopened_id, rebuilt) = active(&workspace, cx);
         assert_eq!(reopened_id, first_id);
         assert_ne!(rebuilt.entity_id(), old_model_id);
@@ -1086,7 +967,7 @@ mod tests {
             assert!(model.error.is_none());
             model.cancel_query(cx);
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         root.update(cx, |root, cx| {
             root.open_tree_table(
                 root.profiles[0].id.clone(),
@@ -1095,7 +976,7 @@ mod tests {
                 cx,
             );
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         assert_eq!(active(&workspace, cx), (first_id, rebuilt.clone()));
         rebuilt.read_with(cx, |model, _| {
             assert!(!model.workspace_invalidated);
@@ -1113,9 +994,12 @@ mod tests {
             assert!(workspace.tabs.active().is_none());
             assert!(workspace.views.is_empty());
         });
-        cx.update(|window, app| workspace.read(app).focus.focus(window));
+        cx.update(|window, app| {
+            let focus = workspace.read(app).focus.clone();
+            focus.focus(window, app);
+        });
         cx.simulate_keystrokes("cmd-w");
-        cx.run_until_parked();
+        pump_workers(cx);
         // Do not read the removed window through VisualTestContext.
         assert!(cx.cx.read(|app| app.windows().is_empty()));
     }
@@ -1125,16 +1009,16 @@ mod tests {
         let (workspace, root, _listener, cx) = fixture(cx);
         let (first_id, first) = console(&workspace, cx);
         cx.simulate_input("SELECT 1");
-        cx.run_until_parked();
+        pump_workers(cx);
         let (second_id, second) = console(&workspace, cx);
         cx.simulate_input("SELECT 2");
-        cx.run_until_parked();
+        pump_workers(cx);
         assert_ne!(first_id, second_id);
         cx.simulate_keystrokes("cmd-alt-left");
-        cx.run_until_parked();
+        pump_workers(cx);
         assert_eq!(active(&workspace, cx).0, first_id);
         cx.simulate_input(" -- retained");
-        cx.run_until_parked();
+        pump_workers(cx);
         assert_eq!(
             first.read_with(cx, |model, _| model.query_sql.clone()),
             "SELECT 1 -- retained"
@@ -1144,7 +1028,7 @@ mod tests {
             "SELECT 2"
         );
         cx.simulate_keystrokes("cmd-alt-right");
-        cx.run_until_parked();
+        pump_workers(cx);
         assert_eq!(active(&workspace, cx).0, second_id);
         root.read_with(cx, |root, _| {
             assert!(root.query_sql.is_empty());
@@ -1157,9 +1041,9 @@ mod tests {
         let (workspace, _root, _listener, cx) = fixture(cx);
         let (id, model) = console(&workspace, cx);
         cx.simulate_input("SELECT 1");
-        cx.run_until_parked();
+        pump_workers(cx);
         cx.simulate_keystrokes("cmd-w");
-        cx.run_until_parked();
+        pump_workers(cx);
         assert!(cx.debug_bounds("confirm-close-console").is_some());
         click(cx, "keep-query-draft");
         assert!(workspace.read_with(cx, |workspace, _| workspace.close_confirmation.is_none()));
@@ -1169,7 +1053,7 @@ mod tests {
             "SELECT 1"
         );
         workspace.update(cx, |workspace, cx| workspace.close_tab(&id, false, cx));
-        cx.run_until_parked();
+        pump_workers(cx);
         click(cx, "discard-query-draft");
         workspace.read_with(cx, |workspace, _| {
             assert!(workspace.tabs.active().is_none());
@@ -1189,7 +1073,7 @@ mod tests {
         workspace.update(cx, |workspace, cx| {
             workspace.close_tab(&first_id, false, cx)
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         cx.refresh().unwrap();
         assert!(first_weak.upgrade().is_none());
         assert_eq!(active(&workspace, cx).0, second_id);
@@ -1203,7 +1087,7 @@ mod tests {
         workspace.update(cx, |workspace, cx| {
             workspace.close_tab(&console_id, false, cx)
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         cx.refresh().unwrap();
         assert!(draft_weak.upgrade().is_none());
         assert_eq!(active(&workspace, cx).0, second_id);
@@ -1231,7 +1115,7 @@ mod tests {
             root.selected_database = Some("other_database".into());
             cx.notify();
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         let (_id, child) = console(&workspace, cx);
         child.read_with(cx, |model, _| {
             assert_eq!(model.selected_source, source);
@@ -1240,7 +1124,7 @@ mod tests {
             assert!(!model.busy);
         });
         root.update(cx, |root, cx| root.request_query_console(cx));
-        cx.run_until_parked();
+        pump_workers(cx);
         let (_, explicit) = active(&workspace, cx);
         explicit.read_with(cx, |model, _| {
             assert_eq!(model.selected_source.as_deref(), Some(other_id.as_str()));
@@ -1261,7 +1145,7 @@ mod tests {
                 cx,
             );
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         let (loading_id, loading) = active(&workspace, cx);
         // The owned loopback listener cannot complete a MySQL handshake. The
         // worker is genuinely pending, not a fabricated busy flag.
@@ -1275,7 +1159,7 @@ mod tests {
         workspace.update(cx, |workspace, cx| {
             workspace.close_tab(&loading_id, false, cx)
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         cx.refresh().unwrap();
         assert!(
             weak.upgrade().is_none(),

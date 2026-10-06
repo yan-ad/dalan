@@ -10,7 +10,7 @@ Use **New Query Console** (query icon) in the explorer toolbar or **Cmd-Shift-N*
 
 All table/console tabs share a **32-tab maximum**. At capacity, opening another table/console reports an error; activating an existing table still works. Consoles have unique session identities and monotonically numbered **Console N** labels; closing one does not recycle its name in the current workspace.
 
-The flat **28 px Carbonfox** strip uses table/query icons, names, close x, a nonempty-draft dot and a real running indicator. It scrolls when necessary. The explorer has seven icon actions and horizontal toolbar scrolling at its 200 px minimum width. This is compact database-only chrome, not Files/Git/version-control UI or a visual copy of DataGrip.
+The compact Kit tab strip uses table/query icons, names, close x, a nonempty-draft dot and a real running indicator, with overflow scrolling. The explorer has three toolbar icons and horizontal scrolling at its 200 px minimum width. Kit's default theme replaces Carbonfox runtime styling. This is database-only chrome, not Files/Git/version-control UI or a visual copy of DataGrip.
 
 ## Shortcuts and editing
 
@@ -21,14 +21,14 @@ The flat **28 px Carbonfox** strip uses table/query icons, names, close x, a non
 | Close active tab | Cmd-W or its close x |
 | Run | Cmd-Enter or play icon |
 | Cancel run | Cmd-Period or stop icon |
-| Indent / unindent | Tab inserts four spaces; Shift-Tab unindents |
-| Newline | Retains current indentation |
+| Indent / unindent | Kit editor bindings; verify current native behavior |
+| Newline | Kit editor behavior |
 | Copy / cut / paste | Native selection/clipboard behavior |
-| Undo / redo | Native editor actions, bounded to 100 undo states |
+| Undo / redo | Kit editor history/actions; no inherited 100-state guarantee |
 
-The native GPUI multiline input supports selection and IME, with **Menlo 13 px**, **22 px lines**, a **44 px gutter**, viewport-visible shaping and a **64 KiB UTF-8 draft bound**. Each tab retains its draft in memory when switching. Native IME/accessibility behavior still needs real-session verification; simulated tests are not that evidence.
+The thin SQL adapter uses Kit's rope-backed EditorState for native selection, clipboard, IME, scrolling, undo/redo and SQL Tree-sitter highlighting. Each tab retains its draft in memory. The application SQL policy remains **64 KiB UTF-8**: oversized programmatic loads are rejected; interactive edit/IME/paste limit enforcement is a current regression gate, not a claimed atomic rejection guarantee. Native IME/accessibility still needs real-session verification.
 
-Run submits the **selected text**, or the **whole draft if there is no selection**. It does not detect a statement under the cursor, split scripts, run multiple statements or automatically execute on edit. Editing a draft neither executes nor cancels an existing run. There is no syntax highlighting, completion, persistent history, saved script/file workflow or generic code viewer yet.
+Run submits the **selected text**, or the **whole draft if there is no selection**. It does not detect a statement under the cursor, split scripts, run multiple statements or automatically execute on edit. Editing a draft neither executes nor cancels an existing run. SQL highlighting is implemented; database-aware completion, persistent history, saved script/file workflows and a generic code viewer are not. Grammar support does not implement PostgreSQL/MongoDB/Redis executors or broaden the MySQL/MariaDB read-only policy.
 
 ## Close and discard
 

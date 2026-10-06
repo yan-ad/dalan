@@ -1,6 +1,16 @@
 # UI foundation
 
-Implemented scope: macOS desktop shell with the user-selected Zed-like compact **Carbonfox - opaque** default. The user explicitly rejects DataGrip visual styling; DataGrip remains a database UX/workflow reference only, not button-heavy layout/chrome to copy. Main content hosts the experimental MySQL/MariaDB browser/read-only table workspace; source setup uses a separate dedicated dialog window. This is not a completed SQL client or accessibility/theme system.
+Implemented scope: macOS desktop shell using **GPUI Kit for all standard controls and Kit's default theme**, with compact app-owned layout. DataGrip remains a database UX/workflow reference only. Main content hosts experimental MySQL/MariaDB tables/read consoles; source setup uses a separate window. This is not a completed SQL client or accessibility certification.
+
+## Production Kit foundation
+
+Root `gpui` aliases Kit 0.7.1 with `tree-sitter-sql`, coordinated with `gpui-pre 0.3.8`; old GPUI 0.2 is removed. `gpui::application`, `gpui::init` and Kit `open_window`/Base Root cover main/source/About/SSH windows. Button, Input, Checkbox, tabs, dropdown/popup menus and tooltips are Kit controls. Driver/authentication dropdowns and saved SSH popup choices are functional native alternatives, not claimed Combobox/Select use.
+
+`desktop/theme.rs` maps active semantic `Hsla` colors and layout metrics; no fixed app palette or Carbonfox override is installed. Kit owns initial theme selection. InputState's thin window-less adapter preserves form synchronization; password native surrounding-text extraction is suppressed while Kit owns masked clipboard protections, editing, selection and IME. The thin rope EditorState adapter provides SQL Tree-sitter highlighting/native editing/undo; completion/history/scripts remain pending. The 64 KiB interactive SQL guard needs current regression validation, not inherited atomicity claims.
+
+The specialized two-axis canvas result body remains shipping app-owned paint; best-effort 16 MiB/eight-page inactive retention and worker limits are unchanged. DataTable's 100 × 512 pilot (328 initial/146 last-column callbacks) does not prove parity. See [migration](gpui-kit-migration.md) for current native/test gates.
+
+**Historical record below:** earlier Carbonfox palette/status-tooltip/contrast and bespoke-editor geometry/undo/indent descriptions are superseded by this production section. Old validation counts apply to their own revisions only. Historical assets and full MIT notices remain provenance, not runtime theme configuration.
 
 ## Rich table controls (current)
 
@@ -84,7 +94,7 @@ The native macOS application menu opens **About Dalan** in a separate 420 × 280
 
 ## Adopted Carbonfox - opaque tokens
 
-The shared compiled [theme](../crates/app/src/desktop/theme.rs) is used by the main, source and About windows and inputs. See [design](../DESIGN.md#carbonfox-provenance-and-tokens) for the full RGB table and reasons. CHROME/PANEL/SURFACE are `#0c0c0c`, input/editor-background reference `#161616`, HEADER `#1c1c1c`, HOVER `#2a2a2a`, opaque SELECTION `#242424`, decorative BORDER `#222222`, TEXT `#f2f4f8`, MUTED `#b6b8bb`, FOCUS `#78a9ff`, INPUT_BORDER `#7b7c7e`, WARNING `#be95ff`, ERROR `#ee5396`, SUCCESS `#25be6a`.
+The shared compiled [theme](../crates/app/src/desktop/theme.rs) is used by the main, source and About windows and inputs. See [design](../DESIGN.md) for the full RGB table and reasons. CHROME/PANEL/SURFACE are `#0c0c0c`, input/editor-background reference `#161616`, HEADER `#1c1c1c`, HOVER `#2a2a2a`, opaque SELECTION `#242424`, decorative BORDER `#222222`, TEXT `#f2f4f8`, MUTED `#b6b8bb`, FOCUS `#78a9ff`, INPUT_BORDER `#7b7c7e`, WARNING `#be95ff`, ERROR `#ee5396`, SUCCESS `#25be6a`.
 
 The exact complete variant is [vendored](../crates/app/assets/themes/carbonfox-opaque.json) from Nightfox's Zed port commit `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`, `themes/nvim-nightfox.json`. The [provenance record](../crates/app/assets/themes/README.md) retains both MIT licenses: 2024 Christian Angermann (port), 2021 James Simpson (original palette). The original-project license is pinned separately at `4dacd3f0185a2227bdf3b6c0975a8f0bf87cac9a`; the port's original palette revision is unknown. No affiliation is implied. Compiled tokens, not JSON, drive runtime rendering; the full reference is used by tests only.
 
@@ -139,7 +149,7 @@ These recorded results predate the About Dalan and optional ACP-panel changes; t
 
 Generic Files explorer, generic code viewer, Git, build/run integrations, generic terminal, and plugin/toolbox chrome are excluded. The optional database-focused ACP panel is explicitly permitted, not an exception allowing generic tools. Read-only SQL query consoles and loaded CSV export are implemented; persistent database scripts and broader database-focused import/export remain later scope.
 
-The historical blank-main state above is superseded by the source slice below. The read-only SQL editor milestone is documented in [query consoles](query-consoles.md); completion, syntax highlighting and persistent history remain future work. Text scaling and native accessibility remain release gates; light/system support is an unselected future proposal, not a shipped mode.
+The historical blank-main state above is superseded. [Query consoles](query-consoles.md) now use Kit SQL Tree-sitter highlighting; database-aware completion and persistent history remain future work. Text scaling and native accessibility remain release gates; theme initialization is Kit-owned.
 
 ## Compact lazy explorer
 

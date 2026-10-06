@@ -11,16 +11,43 @@ use dalan_drivers::{
     mysql::{CellValue, SortDirection, TableSort},
 };
 use gpui::{
-    Bounds, ContentMask, Context, Entity, FocusHandle, Font, MouseButton, Pixels, Render,
+    Bounds, ContentMask, Context, Entity, FocusHandle, Font, Hsla, MouseButton, Pixels, Render,
     ShapedLine, SharedString, Subscription, TextRun, Window, canvas, div, fill, point, prelude::*,
-    px, rgb, size,
+    px, size,
 };
 
-use super::{
-    icons::{Icon, icon},
-    source_model::SourceModel,
-    theme::*,
+use super::{source_model::SourceModel, theme::*};
+
+use gpui::component::{
+    Disableable, Icon as KitIcon, Selectable,
+    button::{Button as KitButton, ButtonVariants},
 };
+
+/// Capture Kit's keyed button handle during rendering, when its element
+/// namespace is active. Kit suppresses default mouse focus, so explicitly
+/// focus this handle instead of allowing the ancestor grid to receive keys.
+#[derive(IntoElement)]
+struct GridHeaderButton {
+    id: SharedString,
+    enabled: bool,
+    button: KitButton,
+}
+
+impl RenderOnce for GridHeaderButton {
+    fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        let focus = window
+            .use_keyed_state(self.id, cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        self.button
+            .when(self.enabled, |button| {
+                button.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    focus.focus(window, cx);
+                })
+            })
+            .render(window, cx)
+    }
+}
 
 type Selection = (Option<String>, Option<String>, Option<String>);
 
@@ -50,36 +77,36 @@ fn display_preview(value: Option<&CellValue>) -> SharedString {
 
 /// Small, stable type glyphs keep column names readable without embedding
 /// potentially long SQL type declarations in each header.
-fn column_type_icon(data_type: &str) -> Icon {
+fn column_type_icon(data_type: &str) -> &'static str {
     let kind = data_type.to_ascii_lowercase();
     if kind.contains("json") {
-        Icon::ColumnJson
+        "icons/braces.svg"
     } else if kind.contains("bool") || kind == "bit" {
-        Icon::Check
+        "icons/check.svg"
     } else if ["int", "decimal", "numeric", "float", "double", "real"]
         .iter()
         .any(|value| kind.contains(value))
     {
-        Icon::ColumnNumber
+        "icons/hash.svg"
     } else if ["date", "time", "year"]
         .iter()
         .any(|value| kind.contains(value))
     {
-        Icon::ColumnDate
+        "icons/calendar-clock.svg"
     } else if ["binary", "blob", "geometry"]
         .iter()
         .any(|value| kind.contains(value))
     {
-        Icon::ColumnBinary
+        "icons/binary.svg"
     } else {
-        Icon::ColumnText
+        "icons/text-initial.svg"
     }
 }
 
 fn shape_cell(
     text: SharedString,
     font: &Font,
-    color: u32,
+    color: Hsla,
     window: &mut Window,
     truncate: bool,
 ) -> ShapedLine {
@@ -87,7 +114,7 @@ fn shape_cell(
         let run = TextRun {
             len: text.len(),
             font: font.clone(),
-            color: rgb(color).into(),
+            color,
             background_color: None,
             underline: None,
             strikethrough: None,
@@ -139,6 +166,7 @@ pub(super) struct DataGrid {
     visible_lines: HashMap<(usize, usize), ShapedLine>,
     row_numbers: HashMap<usize, ShapedLine>,
     line_font: Option<Font>,
+    line_colors: Option<(Hsla, Hsla)>,
     #[cfg(test)]
     last_materialized_cells: usize,
     #[cfg(test)]
@@ -207,6 +235,7 @@ impl DataGrid {
             visible_lines: HashMap::new(),
             row_numbers: HashMap::new(),
             line_font: None,
+            line_colors: None,
             #[cfg(test)]
             last_materialized_cells: 0,
             #[cfg(test)]
@@ -292,7 +321,7 @@ impl DataGrid {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.focus.focus(window);
+        self.focus.focus(window, cx);
         self.drag = Some(ThumbDrag {
             axis,
             pointer: match axis {
@@ -378,6 +407,7 @@ impl DataGrid {
 
 impl Render for DataGrid {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = colors(cx);
         let (row_count, column_count) = self.dimensions();
         let columns = self.viewport.columns(column_count);
         let rows = self.viewport.rows(row_count);
@@ -397,10 +427,13 @@ impl Render for DataGrid {
         self.row_numbers.retain(|row, _| rows.contains(row));
         let mut font = window.text_style().font();
         font.family = "Menlo".into();
-        if self.line_font.as_ref() != Some(&font) {
+        if self.line_font.as_ref() != Some(&font)
+            || self.line_colors != Some((palette.text, palette.muted))
+        {
             self.visible_lines.clear();
             self.row_numbers.clear();
             self.line_font = Some(font.clone());
+            self.line_colors = Some((palette.text, palette.muted));
         }
         let view = cx.entity().downgrade();
         let previous_bounds = self.bounds;
@@ -441,7 +474,7 @@ impl Render for DataGrid {
             .w(px(self.viewport.width))
             .h(px(HEADER_HEIGHT))
             .overflow_hidden()
-            .bg(rgb(HEADER));
+            .bg(palette.header);
         let mut body = div()
             .debug_selector(|| "grid-body".into())
             .absolute()
@@ -459,7 +492,7 @@ impl Render for DataGrid {
             .w(px(ROW_GUTTER_WIDTH))
             .h(px(self.viewport.height))
             .overflow_hidden()
-            .bg(rgb(HEADER));
+            .bg(palette.header);
         if let Some(page) = &self.page {
             for column_index in columns.clone() {
                 let left = column_index as f32 * COLUMN_WIDTH - self.viewport.x;
@@ -471,8 +504,6 @@ impl Render for DataGrid {
                     .filter(|sort| sort.column == column.name)
                     .map(|sort| sort.direction);
                 let name = column.name.clone();
-                let keyboard_name = name.clone();
-                let sort_button_name = name.clone();
                 let metadata_tip = format!(
                     "{} · {}{}{} · {}",
                     column.name,
@@ -499,114 +530,56 @@ impl Render for DataGrid {
                     .or_insert_with(|| column.name.clone().into())
                     .clone();
                 let debug_id = format!("sort-column-{column_index}");
-                header = header.child(
-                    div()
-                        .id(gpui::SharedString::from(format!(
-                            "sort-column-{column_index}"
-                        )))
-                        .debug_selector(move || debug_id.clone())
-                        .tab_index(20)
-                        .tab_stop(!self.stale && in_view)
-                        .border_1()
-                        .border_color(gpui::transparent_black())
-                        .focus(|style| style.border_color(rgb(FOCUS)))
-                        .absolute()
-                        .left(px(column_index as f32 * COLUMN_WIDTH - self.viewport.x))
-                        .top_0()
-                        .w(px(COLUMN_WIDTH))
-                        .h(px(HEADER_HEIGHT))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .overflow_hidden()
-                        .text_color(rgb(MUTED))
-                        .when(!self.stale, |header| {
-                            header
-                                .cursor_pointer()
-                                .hover(|style| style.bg(rgb(HOVER)))
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if !this.stale
-                                            && matches!(
-                                                event.keystroke.key.as_str(),
-                                                "enter" | "space"
-                                            )
-                                        {
-                                            this.model.update(cx, |model, cx| {
-                                                model.cycle_sort(keyboard_name.clone(), cx)
-                                            });
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if !this.stale {
-                                        this.model.update(cx, |model, cx| {
-                                            model.cycle_sort(name.clone(), cx)
-                                        });
-                                    }
-                                }))
-                        })
-                        .gap(px(6.))
-                        .child(
-                            div()
-                                .id(gpui::SharedString::from(format!(
-                                    "column-indicator-{column_index}"
-                                )))
-                                .child(icon(
-                                    if column.is_primary_key {
-                                        Icon::ColumnKey
-                                    } else {
-                                        column_type_icon(&column.data_type)
-                                    },
-                                    if column.is_primary_key { FOCUS } else { MUTED },
-                                )),
-                        )
-                        .tooltip(move |_, cx| {
-                            cx.new(|_| ColumnTooltip(metadata_tip.clone())).into()
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_color(rgb(TEXT))
-                                .text_ellipsis()
-                                .child(label),
-                        )
-                        .child(
-                            div()
-                                .id(gpui::SharedString::from(format!(
-                                    "column-sort-button-{column_index}"
-                                )))
-                                .debug_selector(move || {
-                                    format!("column-sort-button-{column_index}")
-                                })
-                                .size(px(20.0))
-                                .flex_shrink_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .when(!self.stale, |button| {
-                                    button.cursor_pointer().hover(|style| style.bg(rgb(HOVER)))
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    if !this.stale {
-                                        this.model.update(cx, |model, cx| {
-                                            model.cycle_sort(sort_button_name.clone(), cx)
-                                        });
-                                    }
-                                }))
-                                .child(icon(
-                                    match direction {
-                                        Some(SortDirection::Descending) => Icon::SortDescending,
-                                        Some(SortDirection::Ascending) => Icon::SortAscending,
-                                        None => Icon::Sort,
-                                    },
-                                    if direction.is_some() { FOCUS } else { MUTED },
-                                )),
-                        ),
-                );
+                header = header.child(GridHeaderButton {
+                    id: debug_id.clone().into(),
+                    enabled: !self.stale && in_view,
+                    button: KitButton::new(gpui::SharedString::from(format!(
+                        "sort-column-{column_index}"
+                    )))
+                    .debug_selector(move || debug_id.clone())
+                    .ghost()
+                    .selected(direction.is_some())
+                    .disabled(self.stale)
+                    .tab_index(20)
+                    .tab_stop(!self.stale && in_view)
+                    .absolute()
+                    .left(px(left))
+                    .top_0()
+                    .w(px(COLUMN_WIDTH))
+                    .h(px(HEADER_HEIGHT))
+                    .rounded(px(0.))
+                    .tooltip(metadata_tip)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.stale {
+                            this.model
+                                .update(cx, |model, cx| model.cycle_sort(name.clone(), cx));
+                        }
+                    }))
+                    .child(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "column-indicator-{column_index}"
+                            )))
+                            .child(KitIcon::empty().path(if column.is_primary_key {
+                                "icons/key-round.svg"
+                            } else {
+                                column_type_icon(&column.data_type)
+                            })),
+                    )
+                    .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+                    .child(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "column-sort-button-{column_index}"
+                            )))
+                            .debug_selector(move || format!("column-sort-button-{column_index}"))
+                            .child(KitIcon::empty().path(match direction {
+                                Some(SortDirection::Descending) => "icons/arrow-down.svg",
+                                Some(SortDirection::Ascending) => "icons/arrow-up.svg",
+                                None => "icons/arrow-down-up.svg",
+                            })),
+                    ),
+                });
             }
             let mut painted_cells = Vec::new();
             let mut painted_numbers = Vec::new();
@@ -625,7 +598,7 @@ impl Render for DataGrid {
                             )
                             .into(),
                             &font,
-                            MUTED,
+                            palette.muted,
                             window,
                             false,
                         )
@@ -653,9 +626,9 @@ impl Render for DataGrid {
                                 text.clone(),
                                 &font,
                                 if matches!(value, Some(CellValue::Null)) {
-                                    MUTED
+                                    palette.muted
                                 } else {
-                                    TEXT
+                                    palette.text
                                 },
                                 window,
                                 true,
@@ -704,14 +677,18 @@ impl Render for DataGrid {
                                         origin,
                                         size(bounds.size.width, px(GRID_ROW_HEIGHT)),
                                     ),
-                                    rgb(if row % 2 == 0 { PANEL } else { BACKGROUND }),
+                                    if row % 2 == 0 {
+                                        palette.table_even
+                                    } else {
+                                        palette.table
+                                    },
                                 ));
                                 window.paint_quad(fill(
                                     Bounds::new(
                                         origin + point(px(0.), px(ROW_HEIGHT - 1.)),
                                         size(bounds.size.width, px(1.)),
                                     ),
-                                    rgb(BORDER),
+                                    palette.table_row_border,
                                 ));
                             }
                             // One full-height separator per column, not per cell.
@@ -723,7 +700,7 @@ impl Render for DataGrid {
                                             bounds.origin + point(px(right - 1.), px(0.)),
                                             size(px(1.), bounds.size.height),
                                         ),
-                                        rgb(BORDER),
+                                        palette.table_row_border,
                                     ));
                                 }
                             }
@@ -740,6 +717,8 @@ impl Render for DataGrid {
                                         let _ = line.paint(
                                             cell_bounds.origin,
                                             px(ROW_HEIGHT),
+                                            gpui::TextAlign::Left,
+                                            None,
                                             window,
                                             cx,
                                         );
@@ -758,7 +737,7 @@ impl Render for DataGrid {
                     |_, _, _| (),
                     move |bounds, _, window, cx| {
                         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                            window.paint_quad(fill(bounds, rgb(HEADER)));
+                            window.paint_quad(fill(bounds, palette.header));
                             for (top, line) in painted_numbers {
                                 let _ = line.paint(
                                     point(
@@ -766,6 +745,8 @@ impl Render for DataGrid {
                                         bounds.top() + px(top),
                                     ),
                                     px(ROW_HEIGHT),
+                                    gpui::TextAlign::Left,
+                                    None,
                                     window,
                                     cx,
                                 );
@@ -775,7 +756,7 @@ impl Render for DataGrid {
                                     point(bounds.right() - px(1.), bounds.top()),
                                     size(px(1.), bounds.size.height),
                                 ),
-                                rgb(BORDER),
+                                palette.table_row_border,
                             ));
                         });
                     },
@@ -787,7 +768,7 @@ impl Render for DataGrid {
                 body = body.child(
                     div()
                         .p(px(12.))
-                        .text_color(rgb(MUTED))
+                        .text_color(palette.muted)
                         .child("No matching rows"),
                 );
             }
@@ -810,7 +791,7 @@ impl Render for DataGrid {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .bg(rgb(PANEL))
+            .bg(palette.table)
             .text_size(px(12.))
             .track_focus(&self.focus)
             .key_context("DataGrid")
@@ -838,8 +819,8 @@ impl Render for DataGrid {
                     .top_0()
                     .w(px(ROW_GUTTER_WIDTH))
                     .h(px(HEADER_HEIGHT))
-                    .bg(rgb(HEADER))
-                    .text_color(rgb(MUTED))
+                    .bg(palette.header)
+                    .text_color(palette.muted)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -855,7 +836,7 @@ impl Render for DataGrid {
                         .bottom_0()
                         .w(px(self.viewport.width))
                         .h(px(SCROLLBAR_SIZE))
-                        .bg(rgb(HEADER))
+                        .bg(palette.scrollbar)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, event, window, cx| {
@@ -872,7 +853,7 @@ impl Render for DataGrid {
                                 .w(px(horizontal_length))
                                 .h(px(6.))
                                 .rounded(px(3.))
-                                .bg(rgb(INPUT_BORDER))
+                                .bg(palette.scrollbar_thumb)
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -893,7 +874,7 @@ impl Render for DataGrid {
                         .top(px(HEADER_HEIGHT))
                         .w(px(SCROLLBAR_SIZE))
                         .h(px(self.viewport.height))
-                        .bg(rgb(HEADER))
+                        .bg(palette.scrollbar)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, event, window, cx| {
@@ -910,7 +891,7 @@ impl Render for DataGrid {
                                 .w(px(6.))
                                 .h(px(vertical_length))
                                 .rounded(px(3.))
-                                .bg(rgb(INPUT_BORDER))
+                                .bg(palette.scrollbar_thumb)
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -921,19 +902,6 @@ impl Render for DataGrid {
                         ),
                 )
             })
-    }
-}
-
-struct ColumnTooltip(String);
-impl Render for ColumnTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px(px(8.0))
-            .py(px(5.0))
-            .bg(rgb(CHROME))
-            .text_color(rgb(TEXT))
-            .text_size(px(12.0))
-            .child(self.0.clone())
     }
 }
 
@@ -960,6 +928,7 @@ mod tests {
         Entity<DataGrid>,
         &mut VisualTestContext,
     ) {
+        cx.update(gpui::init);
         let model = cx.new(|_| {
             let mut model = SourceModel::for_tests(vec![SourceProfile::default()]);
             model.selected_database = Some("inventory".into());
@@ -988,7 +957,10 @@ mod tests {
             model
         });
         let grid = cx.new(|cx| DataGrid::new(model.clone(), cx));
-        let (_, cx) = cx.add_window_view(|_, _| GridHarness(grid.clone()));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let harness = cx.new(|_| GridHarness(grid.clone()));
+            gpui::base::Root::new(harness, window, cx)
+        });
         cx.simulate_resize(gpui::size(px(730.), px(258.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
@@ -1000,6 +972,18 @@ mod tests {
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("missing {selector}"));
         cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.run_until_parked();
+    }
+
+    /// Kit buttons activate on key release; exercise a complete native press.
+    fn press(cx: &mut VisualTestContext, key: &str) {
+        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
         cx.run_until_parked();
     }
 
@@ -1054,19 +1038,26 @@ mod tests {
         assert_eq!(viewport.x, COLUMN_WIDTH);
         assert_eq!(viewport.y, ROW_HEIGHT + viewport.height);
         click(cx, "sort-column-1");
+        let header_focus = cx.update(|window, app| {
+            assert!(!grid.read(app).focus.is_focused(window));
+            window.focused(app).expect("clicked header must own focus")
+        });
         assert!(model.read_with(cx, |m, _| m.sort.is_some()));
         cx.simulate_keystrokes("left right up down home end");
         cx.run_until_parked();
         assert_eq!(grid.read_with(cx, |g, _| g.viewport), viewport);
-        cx.simulate_keystrokes("space");
+        assert!(cx.update(|window, _| header_focus.is_focused(window)));
+        press(cx, "space");
         cx.run_until_parked();
         assert_eq!(
             model.read_with(cx, |m, _| m.sort.as_ref().unwrap().direction),
             SortDirection::Descending
         );
-        cx.simulate_keystrokes("enter");
+        press(cx, "enter");
         cx.run_until_parked();
         assert!(model.read_with(cx, |m, _| m.sort.is_none()));
+        assert!(cx.update(|window, _| header_focus.is_focused(window)));
+        assert_eq!(grid.read_with(cx, |g, _| g.viewport), viewport);
         click(cx, "grid-body");
         cx.simulate_keystrokes("ctrl-end");
         cx.run_until_parked();
@@ -1105,7 +1096,8 @@ mod tests {
                 );
             });
             click(cx, "sort-column-200");
-            cx.simulate_keystrokes("enter space");
+            press(cx, "enter");
+            press(cx, "space");
             cx.run_until_parked();
             assert!(model.read_with(cx, |m, _| m.sort.is_none()));
         }
@@ -1162,8 +1154,8 @@ mod tests {
     #[gpui::test]
     fn tab_traversal_reaches_headers_and_empty_pages_clear_virtual_cells(cx: &mut TestAppContext) {
         let (model, grid, cx) = fixture(cx);
-        cx.update(|window, _| window.focus_next());
-        cx.simulate_keystrokes("enter");
+        cx.update(|window, app| window.focus_next(app));
+        press(cx, "enter");
         cx.run_until_parked();
         assert_eq!(
             model.read_with(cx, |m, _| m.sort.as_ref().unwrap().column.clone()),
@@ -1236,9 +1228,9 @@ mod tests {
     ) {
         let (model, grid, cx) = fixture(cx);
         wheel(cx, -200.0 * COLUMN_WIDTH, -50.0 * ROW_HEIGHT, false);
-        cx.update(|window, _| window.blur());
-        cx.update(|window, _| window.focus_next());
-        cx.simulate_keystrokes("enter");
+        cx.update(|window, app| window.blur(app));
+        cx.update(|window, app| window.focus_next(app));
+        press(cx, "enter");
         assert_eq!(
             model.read_with(cx, |model, _| model.sort.as_ref().unwrap().column.clone()),
             "column_200"
@@ -1280,7 +1272,7 @@ mod tests {
         cx.run_until_parked();
         let header = cx.debug_bounds("sort-column-0").unwrap();
         cx.simulate_click(header.center(), Modifiers::default());
-        cx.simulate_keystrokes("enter");
+        press(cx, "enter");
         assert!(model.read_with(cx, |model, _| model.sort.is_none()));
     }
     #[gpui::test]
@@ -1324,14 +1316,46 @@ mod tests {
         grid.read_with(cx, |grid, _| println!("canvas grid: painted {} cells, cached {} shaped cells, header controls {}, production cell elements 0", grid.last_painted_cells, grid.visible_lines.len(), grid.visible_headers.len()));
     }
 
+    #[gpui::test]
+    fn active_theme_changes_reshape_cached_cells_and_row_numbers(cx: &mut TestAppContext) {
+        let (_, grid, cx) = fixture(cx);
+        let previous_colors = grid.read_with(cx, |grid, _| grid.line_colors.unwrap());
+        let viewport = grid.read_with(cx, |grid, _| grid.viewport);
+        cx.update(|window, app| {
+            use gpui::component::{Theme, ThemeMode};
+            let mode = if Theme::global(app).mode.is_dark() {
+                ThemeMode::Light
+            } else {
+                ThemeMode::Dark
+            };
+            Theme::change(mode, Some(window), app);
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        grid.read_with(cx, |grid, app| {
+            let palette = colors(app);
+            assert_ne!(grid.line_colors.unwrap(), previous_colors);
+            assert_eq!(grid.line_colors, Some((palette.text, palette.muted)));
+            assert_eq!(grid.viewport, viewport);
+            assert!(grid.last_shaped_cells > 0);
+            assert!(!grid.row_numbers.is_empty());
+        });
+    }
+
     #[test]
     fn column_icons_have_stable_type_categories() {
-        assert!(matches!(column_type_icon("BIGINT"), Icon::ColumnNumber));
-        assert!(matches!(column_type_icon("JSON"), Icon::ColumnJson));
-        assert!(matches!(column_type_icon("timestamp"), Icon::ColumnDate));
-        assert!(matches!(column_type_icon("VARBINARY"), Icon::ColumnBinary));
-        assert!(matches!(column_type_icon("VARCHAR"), Icon::ColumnText));
-        assert!(matches!(column_type_icon("BOOL"), Icon::Check));
+        assert!(matches!(column_type_icon("BIGINT"), "icons/hash.svg"));
+        assert!(matches!(column_type_icon("JSON"), "icons/braces.svg"));
+        assert!(matches!(
+            column_type_icon("timestamp"),
+            "icons/calendar-clock.svg"
+        ));
+        assert!(matches!(column_type_icon("VARBINARY"), "icons/binary.svg"));
+        assert!(matches!(
+            column_type_icon("VARCHAR"),
+            "icons/text-initial.svg"
+        ));
+        assert!(matches!(column_type_icon("BOOL"), "icons/check.svg"));
     }
     #[gpui::test]
     fn explicit_sort_button_cycles_once_and_preserves_where(cx: &mut TestAppContext) {

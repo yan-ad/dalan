@@ -4,7 +4,7 @@ Status: product and technical plan, not a release promise. This is the canonical
 
 ## Product contract
 
-- Rust + GPUI database workspace. DataGrip is the workflow reference; Zed-like compact UI and **Carbonfox - opaque** remain the visual direction.
+- Rust + GPUI Kit database workspace. DataGrip is the workflow reference; compact layout, **Kit standard controls and Kit's default theme** are the visual direction.
 - macOS first, Linux second, Windows third. Portable headless CI does not establish desktop support.
 - MySQL/MariaDB are the first implemented engines. PostgreSQL and Redis remain first-release targets; MongoDB follows the first release, as previously agreed. Other engines enter through tested driver capabilities, not compatibility labels.
 - AI connects only through **Agent Client Protocol (ACP)**. No application BYOK, direct provider adapters, provider-specific CLI protocols, or automatic database execution. External agents own model authentication and billing.
@@ -34,6 +34,14 @@ DBX is a source of reusable database and extension logic, not Dalan's product sh
 
 ## Now: consolidate the foundation before adding breadth
 
+### N0. Adopt the GPUI Kit component foundation
+
+Production now aliases `gpui` to `gpui-kit = 0.7.1` with `tree-sitter-sql`, on one coordinated `gpui-pre 0.3.8` family; the old GPUI 0.2 family is removed. Bootstrap/init and Base Root cover main/source/About/SSH windows. All standard controls use Kit and its default theme; Carbonfox runtime overrides are dropped while historical assets/notices remain. Thin InputState/privacy and rope SQL Editor adapters replace bespoke editing engines. Preserve app-owned models, credentials, cache, query policies and tabs.
+
+Kit inputs/buttons/checkboxes/tabs/dropdown and popup menus/tooltips are implemented; native dropdown alternatives are not claimed Combobox/Select usage. SQL Tree-sitter highlighting is enabled selectively (JSON is also in the graph), not all language bundles. Benchmark Kit DataTable before replacing the specialized shipping canvas; stateless Table is not the wide-result solution. Database-aware completion/history/per-statement execution remain pending Dalan features. See [migration guide](docs/gpui-kit-migration.md) and [ADR 0006](docs/adr/0006-gpui-kit-migration.md).
+
+**Completed gates:** current production tests/bundle, native startup and password/privacy/input regression parity, interactive 64 KiB rollback coverage and dependency alignment. **Remaining gates:** new-revision hosted CI, native visual/accessibility and representative performance evidence. Production adoption is implemented, not native certification. Historical populated-console and pilot tests must be rerun against production; DataTable pilot counts alone are not canvas parity.
+
 ### N1. Establish the DBX port boundary
 
 Completed starting point: attributed static catalog, distinct MySQL/MariaDB identities, optional-database/Unix-socket capability metadata for experimental drivers, and duplicate/invalid/planned-capability tests. Planned PostgreSQL/Redis entries expose no implemented capabilities. This descriptive catalog does not change connection behavior or establish a plugin ABI.
@@ -49,7 +57,7 @@ Completed starting point: attributed static catalog, distinct MySQL/MariaDB iden
 
 - Profile native wide-grid scrolling/frame time and memory on representative hardware; keep two-axis canvas rendering and retained-result limits. Structural render counts are not latency measurements.
 - Add cell inspection/copy and column resizing/auto-fit one by one, preserving exact NULL/binary/decimal semantics.
-- Add SQL highlighting, metadata-aware completion, and explicit opt-in history/draft recovery with retention/delete controls.
+- Build on implemented Kit SQL highlighting with metadata-aware completion and explicit opt-in history/draft recovery with retention/delete controls.
 - Introduce richer object metadata with `supported / unsupported / unknown` availability rather than fabricated fields.
 - Design pinned physical-session ownership before transactions/scripts/writes. Add cancel acknowledgements and uncertain outcomes before retry or write controls.
 

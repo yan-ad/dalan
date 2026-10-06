@@ -1,8 +1,14 @@
-# Vendored UI icons
+# UI icons: GPUI Kit assets
 
-The main UI icon set is [Lucide](https://github.com/lucide-icons/lucide), explicitly selected as an open-source icon set. The AI entry point uses **BotMessageSquare** (`bot-message-square.svg`) to communicate an AI agent conversation, not decorative sparkles.
+The historical vendored UI icon set is [Lucide](https://github.com/lucide-icons/lucide), explicitly selected as an open-source icon set. The AI entry point uses **BotMessageSquare** (`bot-message-square.svg`) to communicate an AI agent conversation, not decorative sparkles.
 
-## Provenance
+## Active asset source
+
+The desktop now uses the icon catalog shipped by **GPUI Kit 0.7.1** (`gpui-kit-assets`), resolved through the pinned umbrella dependency and `Cargo.lock`. `src/desktop/icons.rs` combines Kit's curated `Assets` default bundle with `icon_assets!` for the additional application glyphs; it does not embed the local SVG copies. Rendering uses `gpui::component::Icon` and semantic theme colors. The remaining application `Icon` enum is only a thin action-to-`gpui::assets::IconName` mapping. Controls can use Kit's names directly, without adding or downloading application-owned SVGs. The deprecated `icons/trash-2.svg` path remains a compatibility alias for Kit's canonical Trash asset.
+
+The complete `lucide-LICENSE.txt` is still embedded and distributed, including the Feather MIT notice. It matches the Kit 0.7.1 asset package's `LICENSE-LUCIDE`. Historical SVG copies and all provenance and license records below are retained, but they are no longer the runtime icon source. Updating the active set means updating the pinned Kit dependency and, only when necessary, the small explicit selection of non-default Kit names; do not refresh or maintain the historical SVG copies for UI changes.
+
+## Historical vendored provenance
 
 All thirty-six SVGs and `lucide-LICENSE.txt` were downloaded unchanged from the single pinned upstream Git revision:
 
@@ -59,7 +65,7 @@ The compact explorer reuses **Database** for schema/database children, **Folder*
 
 MySQL uses the abstract **Database** glyph; MariaDB uses the distinct abstract **DatabaseZap** glyph. These are not vendor logos or trademark artwork. Keep the visible engine name as the primary identifier; the glyph is a supplementary cue.
 
-`src/desktop/icons.rs` embeds these bytes with `include_bytes!` and exposes them through GPUI's `AssetSource`. The application must register `IconAssets` using `Application::new().with_assets(IconAssets)`. There are no additional npm/crate dependencies, runtime downloads, external resources, or icon fonts. GPUI renders SVG alpha masks with the requested text color; icons retain the upstream 24×24 viewBox and render at 16×16 UI pixels.
+Historically, `src/desktop/icons.rs` embedded these bytes with `include_bytes!` and exposed them through GPUI's `AssetSource`; the active source described above now delegates to Kit. The application must register `IconAssets` using `Application::new().with_assets(IconAssets)`. There are no additional npm/crate dependencies, runtime downloads, external resources, or icon fonts. GPUI renders SVG alpha masks with the requested text color; icons retain the upstream 24×24 viewBox and render at 16×16 UI pixels.
 
 ## Licensing and distribution
 
@@ -67,6 +73,6 @@ MySQL uses the abstract **Database** glyph; MariaDB uses the distinct abstract *
 
 See the repository's `THIRD_PARTY_NOTICES.md` for notices, including the GPUI-derived text input. These third-party notices do not select or change the license of this project.
 
-## Updating
+## Historical vendoring procedure (not required for Kit UI icons)
 
 Resolve one new official upstream commit, download all assets and the license from that same fixed commit, update this provenance record and `THIRD_PARTY_NOTICES.md`, then run the `ui-tests` icon tests. Review the complete upstream license when updating; do not drop the Feather notice.

@@ -15,16 +15,34 @@ use dalan_app::{
     ssh_config_store::{SshAuthentication, SshProfile, SshRepository},
 };
 use gpui::{
-    App, Bounds, Context, Div, Entity, KeyBinding, Stateful, Subscription, TitlebarOptions,
-    WeakEntity, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    AnyWindowHandle, App, Bounds, Context, Div, Entity, Global, KeyBinding, Subscription,
+    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
+use gpui::component::{
+    ActiveTheme, Disableable, Sizable,
+    button::Button as KitButton,
+    checkbox::Checkbox as KitCheckbox,
+    menu::{DropdownMenu as KitDropdown, PopupMenuItem},
+};
+struct ManagerSlot {
+    window: AnyWindowHandle,
+    view: WeakEntity<SshManager>,
+}
+impl Global for ManagerSlot {}
+pub(super) fn current_view(cx: &App) -> Option<Entity<SshManager>> {
+    cx.try_global::<ManagerSlot>()?.view.upgrade()
+}
+pub(super) fn current_window(cx: &App) -> Option<AnyWindowHandle> {
+    let slot = cx.try_global::<ManagerSlot>()?;
+    slot.view.upgrade()?;
+    cx.windows()
+        .into_iter()
+        .find(|window| *window == slot.window)
+}
 use super::{
-    CloseWindow, Dismiss, NextFocus, PreviousFocus,
-    icons::{Icon, icon},
-    input::TextInput,
+    CloseWindow, Dismiss, NextFocus, PreviousFocus, icons::Icon, input::TextInput,
     source_form::SourceForm,
-    theme::*,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,7 +67,6 @@ pub(super) struct SshManager {
     source_repository: Option<SourceRepository>,
     test_cancel: Option<Arc<AtomicBool>>,
     owner: WeakEntity<SourceForm>,
-    auth_open: bool,
     delete_confirmation: bool,
     picker_open: bool,
     revision: u64,
@@ -95,7 +112,6 @@ impl SshManager {
             source_repository: None,
             test_cancel: None,
             owner: owner.downgrade(),
-            auth_open: false,
             delete_confirmation: false,
             picker_open: false,
             revision: 0,
@@ -169,10 +185,8 @@ impl SshManager {
                         } else {
                             this.add(false, cx);
                         }
-                        this.inputs["ssh-name"]
-                            .read(cx)
-                            .focus_handle()
-                            .focus(window);
+                        let focus = this.inputs["ssh-name"].read(cx).focus_handle();
+                        focus.focus(window, cx);
                     }
                     Err(error) => this.error = Some(error.to_string()),
                 }
@@ -268,7 +282,6 @@ impl SshManager {
         self.revision += 1;
         self.error = None;
         self.feedback = None;
-        self.auth_open = false;
         self.delete_confirmation = false;
         cx.notify();
     }
@@ -496,51 +509,35 @@ impl SshManager {
         enabled: bool,
         action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let action = std::rc::Rc::new(action);
-        let keyboard_action = action.clone();
-        div()
-            .id(id)
+    ) -> KitButton {
+        let path = match symbol {
+            Icon::Add => "icons/plus.svg",
+            Icon::Remove => "icons/trash-2.svg",
+            Icon::Folder => "icons/folder.svg",
+            Icon::Check => "icons/check.svg",
+            Icon::Close => "icons/x.svg",
+            _ => "icons/settings-2.svg",
+        };
+        KitButton::new(id)
             .debug_selector(move || id.into())
-            .tab_index(0)
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .h(px(30.))
-            .px(px(9.))
-            .border_1()
-            .border_color(rgb(INPUT_BORDER))
-            .rounded(px(CONTROL_RADIUS))
-            .bg(rgb(PANEL))
-            .text_color(rgb(if enabled { TEXT } else { MUTED }))
-            .when(enabled, |style| {
-                style.cursor_pointer().hover(|s| s.bg(rgb(HOVER)))
-            })
-            .focus(|style| style.border_color(rgb(FOCUS)))
+            .small()
+            .icon(gpui::component::Icon::default().path(path))
+            .label(label)
+            .disabled(!enabled)
             .on_click(cx.listener(move |this, _, window, cx| {
                 if enabled {
                     action(this, window, cx);
                 }
             }))
-            .on_key_down(
-                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                    if enabled && matches!(event.keystroke.key.as_str(), "space" | "enter") {
-                        cx.stop_propagation();
-                        keyboard_action(this, window, cx);
-                    }
-                }),
-            )
-            .child(icon(symbol, if enabled { TEXT } else { MUTED }))
-            .child(label)
     }
 
-    fn field(&self, id: &'static str, label: &'static str) -> Div {
+    fn field(&self, id: &'static str, label: &'static str, cx: &App) -> Div {
         div()
             .flex()
             .flex_col()
             .gap(px(4.))
             .w_full()
-            .child(div().text_color(rgb(MUTED)).child(label))
+            .child(div().text_color(cx.theme().muted_foreground).child(label))
             .child(
                 div()
                     .id(id)
@@ -674,11 +671,15 @@ impl Render for SshManager {
                     .p(px(10.))
                     .gap(px(3.))
                     .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .bg(rgb(if selected { SELECTION } else { PANEL }))
+                    .border_color(cx.theme().border)
+                    .bg(if selected {
+                        cx.theme().list_active
+                    } else {
+                        cx.theme().background
+                    })
                     .cursor_pointer()
-                    .hover(|s| s.bg(rgb(HOVER)))
-                    .focus(|s| s.bg(rgb(SELECTION)))
+                    .hover(|s| s.bg(cx.theme().list_hover))
+                    .focus(|s| s.bg(cx.theme().list_active))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.editable()
                             && this.selected.as_ref() != Some(&id)
@@ -702,10 +703,15 @@ impl Render for SshManager {
                         }
                     }))
                     .child(profile.name.clone())
-                    .child(div().text_xs().text_color(rgb(MUTED)).child(format!(
-                        "{}@{}:{}",
-                        profile.user, profile.host, profile.port
-                    ))),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{}@{}:{}",
+                                profile.user, profile.host, profile.port
+                            )),
+                    ),
             );
         }
         let mut editor = div()
@@ -719,89 +725,76 @@ impl Render for SshManager {
             .gap(px(12.));
         if self.selected.is_some() {
             editor = editor
-                .child(self.field("ssh-name", "Name"))
+                .child(self.field("ssh-name", "Name", cx))
                 .child(
                     div()
                         .flex()
                         .gap(px(10.))
-                        .child(self.field("ssh-host", "Host"))
+                        .child(self.field("ssh-host", "Host", cx))
                         .child(
                             div()
                                 .w(px(90.))
                                 .flex_shrink_0()
-                                .child(self.field("ssh-port", "Port")),
+                                .child(self.field("ssh-port", "Port", cx)),
                         ),
                 )
-                .child(self.field("ssh-user", "User"));
+                .child(self.field("ssh-user", "User", cx));
             let auth_label = if self.auth == AuthChoice::Agent {
                 "SSH agent"
             } else {
                 "Key pair (file)"
             };
+            let manager = cx.entity().downgrade();
             editor = editor.child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(div().text_color(rgb(MUTED)).child("Authentication"))
-                    .child(self.button(
-                        "ssh-auth",
-                        auth_label,
-                        Icon::Chevron,
-                        enabled,
-                        |this, _, cx| {
-                            this.auth_open = !this.auth_open;
-                            cx.notify();
-                        },
-                        cx,
-                    )),
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Authentication"),
+                    )
+                    .child(
+                        KitButton::new("ssh-auth")
+                            .debug_selector(|| "ssh-auth".into())
+                            .small()
+                            .label(auth_label)
+                            .disabled(!enabled)
+                            .dropdown_menu(move |mut menu, _, _| {
+                                for (label, choice) in [
+                                    ("SSH agent", AuthChoice::Agent),
+                                    ("Key pair (file)", AuthChoice::KeyPair),
+                                ] {
+                                    let manager = manager.clone();
+                                    menu = menu.item(PopupMenuItem::new(label).on_click(
+                                        move |_, _, cx| {
+                                            if let Some(manager) = manager.upgrade() {
+                                                manager.update(cx, |this, cx| {
+                                                    if !this.editable() {
+                                                        return;
+                                                    }
+                                                    this.auth = choice;
+                                                    this.revision += 1;
+                                                    this.cancel_test();
+                                                    this.feedback = None;
+                                                    cx.notify();
+                                                });
+                                            }
+                                        },
+                                    ));
+                                }
+                                menu
+                            }),
+                    ),
             );
-            if self.auth_open {
-                editor = editor.child(
-                    div()
-                        .border_1()
-                        .border_color(rgb(INPUT_BORDER))
-                        .p(px(6.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(self.button(
-                            "ssh-auth-agent",
-                            "SSH agent",
-                            Icon::ReadOnly,
-                            enabled,
-                            |this, _, cx| {
-                                this.auth = AuthChoice::Agent;
-                                this.auth_open = false;
-                                this.revision += 1;
-                                this.feedback = None;
-                                cx.notify();
-                            },
-                            cx,
-                        ))
-                        .child(self.button(
-                            "ssh-auth-key",
-                            "Key pair (file)",
-                            Icon::ReadOnly,
-                            enabled,
-                            |this, _, cx| {
-                                this.auth = AuthChoice::KeyPair;
-                                this.auth_open = false;
-                                this.revision += 1;
-                                this.feedback = None;
-                                cx.notify();
-                            },
-                            cx,
-                        )),
-                );
-            }
             if self.auth == AuthChoice::KeyPair {
                 editor = editor.child(
                     div()
                         .flex()
                         .items_end()
                         .gap(px(8.))
-                        .child(self.field("ssh-key", "Private key file"))
+                        .child(self.field("ssh-key", "Private key file", cx))
                         .child(self.button(
                             "ssh-key-browse",
                             "Browse…",
@@ -812,24 +805,27 @@ impl Render for SshManager {
                         )),
                 );
             }
-            editor = editor.child(div().text_xs().text_color(rgb(MUTED))
+            editor = editor.child(div().text_xs().text_color(cx.theme().muted_foreground)
                 .child("Encrypted keys: unlock with ssh-add first. Password and passphrase storage are not supported."))
                 .child(div().flex().items_end().gap(px(8.))
-                    .child(self.field("ssh-known-hosts", "Known hosts file (optional)"))
+                    .child(self.field("ssh-known-hosts", "Known hosts file (optional)", cx))
                     .child(self.button("ssh-known-hosts-browse", "Browse…", Icon::Folder, enabled, |this, window, cx| this.browse("ssh-known-hosts", window, cx), cx)))
-                .child(self.button("ssh-parse-config", if self.parse_config { "☑ Parse ~/.ssh/config" } else { "☐ Parse ~/.ssh/config" }, Icon::Manage, enabled, |this, _, cx| {
-                    this.parse_config = !this.parse_config; this.revision += 1; this.feedback = None; cx.notify();
-                }, cx))
-                .child(div().text_xs().text_color(rgb(WARNING))
+                .child(KitCheckbox::new("ssh-parse-config").debug_selector(|| "ssh-parse-config".into())
+                    .label("Parse ~/.ssh/config").checked(self.parse_config).disabled(!enabled)
+                    .on_change(cx.listener(|this, checked: &bool, _, cx| {
+                        if !this.editable() { return; }
+                        this.parse_config = *checked; this.revision += 1; this.cancel_test(); this.feedback = None; cx.notify();
+                    })))
+                .child(div().text_xs().text_color(cx.theme().warning)
                     .child("Opt-in: SSH config can invoke ProxyCommand / Match exec locally. Enable only for trusted configuration files."))
-                .child(div().text_xs().text_color(rgb(MUTED))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground)
                     .child("Host keys must already be trusted. Test executes the harmless command ‘true’ remotely; it does not test the database or forwarding."));
         } else {
             editor =
                 editor.child("No SSH configuration selected. Add a configuration to get started.");
         }
         if self.delete_confirmation {
-            editor = editor.child(div().text_color(rgb(WARNING)).child("Remove this configuration from the draft? Click Confirm remove. Saved datasource references are checked on Apply / Use."))
+            editor = editor.child(div().text_color(cx.theme().warning).child("Remove this configuration from the draft? Click Confirm remove. Saved datasource references are checked on Apply / Use."))
                 .child(self.button("ssh-delete-confirm", "Confirm remove", Icon::Remove, enabled, |this, _, cx| this.remove(cx), cx))
                 .child(self.button("ssh-delete-cancel", "Keep configuration", Icon::Close, enabled, |this, _, cx| { this.delete_confirmation = false; cx.notify(); }, cx));
         }
@@ -840,16 +836,16 @@ impl Render for SshManager {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
-            .text_color(rgb(TEXT))
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
             .text_sm()
             .on_action(cx.listener(|_, _: &NextFocus, window, cx| {
                 cx.stop_propagation();
-                window.focus_next();
+                window.focus_next(cx);
             }))
             .on_action(cx.listener(|_, _: &PreviousFocus, window, cx| {
                 cx.stop_propagation();
-                window.focus_prev();
+                window.focus_prev(cx);
             }))
             .on_action(cx.listener(|this, _: &CloseWindow, window, _| this.close(window)))
             .on_action(cx.listener(|this, _: &Dismiss, window, _| this.close(window)))
@@ -857,11 +853,16 @@ impl Render for SshManager {
                 div()
                     .p(px(12.))
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(cx.theme().border)
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(icon(Icon::Manage, TEXT))
+                    .child(
+                        gpui::svg()
+                            .path("icons/settings-2.svg")
+                            .size(px(16.))
+                            .text_color(cx.theme().foreground),
+                    )
                     .child("SSH Configurations")
                     .child(div().flex_1())
                     .child(self.button(
@@ -901,7 +902,7 @@ impl Render for SshManager {
                             .flex()
                             .flex_col()
                             .border_r_1()
-                            .border_color(rgb(BORDER))
+                            .border_color(cx.theme().border)
                             .child(list),
                     )
                     .child(editor),
@@ -912,10 +913,14 @@ impl Render for SshManager {
                     .py(px(6.))
                     .min_h(px(32.))
                     .when_some(self.error.clone(), |s, error| {
-                        s.child(div().text_color(rgb(ERROR)).child(error))
+                        s.child(div().text_color(cx.theme().danger).child(error))
                     })
                     .when_some(self.feedback.clone(), |s, feedback| {
-                        s.child(div().text_color(rgb(MUTED)).child(feedback))
+                        s.child(
+                            div()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(feedback),
+                        )
                     })
                     .when(self.busy && !self.loaded, |s| {
                         s.child("Loading SSH configurations…")
@@ -929,7 +934,7 @@ impl Render for SshManager {
                     .gap(px(8.))
                     .p(px(12.))
                     .border_t_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(cx.theme().border)
                     .child(self.button(
                         "ssh-test",
                         "Test Connection",
@@ -983,28 +988,30 @@ pub(super) fn bind_keys(cx: &mut App) {
 }
 
 pub(super) fn show(owner: Entity<SourceForm>, selected: Option<String>, cx: &mut App) {
-    if let Some(handle) = cx
-        .windows()
-        .into_iter()
-        .find_map(|handle| handle.downcast::<SshManager>())
+    if let Some(manager) = current_view(cx)
+        && let Some(window) = current_window(cx)
+        && cx
+            .update_window(window, |_, window, cx| {
+                manager.update(cx, |manager, cx| {
+                    if manager.owner.entity_id() != owner.entity_id() && !manager.saving {
+                        manager.owner = owner.downgrade();
+                        if let Some(id) = selected.clone()
+                            && manager.commit_current(cx)
+                        {
+                            manager.select(id, cx);
+                        }
+                    }
+                    cx.notify();
+                });
+                window.activate_window();
+            })
+            .is_ok()
     {
-        let _ = handle.update(cx, |manager, window, cx| {
-            if manager.owner.entity_id() != owner.entity_id() && !manager.saving {
-                manager.owner = owner.downgrade();
-                if let Some(id) = selected
-                    && manager.commit_current(cx)
-                {
-                    manager.select(id, cx);
-                }
-            }
-            cx.notify();
-            window.activate_window();
-        });
         return;
     }
     let bounds = Bounds::centered(None, size(px(900.), px(760.)), cx);
     // Opening failure leaves the owning form and its draft untouched.
-    let _ = cx.open_window(
+    if let Ok((window, view)) = gpui::open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(760.), px(620.))),
@@ -1015,8 +1022,14 @@ pub(super) fn show(owner: Entity<SourceForm>, selected: Option<String>, cx: &mut
             }),
             ..Default::default()
         },
+        cx,
         |window, cx| cx.new(|cx| SshManager::new(owner, selected, window, cx)),
-    );
+    ) {
+        cx.set_global(ManagerSlot {
+            window,
+            view: view.downgrade(),
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1126,20 +1139,24 @@ mod ui_tests {
         model.update(cx, |model, cx| model.new_source(cx));
         let profile = model.read_with(cx, |model, _| model.form_profile.clone().unwrap());
         let owner = cx.new(|cx| SourceForm::new(profile, model, cx));
-        let (manager, visual) = cx.add_window_view(|window, cx| {
-            let owner = owner.clone();
-            {
-                let mut manager = SshManager::with_repository(
-                    owner,
-                    Some(files.profile.id.clone()),
-                    Ok(files.ssh.clone()),
-                    window,
-                    cx,
-                );
-                manager.source_repository = Some(files.sources.clone());
-                manager
-            }
+        let (window, manager) = cx.update(|cx| {
+            gpui::init(cx);
+            gpui::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut manager = SshManager::with_repository(
+                        owner.clone(),
+                        Some(files.profile.id.clone()),
+                        Ok(files.ssh.clone()),
+                        window,
+                        cx,
+                    );
+                    manager.source_repository = Some(files.sources.clone());
+                    manager
+                })
+            })
+            .unwrap()
         });
+        let visual = VisualTestContext::from_window(window, cx).into_mut();
         visual.simulate_resize(size(px(900.), px(760.)));
         visual.refresh().unwrap();
         visual.run_until_parked();

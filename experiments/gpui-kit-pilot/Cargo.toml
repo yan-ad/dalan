@@ -1,0 +1,21 @@
+[package]
+name = "dalan-kit-pilot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+# Deliberately isolated: Kit's gpui-pre 0.3.8 cannot share entities with GPUI 0.2.2.
+[workspace]
+resolver = "2"
+
+[dependencies]
+gpui-kit = { version = "=0.7.1", features = ["tree-sitter-sql"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Explicit macOS runtime shader support (also forwarded by Kit's platform).
+# Retained as a platform workaround probe; no second GPUI version is introduced.
+gpui-pre-macos = { version = "=0.3.8", features = ["runtime_shaders"] }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.7.1", features = ["test-support", "tree-sitter-sql"] }

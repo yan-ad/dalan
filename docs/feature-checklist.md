@@ -69,7 +69,19 @@ Asset provenance documents trash-2.svg as unchanged upstream trash.svg at the sa
 - [x] Historical metadata suites passed 67 headless, 83 simulated UI and four Python tests, formatting/lint/bundle checks and 7 direct/auth/CONNECT + 10 TLS + 6 SSH live cases. Commit `4c8af09` passed all five hosted jobs in [run 37201696519](https://github.com/yan-ad/dalan/actions/runs/37201696519).
 - [ ] Current icon-led-revision hosted CI; native macOS offline/source-save/refresh/error/keyboard/accessibility review. Historical theme CI is recorded below; no native Keychain rerun or production endpoint success is claimed.
 
-## Carbonfox compact foundation
+## Production Kit foundation
+
+- [x] Root `gpui` alias to Kit 0.7.1 with SQL grammar, coordinated GPUI pre-release 0.3.8; old 0.2 family removed.
+- [x] Kit application/init/open_window Base Root in main/source/About/SSH windows; Kit for all standard Button/Input/Checkbox/tab/dropdown/popup/tooltip controls.
+- [x] Kit default theme and active semantic `Hsla` colors for app paint; no fixed app palette/Carbonfox runtime override. Historical assets and notices retained.
+- [x] Thin InputState value adapter and delegating password OS surrounding-text privacy handler, with Kit masked copy/cut protections and native edits/IME/selection.
+- [x] Thin rope EditorState SQL adapter with Tree-sitter highlighting/native selection/undo/IME; specialized two-axis canvas retained, not replaced by pilot DataTable.
+- [ ] Current production test/lint/bundle/CI and native font/shader/window/privacy/menu/accessibility/performance gates; interactive 64 KiB edit/IME/paste regressions. No atomic rejection guarantee claimed until verified.
+- [ ] Database-aware completion, persistent history/scripts and PostgreSQL/MongoDB/Redis executors; enum/menu/grammar presence is not engine support. MySQL/MariaDB remain experimental.
+
+## Historical Carbonfox compact foundation (superseded)
+
+The following palette checks/counts apply only to the earlier Carbonfox revision, not Kit runtime. Later checklist references to Carbonfox styling and the bespoke SQL editor's 100-state undo/geometry/indent behavior are historical too; the production section and current query guide supersede them.
 
 - [x] User-selected **Carbonfox - opaque** default and compact Zed-like UI. DataGrip visual styling/button-heavy layout explicitly rejected; database UX/workflows only remain references.
 - [x] Full exact variant vendored from Nightfox Zed port commit `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`, with both full MIT licenses and separate original-project license provenance. Runtime uses compiled tokens, not JSON; no affiliation or other Zed source/editor asset import. See [theme record](../crates/app/assets/themes/README.md).

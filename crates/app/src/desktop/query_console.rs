@@ -1,16 +1,21 @@
 //! Independent read-only SQL console. The draft belongs to the editor; result
 //! notifications never reload it or disturb its selection/undo history.
 use gpui::{
-    App, Context, Div, Entity, FocusHandle, Focusable, KeyBinding, Stateful, Subscription, Window,
-    actions, div, prelude::*, px, relative, rgb, uniform_list,
+    App, Context, Div, Entity, FocusHandle, Focusable, KeyBinding, Subscription, Window, actions,
+    div, prelude::*, px, relative,
 };
 
 use super::{
     data_grid::DataGrid,
-    icons::{Icon, icon},
     source_model::SourceModel,
     sql_editor::SqlEditor,
-    theme::*,
+    theme::{STATUS_HEIGHT, TOOLBAR_HEIGHT},
+};
+
+use gpui::component::{
+    ActiveTheme, Disableable, Icon, Sizable,
+    button::Button as KitButton,
+    menu::{DropdownMenu, PopupMenuItem},
 };
 
 actions!(query_console, [RunQuery, CancelQuery]);
@@ -29,8 +34,6 @@ pub(super) struct QueryConsole {
     grid: Entity<DataGrid>,
     last_text: String,
     databases: Vec<Option<String>>,
-    database_menu: bool,
-    controls: [FocusHandle; 4],
     _subscriptions: Vec<Subscription>,
 }
 
@@ -73,8 +76,6 @@ impl QueryConsole {
             grid,
             last_text,
             databases: Vec::new(),
-            database_menu: false,
-            controls: std::array::from_fn(|_| cx.focus_handle().tab_stop(true).tab_index(20)),
             _subscriptions: subscriptions,
         };
         this.refresh_databases(cx);
@@ -82,7 +83,8 @@ impl QueryConsole {
     }
 
     pub(super) fn focus(&self, window: &mut Window, cx: &mut App) {
-        self.editor.read(cx).focus_handle().focus(window);
+        let handle = self.editor.read(cx).focus_handle();
+        handle.focus(window, cx);
     }
 
     fn refresh_databases(&mut self, cx: &mut Context<Self>) {
@@ -138,13 +140,20 @@ impl QueryConsole {
         }
     }
 
-    fn choose_database(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn choose_database(
+        &mut self,
+        database: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.model.read(cx).busy || self.model.read(cx).saving {
             return;
         }
-        let Some(database) = self.databases.get(index).cloned() else {
+        // A metadata notification can reorder choices while the popup is open.
+        // Resolve the captured value, not an index into the refreshed catalog.
+        if !self.databases.contains(&database) {
             return;
-        };
+        }
         let names = self.databases.iter().flatten().cloned().collect();
         self.model.update(cx, |model, cx| {
             // Metadata can arrive after this independent tab was forked.
@@ -152,64 +161,8 @@ impl QueryConsole {
             model.databases = names;
             model.select_console_database(database, cx);
         });
-        self.database_menu = false;
         self.focus(window, cx);
         cx.notify();
-    }
-
-    fn control(
-        &self,
-        index: usize,
-        id: &'static str,
-        disabled: bool,
-        tooltip: &'static str,
-        cx: &mut Context<Self>,
-        activate: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + Clone + 'static,
-    ) -> Stateful<Div> {
-        let click = activate.clone();
-        let focus = self.controls[index].clone();
-        div()
-            .id(id)
-            .debug_selector(move || id.into())
-            .track_focus(&focus)
-            .tab_stop(!disabled)
-            .flex()
-            .items_center()
-            .justify_center()
-            .h(px(CONTROL_HEIGHT))
-            .min_w(px(CONTROL_HEIGHT))
-            .flex_shrink_0()
-            .rounded(px(CONTROL_RADIUS))
-            .border_1()
-            .border_color(rgb(PANEL))
-            .bg(rgb(PANEL))
-            .text_color(rgb(if disabled { MUTED } else { TEXT }))
-            .focus(|style| style.border_color(rgb(FOCUS)))
-            .when(!disabled, |el| {
-                el.cursor_pointer().hover(|style| style.bg(rgb(HOVER)))
-            })
-            .tooltip(move |_, cx| cx.new(|_| super::ControlTooltip(tooltip)).into())
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |this, _, window, _| {
-                    if !disabled {
-                        this.controls[index].focus(window);
-                    }
-                }),
-            )
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if !disabled {
-                    click(this, window, cx);
-                }
-            }))
-            .on_key_down(
-                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                    if !disabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        activate(this, window, cx);
-                    }
-                }),
-            )
     }
 }
 
@@ -258,35 +211,88 @@ impl Render for QueryConsole {
             "Run a single read-only query".to_owned()
         };
 
-        let toolbar = div().flex().items_center().h(px(TOOLBAR_HEIGHT)).flex_shrink_0()
-            .bg(rgb(PANEL)).border_b_1().border_color(rgb(BORDER)).gap(px(4.))
-            .child(self.control(0, "query-run", disabled,
-                "Run selection or entire query (Cmd-Enter)", cx, |this, _, cx| this.run(cx))
-                .w(px(28.)).child(icon(Icon::Play, if disabled { MUTED } else { TEXT })))
-            .child(self.control(1, "query-cancel", !busy,
-                "Cancel query (Cmd-.)", cx, |this, _, cx| this.cancel(cx))
-                .w(px(28.)).child(icon(Icon::Stop, if busy { TEXT } else { MUTED })))
-            .child(self.control(2, "query-database", disabled,
-                "Default database for unqualified table names; no default permits fully qualified queries",
-                cx, |this, _, cx| {
-                    if !this.model.read(cx).busy && !this.model.read(cx).saving {
-                        this.database_menu = !this.database_menu;
-                        cx.notify();
-                    }
-                }).max_w(px(280.)).px(px(6.)).gap(px(5.))
-                .child(icon(Icon::Database, MUTED))
-                .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().child(database))
-                .child(icon(Icon::Chevron, MUTED)))
-            .child(div().id("query-read-only").w(px(28.)).flex().justify_center()
-                .child(icon(Icon::ReadOnly, MUTED))
-                .tooltip(|_, cx| cx.new(|_| super::ControlTooltip(
-                    "Read-only: one SELECT, CTE, or UNION query. No writes or multiple statements."
-                )).into()))
+        let theme = cx.theme().clone();
+        let owner = cx.entity().downgrade();
+        let choices = self.databases.clone();
+        let selected_database = model.selected_database.clone();
+        let toolbar = div()
+            .flex()
+            .items_center()
+            .h(px(TOOLBAR_HEIGHT))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(theme.border)
+            .gap(px(4.))
+            .child(
+                KitButton::new("query-run")
+                    .small()
+                    .debug_selector(|| "query-run".into())
+                    .icon(Icon::empty().path("icons/play.svg"))
+                    .disabled(disabled)
+                    .tooltip("Run selection or entire query (Cmd-Enter)")
+                    .on_click(cx.listener(|this, _, _, cx| this.run(cx))),
+            )
+            .child(
+                KitButton::new("query-cancel")
+                    .small()
+                    .debug_selector(|| "query-cancel".into())
+                    .icon(Icon::empty().path("icons/circle-stop.svg"))
+                    .disabled(!busy)
+                    .tooltip("Cancel query (Cmd-.)")
+                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+            )
+            .child(
+                KitButton::new("query-database")
+                    .small()
+                    .debug_selector(|| "query-database".into())
+                    .label(database)
+                    .icon(Icon::empty().path("icons/database.svg"))
+                    .disabled(disabled)
+                    .dropdown_caret(true)
+                    .tooltip("Default database for unqualified table names")
+                    .max_w(px(280.))
+                    .dropdown_menu(move |mut menu, _, _| {
+                        // Build choices only when opened. PopupMenu owns keyboard,
+                        // dismissal and focus behavior; no parallel hand-rolled menu.
+                        for database in &choices {
+                            let owner = owner.clone();
+                            let choice = database.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(
+                                    database
+                                        .clone()
+                                        .unwrap_or_else(|| "No default database".into()),
+                                )
+                                .checked(*database == selected_database)
+                                .on_click(move |_, window, cx| {
+                                    let _ = owner.update(cx, |this, cx| {
+                                        this.choose_database(choice.clone(), window, cx)
+                                    });
+                                }),
+                            );
+                        }
+                        menu.max_h(px(224.))
+                    }),
+            )
+            .child(
+                KitButton::new("query-read-only")
+                    .small()
+                    .icon(Icon::empty().path("icons/lock-keyhole.svg"))
+                    .disabled(true)
+                    .tooltip("Read-only: one SELECT, CTE, or UNION query"),
+            )
             .child(div().flex_1())
-            .child(self.control(3, "query-export", export_disabled,
-                "Export only the loaded result rows to a new CSV file", cx, |this, _, cx| {
-                    this.model.update(cx, |model, cx| model.request_export(cx));
-                }).w(px(28.)).child(icon(Icon::Download, if export_disabled { MUTED } else { TEXT })));
+            .child(
+                KitButton::new("query-export")
+                    .small()
+                    .debug_selector(|| "query-export".into())
+                    .icon(Icon::empty().path("icons/download.svg"))
+                    .disabled(export_disabled)
+                    .tooltip("Export loaded result rows to a new CSV file")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.model.update(cx, |model, cx| model.request_export(cx));
+                    })),
+            );
 
         div()
             .id("query-console")
@@ -298,21 +304,11 @@ impl Render for QueryConsole {
             .min_w(px(0.))
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
-            .text_color(rgb(TEXT))
+            .bg(theme.background)
+            .text_color(theme.foreground)
             .text_size(px(12.))
             .on_action(cx.listener(|this, _: &RunQuery, _, cx| this.run(cx)))
             .on_action(cx.listener(|this, _: &CancelQuery, _, cx| this.cancel(cx)))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                // Escape dismisses only this popup; never cancel an idle console
-                // or steal Escape from editor composition/workspace handlers.
-                if event.keystroke.key == "escape" && this.database_menu {
-                    this.database_menu = false;
-                    this.focus(window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
             .child(toolbar)
             .child(
                 div()
@@ -322,28 +318,34 @@ impl Render for QueryConsole {
                     .max_h(px(400.))
                     .flex_shrink_0()
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(theme.border)
                     .child(self.editor.clone()),
             )
-            .when_some(editor_error, |el, error| el.child(notice(error, ERROR)))
-            .when_some(error, |el, error| el.child(notice(error, ERROR)))
-            .children(warnings.into_iter().map(|warning| notice(warning, WARNING)))
-            .when(self.model.read(cx).result_evicted, |el| el.child(notice("Previous result released to limit memory. Run the query again to load results; the SQL draft is retained.".into(), MUTED)))
+            .when_some(editor_error, |el, error| el.child(notice(error, theme.danger)))
+            .when_some(error, |el, error| el.child(notice(error, theme.danger)))
+            .children(warnings.into_iter().map(|warning| notice(warning, theme.warning)))
+            .when(self.model.read(cx).result_evicted, |el| el.child(notice("Previous result released to limit memory. Run the query again to load results; the SQL draft is retained.".into(), theme.muted_foreground)))
             .when(dirty_results, |el| {
                 el.child(notice(
                     "Results belong to the submitted query; the draft has changed.".into(),
-                    WARNING,
+                    theme.warning,
                 ))
             })
             .child(
                 div()
+                    .id("query-result-pane")
+                    .debug_selector(|| "query-result-pane".into())
+                    // DataGrid is a flex child: a plain block wrapper leaves its
+                    // auto height at zero despite this pane having spare space.
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_h(px(0.))
                     .min_w(px(0.))
                     .overflow_hidden()
                     .child(self.grid.clone()),
             )
-            .when_some(feedback, |el, message| el.child(notice(message, MUTED)))
+            .when_some(feedback, |el, message| el.child(notice(message, theme.muted_foreground)))
             .child(
                 div()
                     .id("query-status")
@@ -352,90 +354,21 @@ impl Render for QueryConsole {
                     .flex()
                     .items_center()
                     .px(px(8.))
-                    .text_color(rgb(MUTED))
+                    .text_color(theme.muted_foreground)
                     .border_t_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(theme.border)
                     .child(status),
             )
-            .when(self.database_menu && !disabled, |el| {
-                el.child(
-                    div()
-                        .id("query-database-menu")
-                        .debug_selector(|| "query-database-menu".into())
-                        .absolute()
-                        .top(px(TOOLBAR_HEIGHT))
-                        .left(px(64.))
-                        .w(px(280.))
-                        .h(px((self.databases.len() as f32 * 28.).min(224.)))
-                        .bg(rgb(CHROME))
-                        .border_1()
-                        .border_color(rgb(INPUT_BORDER))
-                        .occlude()
-                        .child(
-                            uniform_list(
-                                "query-database-list",
-                                self.databases.len(),
-                                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                                    range
-                                        .map(|index| {
-                                            let database = this.databases[index].clone();
-                                            let selected =
-                                                this.model.read(cx).selected_database == database;
-                                            let id: gpui::SharedString =
-                                                format!("query-database-{index}").into();
-                                            let debug_id = id.clone();
-                                            div()
-                                                .id(id)
-                                                .debug_selector(move || debug_id.clone().into())
-                                                .tab_index(20)
-                                                .tab_stop(true)
-                                                .border_1()
-                                                .border_color(rgb(CHROME))
-                                                .focus(|style| style.border_color(rgb(FOCUS)))
-                                                .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                                        cx.stop_propagation();
-                                                        this.choose_database(index, window, cx);
-                                                    }
-                                                }))
-                                                .h(px(28.))
-                                                .px(px(8.))
-                                                .flex()
-                                                .items_center()
-                                                .bg(rgb(if selected { SELECTION } else { CHROME }))
-                                                .text_color(rgb(if selected {
-                                                    FOCUS
-                                                } else {
-                                                    TEXT
-                                                }))
-                                                .cursor_pointer()
-                                                .hover(|style| style.bg(rgb(HOVER)))
-                                                .child(database.unwrap_or_else(|| {
-                                                    "No default database".into()
-                                                }))
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.choose_database(index, window, cx);
-                                                    },
-                                                ))
-                                        })
-                                        .collect()
-                                }),
-                            )
-                            .size_full(),
-                        ),
-                )
-            })
     }
 }
 
-fn notice(message: String, color: u32) -> Div {
+fn notice(message: String, color: gpui::Hsla) -> Div {
     // Wrap real validation/server errors rather than hiding them behind a tooltip.
     div()
         .flex_shrink_0()
         .px(px(8.))
         .py(px(4.))
-        .text_color(rgb(color))
+        .text_color(color)
         .child(message)
 }
 
@@ -447,6 +380,7 @@ mod tests {
     use gpui::TestAppContext;
 
     fn fixture(cx: &mut TestAppContext) -> (Entity<QueryConsole>, Entity<SourceModel>) {
+        cx.update(gpui::init);
         let profile = SourceProfile {
             database: Some("quoted ` database".into()),
             ..Default::default()
@@ -531,19 +465,19 @@ mod tests {
     #[gpui::test]
     fn database_popup_uses_cached_names_and_guards_busy_changes(cx: &mut TestAppContext) {
         let (view, model) = fixture(cx);
-        let (_, cx) = cx.add_window_view(|_, _| ConsoleTestRoot(view.clone()));
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| ConsoleTestRoot(view.clone()));
+            gpui::base::Root::new(content, window, cx)
+        });
         cx.simulate_resize(gpui::size(px(900.), px(600.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
         let bounds = cx.debug_bounds("query-database").unwrap();
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
         cx.run_until_parked();
-        assert!(cx.debug_bounds("query-database-menu").is_some());
-        let bounds = cx.debug_bounds("query-database-0").unwrap();
-        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        cx.simulate_keystrokes("down enter");
         cx.run_until_parked();
         assert!(model.read_with(cx, |model, _| model.selected_database.is_none()));
-        assert!(!view.read_with(cx, |view, _| view.database_menu));
         assert!(cx.update(|window, app| view.read(app).focus_handle(app).is_focused(window)));
         model.update(cx, |model, cx| {
             model.busy = true;
@@ -553,8 +487,165 @@ mod tests {
         let bounds = cx.debug_bounds("query-database").unwrap();
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
         cx.run_until_parked();
-        assert!(!view.read_with(cx, |view, _| view.database_menu));
         assert!(model.read_with(cx, |model, _| model.selected_database.is_none()));
+    }
+
+    // Exercise the real console -> result pane -> DataGrid hierarchy, not a
+    // standalone grid harness or an empty console. No query/connection is run.
+    fn populated_fixture(cx: &mut TestAppContext) -> (Entity<QueryConsole>, Entity<SourceModel>) {
+        use dalan_drivers::mysql::{CellValue, ColumnInfo, TablePage};
+        let (view, model) = fixture(cx);
+        model.update(cx, |model, cx| {
+            assert!(model.query_console);
+            assert!(model.selected_source.is_some());
+            assert!(model.selected_database.is_some());
+            model.page = Some(std::sync::Arc::new(TablePage {
+                columns: (0..128)
+                    .map(|column| ColumnInfo {
+                        name: if column == 0 {
+                            "id".into()
+                        } else {
+                            format!("document_{column}")
+                        },
+                        data_type: if column == 0 {
+                            "BIGINT".into()
+                        } else {
+                            "JSON".into()
+                        },
+                        nullable: false,
+                        is_primary_key: column == 0,
+                    })
+                    .collect(),
+                rows: (0..100)
+                    .map(|row| {
+                        (0..128)
+                            .map(|column| {
+                                if column == 0 {
+                                    CellValue::Number(row.to_string())
+                                } else {
+                                    CellValue::Text(
+                                        serde_json::json!({"row": row, "column": column})
+                                            .to_string(),
+                                    )
+                                }
+                            })
+                            .collect()
+                    })
+                    .collect(),
+                has_more: true,
+                next_offset: Some(100),
+                offset: 0,
+                truncated: false,
+            }));
+            model.query_dirty = false;
+            model.busy = false;
+            model.error = None;
+            model.query_warnings = vec!["Result limited to 100 loaded rows.".into()];
+            cx.notify();
+        });
+        cx.run_until_parked();
+        (view, model)
+    }
+
+    fn assert_result_geometry(cx: &mut gpui::VisualTestContext) {
+        let pane = cx.debug_bounds("query-result-pane").unwrap();
+        let body = cx.debug_bounds("grid-body").unwrap();
+        eprintln!("query result pane: {pane:?}; grid body: {body:?}");
+        assert!(
+            pane.size.height > px(100.),
+            "result pane collapsed: {pane:?}"
+        );
+        assert!(body.size.width > px(0.), "grid body has no width: {body:?}");
+        assert!(body.size.height > px(0.), "grid body collapsed: {body:?}");
+        assert!(body.origin.y >= pane.origin.y);
+        assert!(body.bottom() <= pane.bottom());
+    }
+
+    fn assert_populated_console(cx: &mut TestAppContext, width: f32, height: f32) {
+        use dalan_app::grid_viewport::{COLUMN_WIDTH, ROW_HEIGHT};
+        let (view, model) = populated_fixture(cx);
+        let editor = view.read_with(cx, |view, _| view.editor.clone());
+        let draft = editor.read_with(cx, |editor, _| editor.value());
+        let grid = view.read_with(cx, |view, _| view.grid.clone());
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| ConsoleTestRoot(view.clone()));
+            gpui::base::Root::new(content, window, cx)
+        });
+        cx.simulate_resize(gpui::size(px(width), px(height)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        assert_result_geometry(cx);
+        assert!(cx.debug_bounds("sort-column-0").is_some());
+        assert!(cx.debug_bounds("cell-0-0").is_some());
+        grid.read_with(cx, |grid, _| {
+            let viewport = grid.test_viewport();
+            assert!(viewport.width > 0. && viewport.height > 0.);
+            assert!(grid.test_materialized_cells() > 0);
+            assert!(grid.test_materialized_cells() < 100 * 128);
+        });
+        model.read_with(cx, |model, _| {
+            let page = model.page.as_ref().unwrap();
+            assert_eq!(page.rows.len(), 100);
+            assert_eq!(page.columns.len(), 128);
+        });
+        let position = cx.debug_bounds("grid-body").unwrap().center();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(
+                px(-100. * COLUMN_WIDTH),
+                px(-50. * ROW_HEIGHT),
+            )),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        let header = cx.debug_bounds("sort-column-100").unwrap();
+        let cell = cx.debug_bounds("cell-50-100").unwrap();
+        assert_eq!(header.origin.x, cell.origin.x);
+        assert_eq!(header.size.width, cell.size.width);
+        grid.read_with(cx, |grid, _| {
+            let viewport = grid.test_viewport();
+            assert_eq!(viewport.x, 100. * COLUMN_WIDTH);
+            assert_eq!(viewport.y, 50. * ROW_HEIGHT);
+        });
+
+        // Retained results must remain visible during work and after failure,
+        // including the stale-result notice and ordinary row-cap warning.
+        for busy in [true, false] {
+            model.update(cx, |model, cx| {
+                model.busy = busy;
+                model.query_dirty = true;
+                model.error = (!busy).then(|| "Synthetic query failure".into());
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_result_geometry(cx);
+            assert!(cx.debug_bounds("cell-50-100").is_some());
+            assert_eq!(editor.read_with(cx, |editor, _| editor.value()), draft);
+        }
+        model.update(cx, |model, cx| {
+            model.page = None;
+            model.error = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // Debug bounds can retain selectors from old frames: inspect the grid's
+        // actual materialization after clearing rather than their absence.
+        assert!(model.read_with(cx, |model, _| model.page.is_none()));
+        assert_eq!(
+            grid.read_with(cx, |grid, _| grid.test_materialized_cells()),
+            0
+        );
+        assert_eq!(editor.read_with(cx, |editor, _| editor.value()), draft);
+    }
+
+    #[gpui::test]
+    fn populated_results_have_a_viewport_and_scroll_at_desktop_size(cx: &mut TestAppContext) {
+        assert_populated_console(cx, 1040., 760.);
+    }
+
+    #[gpui::test]
+    fn populated_results_have_a_viewport_and_scroll_at_compact_size(cx: &mut TestAppContext) {
+        assert_populated_console(cx, 780., 560.);
     }
 
     struct ConsoleTestRoot(Entity<QueryConsole>);

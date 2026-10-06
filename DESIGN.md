@@ -1,141 +1,45 @@
 # Dalan design direction
 
-Status: adopted compact Carbonfox UI foundation, with an experimental read-only database workspace. This is not a finished SQL client, accessibility certification, or completed brand identity. **Dalan** means “ways” in Javanese. The supplied Icon Composer artwork now defines the application logo/icon; utility icons remain separate.
+Status: production GPUI Kit standard-control/default-theme foundation with an experimental read-only database workspace. This is not a finished SQL client, native visual approval or accessibility certification. **Dalan** means “ways” in Javanese.
 
-## Rich table interaction contract
+## Current visual direction
 
-DataGrip informs table workflows, **not styling**: Carbonfox - opaque, quiet chrome and meaningful source/table names remain. The current browser has name-only ellipsized column headers with type/primary-key icons and full metadata tooltips, separate ascending/descending/default sort click targets, and a pinned 44 px row-number gutter (`offset + row + 1`). Header Enter/Space sorts; the glyph stops propagation to avoid double cycling. Qualified table titles and workspace tab names ellipsize with full context; sorting is not duplicated in the title.
+The user now requires **all standard controls from GPUI Kit and Kit's default theme**. This supersedes the earlier Carbonfox - opaque runtime direction. DataGrip informs database workflows, not styling; compact database-only layout remains application-owned. Kit Button, Input, Checkbox, tabs, dropdown/popup menus and tooltips supply standard interaction rather than custom lookalikes. Driver/authentication menus and saved SSH popup choices are functional native dropdown alternatives, not claimed Combobox/Select usage.
 
-WHERE/list-filter and ORDER BY/arrow-down-up are editable single-line drafts. Enter/Apply validates and submits both, typing never fetches, and malformed conditions retain visibly stale rows. The old column/operator/value toolbar below is historical. Apply/check, Clear/minus, Refresh/owned Cancel, loaded Export, Previous/Next and range footer remain functional; no inactive DDL/history/transaction menus or mutation tools are added. Query headers remain nonsortable.
+`desktop/theme.rs` retains compact layout metrics and maps active Kit semantic `Hsla` values for shell and specialized grid paint. It does not install a fixed palette or Carbonfox override. Theme initialization/selection belongs to Kit; no app-specific theme toggle or exact initial light/dark appearance is promised. Old Carbonfox contrast numbers do not validate this theme. Native screenshots, high-DPI/text scaling, VoiceOver and performance remain separate gates.
 
-The production body is direct canvas paint with cached shaped text and row/grid quads, **zero per-cell Divs**, and native interactive header controls. Preview/fit ellipses are grapheme-safe; the 128-grapheme display cap does not alter typed/export values. The gutter shares body y only, remaining at x = 0. Result LRU evicts inactive pages, not retained tabs/drafts/scroll; table reactivation can refresh applied conditions while consoles require explicit rerun. The 16 MiB/eight-page allocation budget is best effort, excluding metadata/drafts/GPU/export temporary memory.
+## Supplied application artwork and historical provenance
 
-The current utility subset is **36 Lucide SVGs**, eight added to 28 at the same revision with existing ISC/Feather notices; `text-initial` is the upstream text glyph alias, not new branding. Native screenshots remain permission-blocked; test component pins and simulated operation counts are not native visual/performance proof. See [table browser](docs/table-browser.md) and [current evidence](docs/testing.md#rich-canvas-table-browser). Earlier slice counts/design below are historical where superseded; primary-run totals and this tree's hosted CI remain pending.
+The supplied Apple Icon Composer package is retained unchanged in `crates/app/assets/brand/Dalan.icon`. README uses the PNG fallback; macOS bundles use the generated multi-size `.icns` unless Icon Composer compilation is explicitly requested. Project/artwork redistribution terms remain unspecified; see [artwork provenance](crates/app/assets/brand/README.md).
 
-## Supplied application artwork
+Historical [Carbonfox JSON](crates/app/assets/themes/carbonfox-opaque.json) and [provenance](crates/app/assets/themes/README.md) may remain, but are not the runtime palette. Retain the complete MIT notices for Christian Angermann's Zed port and James Simpson's original Nightfox palette. Existing Lucide/Feather, SQLite, adapted-code and application bundle Resources notices remain required. Theme migration is not a claim that historical assets were deleted or that the project license was selected.
 
-The user supplied `dalan-db.icon`, an Apple Icon Composer package. Original files are retained unchanged in `crates/app/assets/brand/Dalan.icon`; the README uses the PNG fallback, and macOS bundles use a generated multi-size `.icns` unless Icon Composer compilation is explicitly requested. This is application/logo artwork, separate from utility icons. No replacement logo or compositor effects were invented. Project/artwork redistribution terms remain unspecified; see [artwork provenance](crates/app/assets/brand/README.md).
+## Compact database workspace
 
-## Adopted direction
+One collapsible/resizable Database Explorer, retained table/query-console tabs, a separate source window and an optional disconnected ACP panel define the workspace. Generic Files, Git, build tools, terminal and plugin/toolbox chrome are excluded. ACP honestly says **Not connected**; no transport, agent launch or provider settings exist.
 
-The user explicitly rejected DataGrip's visual style and selected **Zed-like compact UI with Carbonfox - opaque** as the main default. DataGrip is a database UX/workflow reference only, not permission to copy its button-heavy layout or chrome. No Zed editor/source/assets are imported other than the independently MIT-licensed Nightfox theme reference. No affiliation with Zed, DataGrip, or the theme authors is implied.
+App layout metrics remain 34 px titlebar, 28 px headers/status/controls, 22 px tree/grid rows, flush panes and a 4 px divider hit area with a 1 px visible line. Explorer prefers 320 px within 200–480 px, reserving 240 px main content. ACP starts closed and prefers 300 px; compact layouts may temporarily suppress explorer without changing retained preferences. Actual standard-control styling comes from Kit rather than independently copied palette/radius behavior.
 
-Reason: database workflows should be familiar without inheriting another product's visual clutter.
+Source setup is a normal independent window, initially 1040 × 760 with 780 × 560 minimum, not an OS modal sheet. General, Options, SSH/SSL and Schemas use Kit tabs in the native-titlebar layout with an 84 px traffic-light reservation. Source/SSH menus, password fields, pickers, saving guards and retained drafts preserve their model contracts. Source colors remain marker metadata, not execution-risk or accessibility guarantees.
 
-The workspace is database-only: one collapsible/resizable Database Explorer, a browser/read-only table view, a separate source setup window, and an optional database-focused ACP panel. Read-only query consoles and loaded-page CSV are implemented; persistent SQL scripts and broader database import/export remain future scope; generic Files, code viewer, Git, build tools, terminal and plugin/toolbox chrome are excluded. ACP honestly says **Not connected**, with no transport, agent launch, prompt or provider settings.
+## Rich canvas table contract
 
-Reason: quiet chrome leaves room for real database context rather than inactive tools.
+The shipping result body remains specialized direct canvas paint with cached shaped text and row/grid quads, **zero per-cell Divs**, two-axis viewport virtualization and native interactive header controls. This is an intentional app-owned rendering exception, not a standard Table replacement. The pinned 44 px row gutter uses body y only and stays at x = 0; numbering is `offset + row + 1`. Grapheme-safe 128-grapheme previews do not alter typed/export values.
 
-## Carbonfox provenance and tokens
+WHERE/ORDER BY are single-line drafts: typing never fetches; Apply/Enter validates and submits both. Invalid conditions retain visibly stale rows. Name-only headers expose type/key metadata in tooltips and separate sort targets; query result headers remain nonsortable. Refresh/owned Cancel, loaded CSV, paging and range feedback are functional, with no placeholder mutation/DDL/history menus.
 
-The exact selected variant is **Carbonfox - opaque**, from `themes/nvim-nightfox.json` in [cange/nightfox.zed at `3511a6f1f665455c70a24d14fd5d2de0eaab58fa`](https://github.com/cange/nightfox.zed/blob/3511a6f1f665455c70a24d14fd5d2de0eaab58fa/themes/nvim-nightfox.json). The complete variant is retained in [carbonfox-opaque.json](crates/app/assets/themes/carbonfox-opaque.json), including syntax/players, with provenance metadata. Runtime UI uses compiled [theme constants](crates/app/src/desktop/theme.rs), not a JSON theme loader. The query editor uses the same opaque UI tokens without syntax highlighting.
+Best-effort inactive-result retention remains **16 MiB/eight pages**, protecting active/busy/export/save results and excluding metadata/drafts/GPU/export temporary allocations. Eviction drops pages/caches, not retained tab identities/drafts/scroll. Table activation can refresh an evicted page; consoles never autoexecute. Kit DataTable is still a benchmark candidate: the 100 × 512 pilot's 328 initial/146 last-column delegate calls are not canvas parity or native FPS.
 
-Both full MIT notices are retained: the Zed port, copyright 2024 Christian Angermann, and original Nightfox palette, copyright 2021 James Simpson. Original-project license revision `4dacd3f0185a2227bdf3b6c0975a8f0bf87cac9a` is a separate pin, not a claim about the original version used by the port. See [theme provenance and licenses](crates/app/assets/themes/README.md) and [third-party notices](THIRD_PARTY_NOTICES.md). Neither selects Dalan's project license.
+## Tabs and SQL editing
 
-Reason: exact provenance makes the permitted palette reproducible without borrowing unrelated assets.
+Up to 32 tabs retain independent model/view/request/result state. Tables deduplicate source/database/table identity; consoles have unique sessions and monotonic Console N names. Kit tab controls expose meaningful draft/running indicators and guarded close actions. Nonempty console drafts require confirmation even after successful Run; closing affects only that tab's owned work.
 
-| Shared token | Opaque RGB | Role |
-| --- | --- | --- |
-| CHROME / PANEL / SURFACE | `#0c0c0c` | Flush window chrome and panes |
-| BACKGROUND / INPUT_BG | `#161616` | Input and query-editor background |
-| HEADER | `#1c1c1c` | Compact toolbar/header |
-| HOVER | `#2a2a2a` | Neutral pointer feedback |
-| SELECTION / TEXT_SELECTION | `#242424` | Neutral opaque selection |
-| BORDER | `#222222` | Decorative separator, not input identification |
-| TEXT | `#f2f4f8` | Primary labels/data |
-| MUTED | `#b6b8bb` | Secondary, placeholder and disabled labels |
-| FOCUS | `#78a9ff` | Focus/active outline and primary action fill |
-| INPUT_BORDER | `#7b7c7e` | Visible input boundary |
-| WARNING | `#be95ff` | Warning with text/icon |
-| ERROR | `#ee5396` | Error with text/icon |
-| SUCCESS | `#25be6a` | Success with text/icon |
+The custom SQL editing engine is replaced by a thin adapter around Kit's rope EditorState. Kit owns native selection, clipboard, IME, scrolling, undo/redo and SQL Tree-sitter highlighting. Dalan owns source/database context, validation and selected-or-whole Run/Cancel. The SQL policy remains 64 KiB; interactive limit rejection is a current regression gate, not an inherited atomicity guarantee. Do not carry forward the bespoke editor's exact undo-count/indent/geometry promises without current tests.
 
-Upstream alpha-bearing toolbar, selection and border colors are composited over PANEL into opaque RGB, while the vendored reference stays unchanged. Main, source and About windows explicitly use opaque backgrounds: no blur, transparency, theme toggle or fake light mode. The status spacer exposes **Carbonfox - opaque** only in a tooltip; no persistent theme name or focused-control help is painted. Inputs share the tokens, opaque text selection, FOCUS cursor and MUTED placeholder rather than hardcoded colors.
+Database-aware completion, cursor-statement execution, persistent history, scripts and transaction/write workflows remain future scope. PostgreSQL/MongoDB/Redis labels or editor language support do not implement executors; MySQL/MariaDB remain experimental. The UI migration does not alter credential, cache, query-safety, worker-budget or ACP-only contracts.
 
-Reason: one honest default gives every window the same calm material and readable states.
+## Evidence boundary
 
-Blue marks focus/active state and Save/Connect primary actions with dark text. Other controls are neutral with minimal borders and hover feedback. Disabled labels use MUTED, not opacity. Semantic pink error text is supported on panel/input backgrounds, not filled hover controls. User-owned source colors remain unchanged marker-only metadata; source names remain readable and tooltips identify engines independently of color. Arbitrary marker colors have no AA guarantee or risk meaning.
+Historical theme/layout test counts and pilot results describe their own revisions only. Production adoption needs current format/headless/UI/lint/bundle checks and native font/shader/window, menu focus/dismissal, password extraction, Unicode/IME, picker and close/save checks. No screenshot, VoiceOver, native performance or live database/Keychain rerun is claimed by this documentation update.
 
-Reason: accent should communicate action or focus, not decorate every button.
-
-Pure token tests calculate minimum normal-state contrast: primary text **13.04:1**, secondary **7.22:1**, focus **6.10:1**, input boundary **3.44:1**. Semantic labels meet 4.5:1 on their supported backgrounds. These are computed color-pair checks, not native screenshot pixels, full accessibility compliance or proof of visual matching.
-
-Reason: compact UI requires readable text and boundaries before stylistic claims.
-
-## Compact geometry
-
-| Metric | Adopted value |
-| --- | --- |
-| Titlebar | 34 px |
-| Status / explorer toolbar / ACP header / table header | 28 px |
-| Tree / grid rows | 22 px |
-| Controls / control radius | 28 px / 3 px |
-| Pane radius / outer body padding | 0 px / 0 px |
-| Divider hit area / visible line | 4 px / 1 px |
-| UI / data-browse type | System UI 13 px / 12 px |
-
-Panes meet flush edges. Explorer prefers 320 px, bounded to 200–480 px, reserving 240 px main content; at 720 px its effective maximum is **476 px** with ACP closed (720 minus 4 minus 240). This supersedes the historical 6 px divider plus 6 px outer padding on each side. ACP starts closed, prefers 300 px and may temporarily suppress the explorer in compact layouts without changing its saved in-memory preference. Four Layout rows and Cmd-B/Cmd-Alt-0/Cmd-Shift-A remain unchanged.
-
-Reason: regular dense rows and flush panes maximize useful context without extra chrome.
-
-Source setup remains one normal independent window, initial 1040 × 760, minimum 780 × 560, not an OS modal sheet. Its General, Options, SSH/SSL and Schemas tabs occupy a 34 px transparent native titlebar with 84 px reserved for traffic lights; an empty native title hides the duplicate “Data Sources · Dalan” caption. The body stays Carbonfox - opaque. The 720 px natural-height form scrolls with 16 px viewport padding, 8 px form gaps, and footer padding 8 px vertical/16 px horizontal. Inputs remain 28 px; endpoint parents and SSH candidates remain 30 px; the labeled Keychain indicator remains 18 px with 3 px radius. Host/Port traversal, reuse/draft behavior, focus guards, CA picker and saving close guards are unchanged. Table header/filter padding is 10 px horizontal/6 px vertical; footer is 10 px/4 px. No fake content is introduced.
-
-Reason: tighter spacing must not shrink controls or change familiar source workflows.
-
-System UI fonts require no external font assets. The in-memory SQL editor uses system Menlo at 13 px, 22 px lines and a 44 px gutter, with visible-line shaping. Twenty-eight pinned Lucide utility SVGs are dynamically colored through existing rendering: the previous nineteen plus hard-drive, triangle-alert, loader-circle, lock-keyhole and chevron-left. No generated brand assets or app icon are added. [Asset provenance](crates/app/assets/README.md) retains complete ISC/Feather MIT attribution; Carbonfox and SQLite notices and bundle-resource contracts are unchanged.
-
-Reason: existing native typography and permitted utility icons are sufficient for this slice.
-
-## Design dials and remaining validation
-
-- **Energy 1:** quiet surfaces, no gradients or promotional ornament.
-- **Rhythm 1:** dense regular rows and predictable geometry.
-- **Motion 1:** minimal functional feedback, no decorative animation.
-
-Reason: sustained database work should not compete with interface decoration.
-
-Theme geometry and contrast are covered by unit/simulated checks, not measured native pixels or screenshot replication. Native visual/click-through, VoiceOver, scaled text and measured performance remain open gates; [performance budgets](docs/product-plan.md#proposed-release-gates) are targets, not measurements. No new capture or native visual pass is claimed. Light/system support is an unselected future design proposal, not a working mode or a reason to ship a toggle. Any future theme needs separate state/contrast/native validation.
-
-The theme/layout change does not change database I/O, cache, SSH/TLS, passwords, profile persistence or Keychain semantics. Historical theme local verification passed 67 headless, 88 simulated UI and four bundle tests, formatting, strict lint and signed bundle/license checks. The rebuilt app is open. Window capture was blocked, so no native visual/accessibility pass is claimed. Theme commit `0ca0221` passed all five hosted jobs in [run 37204370849](https://github.com/yan-ad/dalan/actions/runs/37204370849). This is historical evidence for that commit; the wide-grid revision needs its own next-main CI run. Current wide-grid validation remains a separate gate; evidence is recorded in [testing](docs/testing.md).
-
-## Wide-table data view
-
-A retained `DataGrid` virtualizes both axes of the database page, with fixed 180 px columns, unchanged 22 px rows, 28 px pinned headers and 12 px browse text. Headers and cells share a pixel-calculated horizontal offset; the body alone scrolls vertically. Two-axis tracks have draggable minimum 20 px thumbs and track-click support. This is not screenshot-matched native evidence.
-
-Wheel/trackpad, Shift-wheel and grid-focused arrows/PageUp/PageDown/Home/End/Ctrl-or-Cmd-Home/End scroll the viewport, not an active-cell selection. Only mounted visible/overscan headers enter Tab sorting traversal; offscreen headers are not focus stops. An unchanged stale page retains scroll during busy/saving/error updates with sorting disabled; new snapshots or selected targets reset it. Column resizing and cell inspection/copy remain future work. Carbonfox styling and other geometry are unchanged. See [UI foundation](docs/ui-foundation.md#two-axis-data-grid) and [operation counts](docs/testing.md#wide-grid-performance-revision).
-
-## Icon-led chrome
-
-The custom titlebar omits duplicate **Dalan** branding; the macOS application menu and About dialog retain the name, and a database toggle occupies that space beside the traffic lights; a 28 px Layout icon opens the existing four-row popover with unchanged shortcuts/focus return. The explorer toggle is in the titlebar, with no bottom-left duplicate; ACP remains bottom-right. Action labels live in tooltips, not persistent status help; visible focus outlines remain. No extra Theme button or debug status is introduced.
-
-Source rows show their glyph, marker and name, not a duplicate engine badge. Engine/full name and real known counts are in tooltips; Tables and Views keep their meaningful grouping labels. Fixed 18 px hard-drive, warning-triangle and static loader-circle markers mean Cached, Stale and Refreshing, with timestamp/sanitized error in tooltips. Important connection errors, stale-page feedback and cache warnings stay visible text.
-
-With saved sources but no selected/loaded table, center a small table icon and **Select a table**, without Table browser/read-only chrome or a giant welcome. With no profiles, retain the working **Connect to a Source** action. A selected/loaded table shows its actual qualified title and passive 28 px read-only lock tooltip, not an edit button. Apply/check, Clear/minus, Export/download and Previous/Next chevrons are 28 px controls with unchanged IDs, guards and keyboard actions. Filter column names (without a Column prefix), operators and values remain visible. The footer's `1–100` range exposes loaded count and `has_more` in a tooltip, not a fabricated total.
-
-This UI-only slice preserves virtual tree/grid rendering, `Arc<TablePage>`, cached rows and connection/selection/credential behavior. Historical credential fix `9b3d3d8` passed all five jobs in [run 37212641100](https://github.com/yan-ad/dalan/actions/runs/37212641100). Expected current totals are 74 headless, 106 simulated UI and four Python tests, **pending owner-run validation and this revision's own main CI**. No native screenshot, manual/VoiceOver or performance pass is claimed; capture was previously blocked. Existing native source values must not become documentation fixtures or published screenshots.
-
-[Overview](README.md) · [UI foundation](docs/ui-foundation.md) · [Architecture](docs/architecture.md) · [Development](docs/development.md) · [Testing](docs/testing.md) · [Feature checklist](docs/feature-checklist.md)
-
-## Workspace tabs and console design
-
-The database workspace now retains one model/view per tab, up to 32 total. Source UUID/database/table identity deduplicates table tabs; consoles use unique session identities and monotonic Console N names. The 28 px flat Carbonfox strip uses table/query icons, readable name, close x, nonempty-draft dot and an in-flight indicator. These carry actual state, not decorative controls copied from DataGrip. Closing the active tab selects the left neighbor, or the first remaining tab; closing an inactive tab does not change selection.
-
-The explorer retains New Query Console as one of its three toolbar icons, with horizontal toolbar scrolling at its 200 px minimum width. The strip plus uses active-tab context; explorer creation uses explorer-selected source/database or the source profile default, otherwise No default database. A cached-name database chooser performs no discovery itself. No native New Query Console menu entry is claimed. Cmd-W is tab close with an active workspace tab; native OS window close remains unchanged. The empty-workspace fallback belongs to the shell close-window handler, not a swallowed no-op.
-
-The console editor is database-only text entry with native GPUI input/IME and clipboard, not a generic code/file viewer. It has 64 KiB text and 100 undo-state bounds, four-space Tab, Shift-Tab unindent and newline autoindent. Run/Cancel are play/stop icons with shortcuts; there is no syntax highlighting, completion, saved history, cursor-statement splitting, write control or persistent transaction UI. Nonempty drafts always require close confirmation, even after successful execution; Keep Open has default focus and Enter/Space activation. SQL and results stay in memory. See [guide](docs/query-consoles.md) and [ADR](docs/adr/0004-workspace-tabs-and-read-only-consoles.md).
-
-## Relocated source controls
-
-Keep the Database collapse toggle at x = 84 px after the native traffic-light reservation. Immediately right, **New Connection** is an explicit plus-and-text control at the same 28 px height, the requested exception to icon-only chrome. It supports pointer/Enter/Space, tooltips and loading/saving guards, including with the sidebar hidden. The retained root source subscription owns dialog opening; no duplicate Dalan label, explorer plus, persistent theme label or new brand artwork is added.
-
-The explorer toolbar has three icons only: Refresh selected source, combined Expand Loaded / Collapse All (`toggle-tree-expansion`) and existing New Query Console. Visible saved-source expansion selects Collapse All; hidden child preferences do not determine the action. Otherwise expand cached metadata only, with no network fan-out. Each source row keeps an 18 px Manage gear (`source-actions-{id}`) and a real-bounds-anchored Manage / Copy / Remove menu targeting that UUID, independent of explorer selection. Tab/Shift-Tab/Up/Down, Escape/outside dismissal, focus return and saving guards are part of the contract.
-
-Manage reuses the existing tabbed SourceDialog. Copy is an unsaved fresh-UUID nonsecret settings draft, with UTF-8-safe ` copy` naming within 256 bytes, no password/Keychain retrieval and `save_password = false`. Schema choices copy only into form memory; SQLite metadata is not copied, and normal Save starts fresh discovery. Existing drafts remain intact with a static close-current-draft notice and the 100-profile guard. Remove confirms its stable captured ID, never deletes server objects and preserves unrelated results. Virtual tree/grid caches and performance contracts are unchanged. Provider assets and existing attribution are separate from this relocation, not a rebranding claim.
-
-Verified local results: 115 unit tests, one native-wire test, 159 UI and four Python tests passed, with formatting, strict lint and signed bundle checks. Native visual/performance/accessibility and current-tree CI remain separate gates. No live database/Keychain rerun is claimed. See [actions](docs/source-management.md#row-actions-and-copy-boundaries) and [verification](docs/testing.md#relocated-source-controls).
-
-## Source-manager controls
-
-General keeps Name/Color and real driver/authentication combos; endpoint modes are Default, Unix Socket and credential-free URL-only. The Password row keeps its right-side labeled Save in Keychain checkbox. Options are applied backend limits, not decorative properties. SSH/SSL names transport honestly (Direct/SSH/HTTP or HTTPS CONNECT, not SOCKS); SSL warnings distinguish encryption, chain verification and hostname verification. Schemas is a searchable checkbox visibility filter, not authorization. The separate SSH manager owns selection, draft, Test cancellation and guarded Apply/Use/Cancel semantics. Native pickers complement manual paths; this relocation introduces no provider artwork, passphrase UI, IDE truststore or arbitrary JDBC properties.
-
-The [source-management guide](docs/source-management.md) is the current interaction contract. This is a functional subset informed by database workflows, not an exact DataGrip-native-property or screenshot match. Simulated geometry/titlebar tests do not prove native appearance; window capture/manual review remain unverified.
+[Overview](README.md) · [Migration](docs/gpui-kit-migration.md) · [UI foundation](docs/ui-foundation.md) · [Source management](docs/source-management.md) · [Table browser](docs/table-browser.md) · [Testing](docs/testing.md)

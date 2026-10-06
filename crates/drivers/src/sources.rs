@@ -2,14 +2,38 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DbEngine {
+    PostgreSql,
+    MongoDb,
+    Redis,
+    #[default]
     MySql,
     MariaDb,
 }
 impl DbEngine {
+    pub fn default_port(self) -> u16 {
+        match self {
+            Self::PostgreSql => 5432,
+            Self::MongoDb => 27017,
+            Self::Redis => 6379,
+            _ => 3306,
+        }
+    }
+    pub fn url_scheme(self) -> &'static str {
+        match self {
+            Self::PostgreSql => "postgresql",
+            Self::MongoDb => "mongodb",
+            Self::Redis => "redis",
+            Self::MariaDb => "mariadb",
+            Self::MySql => "mysql",
+        }
+    }
     pub fn display_name(self) -> &'static str {
         match self {
+            Self::PostgreSql => "PostgreSQL",
+            Self::MongoDb => "MongoDB",
+            Self::Redis => "Redis",
             Self::MySql => "MySQL",
             Self::MariaDb => "MariaDB",
         }
@@ -121,6 +145,7 @@ pub struct SourceProfile {
     pub name: String,
     #[serde(default)]
     pub color: Option<String>,
+    #[serde(default)]
     pub engine: DbEngine,
     pub host: String,
     pub port: u16,
@@ -217,6 +242,10 @@ impl SourceProfile {
         let (h, port, db) = match &self.endpoint {
             ConnectionMode::Default => (self.host.clone(), self.port, self.database.clone()),
             ConnectionMode::UnixSocket { path } => {
+                ensure!(
+                    !matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis),
+                    "Unix sockets are unsupported for this engine"
+                );
                 ensure!(cfg!(unix), "Unix sockets are unavailable on this platform");
                 field(path, 4096, "Unix socket path")?;
                 ensure!(
@@ -244,8 +273,16 @@ impl SourceProfile {
                 field(url, 8192, "connection URL")?;
                 let raw = url.strip_prefix("jdbc:").unwrap_or(url);
                 ensure!(
-                    raw.starts_with("mysql://") || raw.starts_with("mariadb://"),
-                    "Connection URL must use mysql:// or mariadb://"
+                    match self.engine {
+                        DbEngine::MySql | DbEngine::MariaDb =>
+                            raw.starts_with("mysql://") || raw.starts_with("mariadb://"),
+                        DbEngine::PostgreSql =>
+                            raw.starts_with("postgres://") || raw.starts_with("postgresql://"),
+                        DbEngine::MongoDb => raw.starts_with("mongodb://"),
+                        DbEngine::Redis =>
+                            raw.starts_with("redis://") || raw.starts_with("rediss://"),
+                    },
+                    "Connection URL scheme does not match the selected engine"
                 );
                 // Both schemes speak the same protocol, including mysql:// for MariaDB.
                 let u =
@@ -286,7 +323,7 @@ impl SourceProfile {
                     .map_err(|_| anyhow::anyhow!("Invalid connection URL database encoding"))?;
                 (
                     h,
-                    u.port().unwrap_or(3306),
+                    u.port().unwrap_or(self.engine.default_port()),
                     if db.is_empty() {
                         None
                     } else {
@@ -352,8 +389,11 @@ impl SourceProfile {
         } else {
             host
         };
-        let mut u = url::Url::parse(&format!("mysql://{authority}:{port}/"))
-            .map_err(|_| anyhow::anyhow!("Invalid connection URL"))?;
+        let mut u = url::Url::parse(&format!(
+            "{}://{authority}:{port}/",
+            self.engine.url_scheme()
+        ))
+        .map_err(|_| anyhow::anyhow!("Invalid connection URL"))?;
         if let Some(db) = database {
             u.path_segments_mut()
                 .map_err(|_| anyhow::anyhow!("Invalid connection URL"))?
@@ -377,6 +417,18 @@ impl SourceProfile {
             );
         }
         self.connection_target()?;
+        if matches!(self.engine, DbEngine::MongoDb | DbEngine::Redis) {
+            ensure!(
+                matches!(self.transport, Transport::Direct),
+                "This engine currently supports direct transport only"
+            );
+        }
+        if let ConnectionMode::UrlOnly { url } = &self.endpoint {
+            ensure!(
+                !url.starts_with("rediss://") || self.tls != TlsMode::Disabled,
+                "rediss:// requires TLS enabled"
+            );
+        }
         self.options.validate()?;
         if self.authentication == Authentication::UserPassword {
             field(&self.username, 128, "username")?;

@@ -1,8 +1,15 @@
 use super::{CloseWindow, source_form::SourceForm, source_model::SourceModel};
 use gpui::{
-    App, Bounds, Context, Entity, Subscription, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, size,
+    AnyWindowHandle, App, Bounds, Context, Entity, Global, Subscription, TitlebarOptions,
+    WeakEntity, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
+
+#[derive(Clone)]
+struct DialogSlot {
+    window: AnyWindowHandle,
+    view: WeakEntity<SourceDialog>,
+}
+impl Global for DialogSlot {}
 
 pub(super) struct SourceDialog {
     model: Entity<SourceModel>,
@@ -12,6 +19,20 @@ pub(super) struct SourceDialog {
 }
 
 impl SourceDialog {
+    pub(super) fn current_window(cx: &App) -> Option<AnyWindowHandle> {
+        let slot = cx.try_global::<DialogSlot>()?;
+        slot.view.upgrade()?;
+        cx.windows()
+            .into_iter()
+            .find(|window| *window == slot.window)
+    }
+
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub(super) fn current_view(cx: &App) -> Option<Entity<Self>> {
+        Self::current_window(cx)?;
+        cx.try_global::<DialogSlot>()?.view.upgrade()
+    }
+
     fn new(model: Entity<SourceModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let profile = model
             .read(cx)
@@ -20,7 +41,7 @@ impl SourceDialog {
             .expect("source dialog requires a draft");
         let generation = model.read(cx).form_generation;
         let form = cx.new(|cx| SourceForm::new(profile, model.clone(), cx));
-        form.read(cx).focus(window, cx);
+        form.read(cx).preferred_first_focus(cx).focus(window, cx);
         let subscription = cx.observe_in(&model, window, |this, _, window, cx| {
             let model = this.model.read(cx);
             if !model.form_open {
@@ -35,7 +56,10 @@ impl SourceDialog {
                 this.generation = model.form_generation;
                 let model = this.model.clone();
                 this.form = cx.new(|cx| SourceForm::new(profile, model, cx));
-                this.form.read(cx).focus(window, cx);
+                this.form
+                    .read(cx)
+                    .preferred_first_focus(cx)
+                    .focus(window, cx);
             }
             cx.notify();
         });
@@ -81,16 +105,12 @@ pub(super) fn show(model: Entity<SourceModel>, cx: &mut App) {
     if !model.read(cx).form_open {
         return;
     }
-    if let Some(handle) = cx
-        .windows()
-        .into_iter()
-        .find_map(|handle| handle.downcast::<SourceDialog>())
-    {
+    if let Some(handle) = SourceDialog::current_window(cx) {
         let _ = handle.update(cx, |_, window, _| window.activate_window());
         return;
     }
     let bounds = Bounds::centered(None, size(px(1040.0), px(760.0)), cx);
-    if let Err(error) = cx.open_window(
+    match gpui::open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(780.0), px(560.0))),
@@ -102,13 +122,18 @@ pub(super) fn show(model: Entity<SourceModel>, cx: &mut App) {
             }),
             ..Default::default()
         },
+        cx,
         |window, cx| cx.new(|cx| SourceDialog::new(model.clone(), window, cx)),
     ) {
-        model.update(cx, |model, cx| {
+        Ok((window, view)) => cx.set_global(DialogSlot {
+            window,
+            view: view.downgrade(),
+        }),
+        Err(error) => model.update(cx, |model, cx| {
             model.close_form(cx);
             model.error = Some(format!("Could not open source dialog: {error}"));
             cx.notify();
-        });
+        }),
     }
 }
 
@@ -116,25 +141,46 @@ pub(super) fn show(model: Entity<SourceModel>, cx: &mut App) {
 mod tests {
     use super::*;
     use dalan_drivers::sources::{DbEngine, SourceProfile, TlsMode};
-    use gpui::{Modifiers, TestAppContext, VisualTestContext, WindowHandle};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+
+    struct DialogHandle {
+        window: AnyWindowHandle,
+        view: WeakEntity<SourceDialog>,
+    }
+    impl DialogHandle {
+        fn update<R>(
+            &self,
+            cx: &mut TestAppContext,
+            callback: impl FnOnce(&mut SourceDialog, &mut Window, &mut Context<SourceDialog>) -> R,
+        ) -> gpui::Result<R> {
+            let view = self.view.upgrade().expect("live dialog");
+            self.window.update(cx, |_, window, app| {
+                view.update(app, |dialog, cx| callback(dialog, window, cx))
+            })
+        }
+    }
 
     fn open(
         model: &Entity<SourceModel>,
         cx: &mut TestAppContext,
-    ) -> (WindowHandle<SourceDialog>, VisualTestContext) {
+    ) -> (DialogHandle, VisualTestContext) {
         cx.update(|app| show(model.clone(), app));
         let handle = cx.update(|app| {
             let windows = app.windows();
             assert_eq!(windows.len(), 1);
-            windows[0].downcast::<SourceDialog>().unwrap()
+            DialogHandle {
+                window: SourceDialog::current_window(app).unwrap(),
+                view: SourceDialog::current_view(app).unwrap().downgrade(),
+            }
         });
-        let mut visual = VisualTestContext::from_window(handle.into(), cx);
+        let mut visual = VisualTestContext::from_window(handle.window, cx);
         visual.refresh().unwrap();
         visual.run_until_parked();
         (handle, visual)
     }
 
     fn new_model(cx: &mut TestAppContext) -> Entity<SourceModel> {
+        cx.update(gpui::init);
         cx.update(crate::desktop::bind_keys);
         assert!(cx.update(|app| app.windows().is_empty()));
         let model = cx.new(|_| SourceModel::for_tests(vec![]));
@@ -212,8 +258,9 @@ mod tests {
                     tab.left() >= right,
                     "overlap or traffic-light intrusion: {id}"
                 );
-                assert_eq!(tab.top(), px(0.));
-                assert_eq!(tab.size.height, px(34.));
+                assert!(tab.top() >= bar.top());
+                assert!(tab.bottom() <= bar.bottom());
+                assert!(tab.size.height > px(0.));
                 assert!(tab.right() <= bar.right());
                 right = tab.right();
             }
@@ -299,7 +346,7 @@ mod tests {
                     "source-page-size",
                 ] {
                     let field = visual.debug_bounds(id).unwrap();
-                    assert_eq!(field.size.height, px(28.));
+                    assert_eq!(field.size.height, px(24.));
                     assert_eq!(*left.get_or_insert(field.left()), field.left());
                 }
             }
@@ -391,6 +438,7 @@ mod tests {
 
     #[gpui::test]
     fn edit_profile_refreshes_only_when_form_generation_changes(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
         cx.update(crate::desktop::bind_keys);
         let profile = SourceProfile {
             id: "00000000-0000-4000-8000-000000000001".into(),

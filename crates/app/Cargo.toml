@@ -18,7 +18,7 @@ required-features = ["desktop"]
 [features]
 default = []
 desktop = ["dep:gpui"]
-runtime-shaders = ["desktop", "gpui/runtime_shaders"]
+runtime-shaders = ["desktop"]
 ui-tests = ["desktop", "gpui/test-support"]
 
 [dependencies]

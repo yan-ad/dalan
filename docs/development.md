@@ -2,7 +2,7 @@
 
 ## Current workspace
 
-Rust 1.98.1 is pinned in `rust-toolchain.toml`; edition 2024 and workspace minimum Rust 1.98. GPUI 0.2.2 and ACP SDK 2.2.0 are exact pins. Commit `Cargo.lock` with this application workspace. No project license is selected yet.
+Rust 1.98.1 is pinned in `rust-toolchain.toml`; edition 2024 and workspace minimum Rust 1.98. The `gpui` alias pins `gpui-kit = 0.7.1` with `tree-sitter-sql`, coordinated with `gpui-pre = 0.3.8`; the old GPUI 0.2 family is removed. ACP SDK 2.2.0 remains pinned. Commit `Cargo.lock` with this application workspace. No project license is selected yet.
 
 Default features are headless. This lets product/domain work compile without native GPUI system dependencies. The diagnostic binary is `dalan-doctor`; the desktop binary is `dalan` and requires the `desktop` feature. Core checks on Linux/Windows are not a claim of supported desktop apps.
 
@@ -24,7 +24,9 @@ Local profiles stay in version 1 `~/Library/Application Support/Dalan/sources.js
 
 Historical metadata verification passed 67 headless, 83 simulated UI and four Python helper tests plus formatting/lint/bundle checks. Commit `4c8af09` passed all five hosted jobs in [run 37201696519](https://github.com/yan-ad/dalan/actions/runs/37201696519). Theme commit `0ca0221` passed all five hosted jobs in [run 37204370849](https://github.com/yan-ad/dalan/actions/runs/37204370849). This is historical evidence for that commit; the wide-grid revision needs its own next-main CI run. Current wide-grid final totals and checks await owner verification; native Keychain was not rerun.
 
-## Carbonfox foundation maintenance
+## Historical Carbonfox foundation maintenance (superseded)
+
+The following palette/contrast instructions and counts describe the earlier revision only. **Do not reintroduce its runtime tokens.** Production now uses Kit's default theme and all Kit standard controls; `desktop/theme.rs` maps active semantic `Hsla` colors for app paint. Historical JSON/licenses remain provenance, not runtime configuration. See [current migration](gpui-kit-migration.md). Current production tests/native validation must replace historical counts; Kit initialization owns initial light/dark selection.
 
 The default is **Carbonfox - opaque**, with compact Zed-like UI, not DataGrip visual styling. DataGrip is a database UX/workflow reference only. Shared compiled [theme constants](../crates/app/src/desktop/theme.rs) drive main/source/About and inputs. Keep all window backgrounds explicitly opaque; do not add blur, transparency, a fake light mode or a nonfunctional theme toggle. Normal status shows the theme name unless existing focus help overrides it.
 
@@ -70,12 +72,12 @@ The default command builds a debug `Dalan.app` at `target/debug/bundles/Dalan.ap
 ./scripts/macos                 # Debug bundle, no launch
 open target/debug/bundles/Dalan.app  # Launch existing bundle
 ./scripts/macos --run           # Foreground launch from bundle, keep stdout/stderr
-./scripts/macos --offline-shaders --open  # Debug with full Xcode shader compiler
-./scripts/macos --release --open          # Release bundle, offline shaders by default
+./scripts/macos --icon-composer --open    # Optional icon compilation with full Xcode
+./scripts/macos --release --open          # Optimized Kit runtime-shader bundle
 ./scripts/macos --help
 ```
 
-Release output is `target/release/bundles/Dalan.app`. `--release --runtime-shaders` is available explicitly for local optimized experiments, not the default distribution path. Paths derive from Cargo's actual executable artifact, so `CARGO_TARGET_DIR` or Cargo target configuration is respected; use the printed path when it differs from `target/`.
+Release output is `target/release/bundles/Dalan.app`. Both debug and release use Kit's runtime-shader platform; `--runtime-shaders` remains a compatibility spelling and `--offline-shaders` rejects explicitly. Paths derive from Cargo's actual executable artifact, so `CARGO_TARGET_DIR` or Cargo target configuration is respected; use the printed path when it differs from `target/`.
 
 Quit an older Dalan instance before rebuilding or opening again. `open` may activate an already-running instance rather than start the new build. To rebuild and run with immediate logs, use `--run`; Ctrl-C stops the process. To debug from LLDB, build first, then:
 
@@ -101,9 +103,9 @@ The original `dalan-db.icon` is retained unchanged at `crates/app/assets/brand/D
 
 The bundle helper uses Python's standard library and existing macOS tools; it adds no Cargo dependency. It only builds/replaces its generated bundle, does not install into `/Applications`, and never modifies settings/source. A failed Cargo build does not overwrite the existing bundle. Bundle metadata/assembly logic has its own standard-library unit tests.
 
-### Full Xcode and offline shaders
+### Native toolchain and optional full Xcode
 
-Install full Xcode, launch it to finish component installation, accept its license, and select it as the active developer directory. These system changes require user approval; do not run them automatically.
+Command Line Tools support the normal Kit build. Full Xcode is optional for Icon Composer and other Apple distribution tooling. Installing/selecting Xcode requires user approval; do not perform system changes automatically.
 
 ```sh
 xcode-select -p
@@ -124,20 +126,13 @@ cargo build -p dalan-app --bin dalan --features desktop --release --locked
 
 The desktop app implements the top bar, Database Explorer (without an activity rail), layout controls, status strip, a dedicated source dialog window and the main read-only browser/table workspace. Experimental MySQL/MariaDB connection setup is implemented. Follow [MySQL sources](mysql-sources.md) for credentials, TLS and transport setup. No general file explorer or code viewer is planned. A real window requires an interactive logged-in macOS GUI session and working Metal hardware. See [UI foundation](ui-foundation.md) for controls.
 
-### Development-only runtime shaders
+### Kit runtime shaders
 
-Published GPUI 0.2.2 has a `runtime_shaders` feature that builds shader source for compilation by Metal at runtime. The app exposes it as `runtime-shaders` to permit a bootstrap build/check on hosts without the offline Metal compiler:
-
-```sh
-cargo check -p dalan-app --bin dalan --features runtime-shaders --locked
-cargo run -p dalan-app --bin dalan --features runtime-shaders --locked
-```
-
-This is an explicit development escape hatch, not a replacement for release Xcode/Metal validation. It does not solve every native-header/runtime problem and cannot prove rendering from a compile check. Do not enable it by default for distributions.
+The coordinated Kit platform enables runtime shaders and font-kit. Full Xcode's offline Metal compiler is not required for regular debug/release builds, but a working native Metal runtime/SDK is still required. The `runtime-shaders` application feature remains a compatibility alias for `desktop`; it is not a separate underlying platform. `--offline-shaders` is rejected instead of falsely claiming a build mode Kit does not expose here. Optional Icon Composer compilation still requires full Xcode 26+.
 
 ## Why not use Zed main instructions verbatim?
 
-Published GPUI 0.2.2 constructs `Application::new()`. Current Zed main documents separate `gpui_platform::application()` and platform features. This workspace uses the published version's example/API. Upgrade these dependencies coherently; do not mix main-branch snippets and release crates.
+Production uses Kit's `gpui::application`, `gpui::init` and `open_window`/Base Root across main/source/About/SSH windows. Keep core/platform/component dependencies coordinated; do not mix old GPUI 0.2 or Zed main snippets with the pinned Kit family. Use Kit controls/default theme, not another app-owned input/editor engine. Retain password native privacy delegation and test Unicode/IME, masked clipboard, dropdown focus/dismissal, save guards and current SQL limits.
 
 ## Adding functionality
 

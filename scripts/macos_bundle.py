@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def build_command(release, runtime_shaders):
+    if not runtime_shaders:
+        raise ValueError("GPUI Kit's platform uses runtime shaders; offline shader builds are not supported by this build helper")
     command = [
         "cargo", "build", "-p", "dalan-app", "--bin", "dalan", "--locked",
         "--features", "runtime-shaders" if runtime_shaders else "desktop",
@@ -113,6 +115,7 @@ def assemble_bundle(executable, destination, version, identifier, compiled_icon_
         shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", contents / "Resources/THIRD_PARTY_NOTICES.md")
         shutil.copy2(ROOT / "crates/app/assets/lucide-LICENSE.txt", contents / "Resources/lucide-LICENSE.txt")
         shutil.copy2(ROOT / "licenses/dbx-Apache-2.0.txt", contents / "Resources/dbx-Apache-2.0.txt")
+        shutil.copy2(ROOT / "licenses/gpui-kit-Apache-2.0.txt", contents / "Resources/gpui-kit-Apache-2.0.txt")
         shutil.copy2(ROOT / "crates/app/assets/brand/Dalan.icns", contents / "Resources/Dalan.icns")
         shutil.copy2(ROOT / "crates/app/assets/brand/dalan.png", contents / "Resources/dalan.png")
         if compiled_icon_directory is not None:
@@ -129,11 +132,11 @@ def assemble_bundle(executable, destination, version, identifier, compiled_icon_
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Build Dalan.app for local macOS development.")
-    parser.add_argument("--release", action="store_true", help="Optimized build; offline Metal shaders by default")
+    parser.add_argument("--release", action="store_true", help="Optimized GPUI Kit build")
     parser.add_argument("--icon-composer", action="store_true", help="Compile the original Dalan.icon with full Xcode 26+; otherwise use the PNG/icns fallback")
     shaders = parser.add_mutually_exclusive_group()
-    shaders.add_argument("--runtime-shaders", dest="runtime_shaders", action="store_true", help="Compile shaders at runtime (debug default)")
-    shaders.add_argument("--offline-shaders", dest="runtime_shaders", action="store_false", help="Use the Xcode Metal compiler (release default)")
+    shaders.add_argument("--runtime-shaders", dest="runtime_shaders", action="store_true", help="Use Kit's runtime shader platform (all builds)")
+    shaders.add_argument("--offline-shaders", dest="runtime_shaders", action="store_false", help="Legacy option: rejected because Kit's platform selects runtime shaders")
     parser.set_defaults(runtime_shaders=None)
     launch = parser.add_mutually_exclusive_group()
     launch.add_argument("--open", action="store_true", help="Launch the bundle with macOS open")
@@ -141,12 +144,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if sys.platform != "darwin":
         parser.error("Dalan.app bundling currently requires macOS")
-    runtime_shaders = args.runtime_shaders if args.runtime_shaders is not None else not args.release
+    runtime_shaders = args.runtime_shaders if args.runtime_shaders is not None else True
     if not runtime_shaders:
-        for tool in ("metal", "metallib"):
-            result = subprocess.run(["xcrun", "--find", tool], capture_output=True, text=True)
-            if result.returncode:
-                parser.error(f"Missing Xcode {tool} compiler. Install/select full Xcode, or use --runtime-shaders for local development.")
+        parser.error("GPUI Kit's platform selects runtime shaders. Omit --offline-shaders; full Xcode is needed only for optional Icon Composer compilation.")
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--no-deps", "--locked", "--format-version", "1"], cwd=ROOT, text=True,
     ))

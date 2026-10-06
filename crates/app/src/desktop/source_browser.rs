@@ -2,15 +2,21 @@
 use dalan_app::explorer_tree::{TreeKey, TreeRow};
 use dalan_drivers::DbEngine;
 use gpui::{
-    Context, Div, Entity, KeyBinding, Stateful, Subscription, Window, actions, div, prelude::*, px,
-    rgb,
+    Context, Div, Entity, Hsla, KeyBinding, Stateful, Subscription, Window, actions, div,
+    prelude::*, px, rgb,
+};
+
+use gpui::component::{
+    Disableable, Selectable, Sizable,
+    button::{Button as KitButton, ButtonVariants},
+    menu::{DropdownMenu, PopupMenuItem},
 };
 
 actions!(table_browser, [ApplyTableConditions]);
 
 use super::{
     data_grid::DataGrid,
-    icons::{Icon, icon},
+    icons::{Icon, icon, provider_icon},
     input::TextInput,
     source_model::SourceModel,
     theme::*,
@@ -25,9 +31,6 @@ pub(super) struct SourceExplorer {
     tree_focus: gpui::FocusHandle,
     scroll: gpui::UniformListScrollHandle,
     menu_source: Option<String>,
-    menu_position: gpui::Point<gpui::Pixels>,
-    bounds: gpui::Bounds<gpui::Pixels>,
-    menu_focus: [gpui::FocusHandle; 3],
     #[cfg(test)]
     last_rendered_row_count: usize,
     #[cfg(test)]
@@ -91,13 +94,14 @@ fn refresh_disabled(model: &SourceModel) -> bool {
 
 struct TreeTooltip(String);
 impl Render for TreeTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = colors(cx);
         div()
             .max_w(px(360.))
             .p(px(8.))
-            .bg(rgb(CHROME))
+            .bg(palette.chrome)
             .text_size(px(12.))
-            .text_color(rgb(TEXT))
+            .text_color(palette.text)
             .child(self.0.clone())
     }
 }
@@ -147,39 +151,12 @@ impl SourceExplorer {
             tree_focus: cx.focus_handle().tab_stop(true).tab_index(20),
             scroll: gpui::UniformListScrollHandle::new(),
             menu_source: None,
-            menu_position: gpui::Point::default(),
-            bounds: gpui::Bounds::default(),
-            menu_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true).tab_index(20)),
             #[cfg(test)]
             last_rendered_row_count: 0,
             #[cfg(test)]
             projection_rebuilds: 0,
             _subscription: subscription,
         }
-    }
-
-    fn open_source_menu(
-        &mut self,
-        source: String,
-        position: gpui::Point<gpui::Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // Pointer positions are in window coordinates, not sidebar coordinates.
-        self.menu_position = position - self.bounds.origin;
-        self.menu_source = Some(source);
-        self.menu_focus[0].focus(window);
-        // Focus after dispatch as well: GPUI's click dispatch may restore the
-        // trigger's implicit focus after this callback returns.
-        let focus = self.menu_focus[0].clone();
-        cx.defer_in(window, move |_, window, _| focus.focus(window));
-        cx.notify();
-    }
-
-    fn close_source_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.menu_source = None;
-        self.tree_focus.focus(window);
-        cx.notify();
     }
 
     fn select_key(&mut self, key: TreeKey, cx: &mut Context<Self>) {
@@ -276,6 +253,7 @@ impl SourceExplorer {
     }
 
     fn render_row(&mut self, row: TreeRow, cx: &mut Context<Self>) -> Stateful<Div> {
+        let palette = colors(cx);
         let model = self.model.read(cx);
         let selected = self.active_key.as_ref().map_or_else(
             || match &row.key {
@@ -344,7 +322,7 @@ impl SourceExplorer {
             TreeKey::Group { .. } => Icon::Folder,
             TreeKey::Table { .. } => Icon::Table,
         };
-        let color = source_color(profile.and_then(|p| p.color.as_deref()));
+        let color = source_color(profile.and_then(|p| p.color.as_deref()), palette.muted);
         let id = tree_row_id(&row.key);
         let debug_id = id.clone();
         let label_id = format!("tree-label-{id}");
@@ -365,12 +343,12 @@ impl SourceExplorer {
             .items_center()
             .gap(px(3.))
             .overflow_hidden()
-            .text_color(rgb(if view { MUTED } else { TEXT }))
-            .when(selected, |el| el.bg(rgb(SELECTION)))
-            .hover(|style| style.bg(rgb(HOVER)))
+            .text_color(if view { palette.muted } else { palette.text })
+            .when(selected, |el| el.bg(palette.selection))
+            .hover(|style| style.bg(palette.hover))
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, window, _| this.tree_focus.focus(window)),
+                cx.listener(|this, _, window, cx| this.tree_focus.focus(window, cx)),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.select_key(key.clone(), cx);
@@ -398,7 +376,11 @@ impl SourceExplorer {
                                 } else {
                                     Icon::ChevronRight
                                 },
-                                if selected { FOCUS } else { MUTED },
+                                if selected {
+                                    palette.focus
+                                } else {
+                                    palette.muted
+                                },
                             ))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
@@ -417,7 +399,7 @@ impl SourceExplorer {
                         .w(px(3.))
                         .h(px(14.))
                         .flex_shrink_0()
-                        .bg(rgb(color)),
+                        .bg(color),
                 )
                 .child(
                     div()
@@ -425,15 +407,19 @@ impl SourceExplorer {
                         .debug_selector(move || driver.clone())
                         .flex()
                         .flex_shrink_0()
-                        .child(icon(glyph, if selected { FOCUS } else { TEXT })),
+                        .child(provider_icon(
+                            profile.expect("source row has profile").engine,
+                        )),
                 );
         } else {
-            element = element.child(
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .child(icon(glyph, if selected { FOCUS } else { MUTED })),
-            );
+            element = element.child(div().flex().flex_shrink_0().child(icon(
+                glyph,
+                if selected {
+                    palette.focus
+                } else {
+                    palette.muted
+                },
+            )));
         }
         element = element.child(
             div()
@@ -441,7 +427,7 @@ impl SourceExplorer {
                 .debug_selector(move || label_id.clone())
                 .flex_1()
                 .min_w(px(if source_row { 80. } else { 0. }))
-                .text_color(rgb(if view { MUTED } else { TEXT }))
+                .text_color(if view { palette.muted } else { palette.text })
                 .text_ellipsis()
                 .child(row.label),
         );
@@ -465,7 +451,14 @@ impl SourceExplorer {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon(glyph, if status == "Stale" { WARNING } else { MUTED }))
+                    .child(icon(
+                        glyph,
+                        if status == "Stale" {
+                            palette.warning
+                        } else {
+                            palette.muted
+                        },
+                    ))
                     .tooltip(move |_, cx| cx.new(|_| TreeTooltip(marker_tooltip.clone())).into()),
             );
         } else if !source_row && row.status.is_some() {
@@ -483,59 +476,77 @@ impl SourceExplorer {
                         } else {
                             Icon::Warning
                         },
-                        WARNING,
+                        palette.warning,
                     )),
             );
         }
         if let TreeKey::Source(source) = &row.key {
             let source = source.clone();
-            let keyboard_source = source.clone();
-            let action_id = format!("source-actions-{source}");
+            let action_id = gpui::SharedString::from(format!("source-actions-{source}"));
+            let debug_id = action_id.clone();
+            let view = cx.entity().downgrade();
+            let menu_view = view.clone();
+            let open_source = source.clone();
             element = element.child(
-                div()
-                    .id(gpui::SharedString::from(action_id.clone()))
-                    .debug_selector(move || action_id.clone())
+                KitButton::new(action_id)
+                    .debug_selector(move || debug_id.clone().into())
+                    .small()
+                    .ghost()
                     .tab_index(20)
-                    .tab_stop(true)
                     .w(px(18.))
                     .h(px(18.))
+                    .p(px(0.))
                     .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(CONTROL_RADIUS))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(HOVER)))
-                    .focus(|style| style.bg(rgb(SELECTION)))
-                    .child(icon(Icon::Manage, MUTED))
-                    .tooltip(|_, cx| cx.new(|_| TreeTooltip("Source actions".into())).into())
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|_, _, _, cx| {
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_click(
-                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            this.open_source_menu(source.clone(), event.position(), window, cx);
-                        }),
-                    )
-                    .on_key_down(cx.listener(
-                        move |this, event: &gpui::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                cx.stop_propagation();
-                                let position =
-                                    this.bounds.origin + gpui::point(px(0.), px(TOOLBAR_HEIGHT));
-                                this.open_source_menu(
-                                    keyboard_source.clone(),
-                                    position,
-                                    window,
-                                    cx,
-                                );
-                            }
-                        },
-                    )),
+                    .child(icon(Icon::Manage, palette.muted))
+                    .tooltip("Source actions")
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .dropdown_menu(move |mut menu, _, cx| {
+                        // Capture the row's source, not the currently selected source.
+                        // The Kit popover owns positioning, focus and dismissal, even
+                        // while the tree's uniform list recycles its visible rows.
+                        let disabled = menu_view.upgrade().is_none_or(|view| {
+                            let model = view.read(cx).model.read(cx);
+                            model.busy || model.saving
+                        });
+                        for (index, label) in ["Manage", "Copy", "Remove"].into_iter().enumerate() {
+                            let view = menu_view.clone();
+                            let source = source.clone();
+                            menu = menu.item(
+                                PopupMenuItem::element(move |_, _| {
+                                    let selector = match index {
+                                        0 => "source-action-manage",
+                                        1 => "source-action-copy",
+                                        _ => "source-action-remove",
+                                    };
+                                    div().debug_selector(move || selector.into()).child(label)
+                                })
+                                .disabled(disabled)
+                                .on_click(move |_, _, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.model.update(cx, |model, cx| {
+                                            if model.busy || model.saving {
+                                                return;
+                                            }
+                                            match index {
+                                                0 => model.manage_source(source.clone(), cx),
+                                                1 => model.copy_source(source.clone(), cx),
+                                                _ => {
+                                                    model.request_delete_source(source.clone(), cx)
+                                                }
+                                            }
+                                        });
+                                    });
+                                }),
+                            );
+                        }
+                        menu
+                    })
+                    .on_open_change(move |open, _, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.menu_source = open.then(|| open_source.clone());
+                            cx.notify();
+                        });
+                    }),
             );
         }
         element = element.tooltip(move |_, cx| cx.new(|_| TreeTooltip(tooltip.clone())).into());
@@ -545,6 +556,7 @@ impl SourceExplorer {
 
 impl Render for SourceExplorer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = colors(cx);
         let model = self.model.read(cx);
         let target = model
             .explorer_source
@@ -562,7 +574,6 @@ impl Render for SourceExplorer {
             .unwrap_or("Data source")
             .to_owned();
         let expanded = model.tree.has_visible_expansion(&model.profiles);
-        let menu_disabled = model.busy || model.saving;
         let toolbar = div()
             .id("source-explorer-toolbar")
             .debug_selector(|| "source-explorer-toolbar".into())
@@ -635,30 +646,13 @@ impl Render for SourceExplorer {
         .flex_1()
         .min_h(px(0.))
         .min_w(px(0.))
-        .track_scroll(self.scroll.clone());
-        let view = cx.entity().downgrade();
-        let previous_bounds = self.bounds;
-        let measurement = gpui::canvas(
-            move |bounds, _, cx| {
-                if bounds != previous_bounds {
-                    cx.defer(move |cx| {
-                        let _ = view.update(cx, |this, _| this.bounds = bounds);
-                    });
-                }
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .size_full();
+        .track_scroll(&self.scroll);
         let mut root = div()
             .id("source-explorer")
             .debug_selector(|| "source-explorer".into())
             .track_focus(&self.tree_focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.menu_source.is_some() && event.keystroke.key == "escape" {
-                    cx.stop_propagation();
-                    this.close_source_menu(window, cx);
-                } else if this.menu_source.is_none() && this.tree_focus.is_focused(window) {
+                if this.menu_source.is_none() && this.tree_focus.is_focused(window) {
                     this.keyboard(event, cx);
                 }
             }))
@@ -669,18 +663,17 @@ impl Render for SourceExplorer {
             .flex_col()
             .overflow_hidden()
             .text_size(px(12.))
-            .text_color(rgb(TEXT))
-            .bg(rgb(PANEL))
+            .text_color(palette.text)
+            .bg(palette.panel)
             .border_1()
-            .border_color(rgb(PANEL))
-            .focus(|style| style.border_color(rgb(FOCUS)))
-            .child(measurement)
+            .border_color(palette.panel)
+            .focus(|style| style.border_color(palette.focus))
             .child(toolbar);
         if self.rows.is_empty() {
             root = root.child(
                 div()
                     .p(px(8.))
-                    .text_color(rgb(MUTED))
+                    .text_color(palette.muted)
                     .child("No data sources yet. Add a source to begin."),
             );
         }
@@ -732,7 +725,7 @@ impl Render for SourceExplorer {
                     .flex_shrink_0()
                     .px(px(6.))
                     .text_ellipsis()
-                    .text_color(rgb(WARNING))
+                    .text_color(palette.warning)
                     .child(notice.clone())
                     .tooltip(move |_, cx| cx.new(|_| TreeTooltip(notice.clone())).into()),
             );
@@ -746,106 +739,10 @@ impl Render for SourceExplorer {
                     .flex_shrink_0()
                     .px(px(6.))
                     .text_ellipsis()
-                    .text_color(rgb(WARNING))
+                    .text_color(palette.warning)
                     .child(error.clone())
                     .tooltip(move |_, cx| cx.new(|_| TreeTooltip(error.clone())).into()),
             );
-        }
-        if let Some(source) = self.menu_source.clone() {
-            // Render one overlay outside the virtual list so row clipping and
-            // recycled rows never clip the menu or eagerly materialize the tree.
-            let top = self
-                .menu_position
-                .y
-                .max(px(TOOLBAR_HEIGHT))
-                .min((self.bounds.size.height - px(100.)).max(px(TOOLBAR_HEIGHT)));
-            let mut menu = div()
-                .id("source-actions-menu")
-                .debug_selector(|| "source-actions-menu".into())
-                .absolute()
-                .top(top)
-                .right(px(6.))
-                .w(px(160.))
-                .p(px(4.))
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .bg(rgb(CHROME))
-                .border_1()
-                .border_color(rgb(MUTED))
-                .occlude()
-                .on_mouse_down_out(cx.listener(|this, _, window, cx| {
-                    this.close_source_menu(window, cx);
-                }))
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "tab" {
-                        cx.stop_propagation();
-                        window.prevent_default();
-                        let index = this
-                            .menu_focus
-                            .iter()
-                            .position(|focus| focus.is_focused(window))
-                            .unwrap_or(0);
-                        let next = if event.keystroke.modifiers.shift {
-                            (index + 2) % 3
-                        } else {
-                            (index + 1) % 3
-                        };
-                        this.menu_focus[next].focus(window);
-                    }
-                }));
-            for (index, (id, label)) in [
-                ("source-action-manage", "Manage"),
-                ("source-action-copy", "Copy"),
-                ("source-action-remove", "Remove"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let source = source.clone();
-                let activate =
-                    move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-                        if !menu_disabled {
-                            this.close_source_menu(window, cx);
-                            this.model.update(cx, |model, cx| match index {
-                                0 => model.manage_source(source.clone(), cx),
-                                1 => model.copy_source(source.clone(), cx),
-                                _ => model.request_delete_source(source.clone(), cx),
-                            });
-                        }
-                    };
-                let keyboard_activate = activate.clone();
-                menu = menu.child(
-                    div()
-                        .id(id)
-                        .debug_selector(move || id.into())
-                        .track_focus(&self.menu_focus[index])
-                        .tab_stop(!menu_disabled)
-                        .h(px(28.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .text_color(rgb(if menu_disabled { MUTED } else { TEXT }))
-                        .when(!menu_disabled, |el| {
-                            el.cursor_pointer().hover(|style| style.bg(rgb(HOVER)))
-                        })
-                        .focus(|style| style.bg(rgb(SELECTION)))
-                        .child(label)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            activate(this, window, cx);
-                        }))
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    cx.stop_propagation();
-                                    keyboard_activate(this, window, cx);
-                                }
-                            },
-                        )),
-                );
-            }
-            root = root.child(menu);
         }
         root
     }
@@ -867,7 +764,7 @@ impl SourceBrowser {
         cx.bind_keys([KeyBinding::new(
             "enter",
             ApplyTableConditions,
-            Some("TableBrowser > DalanInput"),
+            Some("TableBrowser > Input"),
         )]);
         let grid = cx.new(|cx| DataGrid::new(model.clone(), cx));
         let m = model.read(cx);
@@ -958,6 +855,7 @@ impl SourceBrowser {
 
 impl Render for SourceBrowser {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = colors(cx);
         let m = self.model.read(cx);
         if m.profiles.is_empty() {
             let disabled = m.busy || m.saving;
@@ -973,8 +871,8 @@ impl Render for SourceBrowser {
                 .justify_center()
                 .items_center()
                 .gap(px(12.))
-                .bg(rgb(PANEL))
-                .text_color(rgb(TEXT))
+                .bg(palette.panel)
+                .text_color(palette.text)
                 .text_size(px(12.))
                 .child(button(
                     "connect-empty-source",
@@ -986,7 +884,7 @@ impl Render for SourceBrowser {
                 ))
                 .child(
                     div()
-                        .text_color(rgb(MUTED))
+                        .text_color(palette.muted)
                         .child("Configure a MySQL or MariaDB connection to begin."),
                 )
                 .when(loading, |el| {
@@ -997,8 +895,8 @@ impl Render for SourceBrowser {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .text_color(rgb(MUTED))
-                            .child(icon(Icon::Loading, MUTED))
+                            .text_color(palette.muted)
+                            .child(icon(Icon::Loading, palette.muted))
                             .child("Loading data sources…")
                             .tooltip(|_, cx| {
                                 cx.new(|_| super::ControlTooltip("Loading...")).into()
@@ -1006,7 +904,7 @@ impl Render for SourceBrowser {
                     )
                 })
                 .when_some(load_error, |el, error| {
-                    el.child(div().text_color(rgb(WARNING)).child(error))
+                    el.child(div().text_color(palette.warning).child(error))
                 });
         }
         let busy = m.busy;
@@ -1046,8 +944,8 @@ impl Render for SourceBrowser {
             .min_w(px(0.))
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
-            .text_color(rgb(TEXT))
+            .bg(palette.panel)
+            .text_color(palette.text)
             .text_size(px(12.));
         if show_header {
             body = body.child(
@@ -1058,7 +956,7 @@ impl Render for SourceBrowser {
                     .px(px(10.))
                     .py(px(6.))
                     .min_h(px(PANEL_HEADER_HEIGHT))
-                    .bg(rgb(HEADER))
+                    .bg(palette.header)
                     .flex()
                     .items_center()
                     .justify_between()
@@ -1086,7 +984,7 @@ impl Render for SourceBrowser {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icon(Icon::ReadOnly, MUTED))
+                            .child(icon(Icon::ReadOnly, palette.muted))
                             .tooltip(|_, cx| {
                                 cx.new(|_| {
                                     super::ControlTooltip(
@@ -1119,7 +1017,7 @@ impl Render for SourceBrowser {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(icon(Icon::Filter, MUTED))
+                            .child(icon(Icon::Filter, palette.muted))
                             .child(
                                 div()
                                     .flex_1()
@@ -1136,7 +1034,7 @@ impl Render for SourceBrowser {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .child(icon(Icon::Sort, MUTED))
+                            .child(icon(Icon::Sort, palette.muted))
                             .child(
                                 div()
                                     .flex_1()
@@ -1188,8 +1086,8 @@ impl Render for SourceBrowser {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .text_color(rgb(MUTED))
-                    .child(icon(Icon::Loading, MUTED))
+                    .text_color(palette.muted)
+                    .child(icon(Icon::Loading, palette.muted))
                     .child(if title.is_empty() {
                         "Loading…".into()
                     } else {
@@ -1199,13 +1097,17 @@ impl Render for SourceBrowser {
             );
         }
         if let Some(error) = error {
-            body = body.child(div().px(px(12.)).py(px(6.)).text_color(rgb(ERROR)).child(
-                if title.is_empty() {
-                    error
-                } else {
-                    format!("{title}: {error}")
-                },
-            ));
+            body = body.child(
+                div()
+                    .px(px(12.))
+                    .py(px(6.))
+                    .text_color(palette.error)
+                    .child(if title.is_empty() {
+                        error
+                    } else {
+                        format!("{title}: {error}")
+                    }),
+            );
         }
         if let Some(page) = page {
             if let Some(feedback) = export_feedback {
@@ -1213,12 +1115,12 @@ impl Render for SourceBrowser {
                     div()
                         .px(px(12.0))
                         .py(px(6.0))
-                        .text_color(rgb(MUTED))
+                        .text_color(palette.muted)
                         .child(feedback),
                 );
             }
             if stale {
-                body = body.child(div().px(px(12.0)).py(px(6.0)).text_color(rgb(MUTED))
+                body = body.child(div().px(px(12.0)).py(px(6.0)).text_color(palette.muted)
                     .child("Previous page shown until the current request succeeds. Pagination is disabled."));
             }
             body = body.child(self.grid.clone());
@@ -1236,7 +1138,7 @@ impl Render for SourceBrowser {
                     .child(
                         div()
                             .id("table-page-summary")
-                            .text_color(rgb(MUTED))
+                            .text_color(palette.muted)
                             .child(summary)
                             .tooltip(move |_, cx| {
                                 cx.new(|_| TreeTooltip(summary_tooltip.clone())).into()
@@ -1309,8 +1211,8 @@ impl Render for SourceBrowser {
                     .items_center()
                     .justify_center()
                     .gap(px(6.))
-                    .text_color(rgb(MUTED))
-                    .child(icon(Icon::Table, MUTED))
+                    .text_color(palette.muted)
+                    .child(icon(Icon::Table, palette.muted))
                     .child(empty),
             );
         }
@@ -1319,12 +1221,13 @@ impl Render for SourceBrowser {
 }
 
 /// Treat malformed persisted/custom colors as a neutral indicator, never as CSS.
-fn source_color(color: Option<&str>) -> u32 {
+fn source_color(color: Option<&str>, fallback: Hsla) -> Hsla {
     color
         .and_then(|color| color.strip_prefix('#'))
         .filter(|hex| hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-        .unwrap_or(MUTED)
+        .map(|color| rgb(color).into())
+        .unwrap_or(fallback)
 }
 
 fn toolbar_button<T: 'static>(
@@ -1334,18 +1237,23 @@ fn toolbar_button<T: 'static>(
     disabled: bool,
     cx: &mut Context<T>,
     activate: impl Fn(&mut T, &mut Context<T>) + Clone + 'static,
-) -> Stateful<Div> {
+) -> KitButton {
+    let palette = colors(cx);
     button(id, "", false, disabled, cx, activate)
         .w(px(CONTROL_HEIGHT))
         .h(px(CONTROL_HEIGHT))
         .p(px(0.))
-        .border_color(rgb(PANEL))
-        .rounded(px(CONTROL_RADIUS))
-        .bg(rgb(PANEL))
         .flex_shrink_0()
-        .justify_center()
-        .child(icon(glyph, if disabled { MUTED } else { TEXT }))
-        .tooltip(move |_, cx| cx.new(|_| super::ControlTooltip(tooltip)).into())
+        .child(icon(
+            glyph,
+            if disabled {
+                palette.muted
+            } else {
+                palette.text
+            },
+        ))
+        .accessibility_label(tooltip)
+        .tooltip(tooltip)
 }
 
 fn page_summary(page: &dalan_drivers::TablePage) -> (String, String) {
@@ -1368,7 +1276,7 @@ fn page_summary(page: &dalan_drivers::TablePage) -> (String, String) {
     )
 }
 
-/// GPUI creates a focus handle for tab-indexed elements; IDs keep it stable across renders.
+/// Kit owns activation, focus, disabled and selected-state presentation.
 fn button<T: 'static>(
     id: impl Into<String>,
     label: impl Into<String>,
@@ -1376,70 +1284,26 @@ fn button<T: 'static>(
     disabled: bool,
     cx: &mut Context<T>,
     activate: impl Fn(&mut T, &mut Context<T>) + Clone + 'static,
-) -> Stateful<Div> {
-    let id: String = id.into();
-    let primary = id == "connect-empty-source";
-    let background = if primary && !disabled {
-        FOCUS
-    } else if selected {
-        SELECTION
-    } else {
-        PANEL
-    };
-    let id: gpui::SharedString = id.into();
-    let label: String = label.into();
+) -> KitButton {
+    let id: gpui::SharedString = id.into().into();
+    let primary = id.as_ref() == "connect-empty-source";
     let debug_id = id.clone();
-    let click = activate.clone();
-    div()
-        .id(id)
+    let label: String = label.into();
+    KitButton::new(id)
         .debug_selector(move || debug_id.clone().into())
+        .small()
+        .when(primary, |button| button.primary())
+        .when(!primary, |button| button.ghost())
+        .selected(selected)
+        .disabled(disabled)
         .tab_index(20)
         .tab_stop(!disabled)
-        .flex()
-        .items_center()
-        .min_w(px(0.))
-        .px(px(8.))
-        .h(px(CONTROL_HEIGHT))
-        .flex_shrink_0()
-        .rounded(px(CONTROL_RADIUS))
-        .border_1()
-        .border_color(rgb(background))
-        .bg(rgb(background))
-        .text_color(rgb(if disabled {
-            MUTED
-        } else if primary {
-            PANEL
-        } else if selected {
-            FOCUS
-        } else {
-            TEXT
-        }))
-        .when(!disabled, |el| {
-            el.cursor_pointer()
-                .hover(move |style| style.bg(rgb(if primary { FOCUS } else { HOVER })))
-        })
-        .focus(|style| style.border_color(rgb(FOCUS)))
+        .when(!label.is_empty(), |button| button.label(label))
         .on_click(cx.listener(move |this, _, _, cx| {
             if !disabled {
-                click(this, cx);
-            }
-        }))
-        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-            if !disabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
                 activate(this, cx);
             }
         }))
-        .when(!label.is_empty(), |el| {
-            el.child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(label),
-            )
-        })
 }
 
 #[cfg(all(test, feature = "ui-tests"))]
@@ -1451,12 +1315,38 @@ mod tests {
     };
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
 
+    /// Production Kit popovers render through the window's component Root.
+    fn kit_window<T: Render + 'static>(
+        cx: &mut TestAppContext,
+        build: impl FnOnce(&mut Context<T>) -> T,
+    ) -> (Entity<T>, &mut VisualTestContext) {
+        // Kit globals must exist before constructing inputs or popup controls.
+        cx.update(gpui::init);
+        cx.update(crate::desktop::bind_keys);
+        let view = cx.new(build);
+        let (_, visual) =
+            cx.add_window_view(|window, cx| gpui::base::Root::new(view.clone(), window, cx));
+        (view, visual)
+    }
+
     fn click(cx: &mut VisualTestContext, id: &str) {
         cx.run_until_parked();
         let bounds = cx
             .debug_bounds(Box::leak(id.to_owned().into_boxed_str()))
             .unwrap_or_else(|| panic!("missing {id}"));
         cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.run_until_parked();
+    }
+
+    /// Native Kit button activation completes on key release.
+    fn press(cx: &mut VisualTestContext, key: &str) {
+        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
         cx.run_until_parked();
     }
 
@@ -1488,7 +1378,6 @@ mod tests {
     fn sorting_fixture(
         cx: &mut TestAppContext,
     ) -> (gpui::Entity<SourceModel>, &mut VisualTestContext) {
-        cx.update(crate::desktop::bind_keys);
         let model = cx.new(|_| {
             let mut model = SourceModel::for_tests(vec![SourceProfile::default()]);
             model.selected_database = Some("inventory".into());
@@ -1496,7 +1385,7 @@ mod tests {
             model.page = Some(std::sync::Arc::new(page()));
             model
         });
-        let (_, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
+        let (_, cx) = kit_window(cx, |cx| SourceBrowser::new(model.clone(), cx));
         cx.simulate_resize(gpui::size(px(1000.), px(800.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
@@ -1588,7 +1477,7 @@ mod tests {
             model.page = Some(Arc::clone(&snapshot));
             model
         });
-        let (workspace, cx) = cx.add_window_view(|_, cx| ScrollingWorkspace {
+        let (workspace, cx) = kit_window(cx, |cx| ScrollingWorkspace {
             explorer: cx.new(|cx| SourceExplorer::new(model.clone(), cx)),
             browser: cx.new(|cx| SourceBrowser::new(model.clone(), cx)),
         });
@@ -1709,7 +1598,7 @@ mod tests {
                 .insert("refresh-guard".into(), vec!["cached_db".into()]);
             m
         });
-        let (_, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        let (_, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
         cx.refresh().unwrap();
         click(cx, "refresh-source");
         model.read_with(cx, |m, _| {
@@ -1723,7 +1612,7 @@ mod tests {
         // Activating every other toolbar/tree stop could intentionally connect
         // a source, so it is not a valid disabled-Refresh regression.
         for _ in 0..8 {
-            cx.update(|window, _| window.focus_next());
+            cx.update(|window, cx| window.focus_next(cx));
             cx.run_until_parked();
         }
         model.update(cx, |m, cx| {
@@ -1773,7 +1662,7 @@ mod tests {
             m.tree.expanded_sources.insert("offline".into());
             m
         });
-        let (explorer, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        let (explorer, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
         cx.simulate_resize(gpui::size(px(240.), px(420.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
@@ -1869,9 +1758,9 @@ mod tests {
         // This isolated browser has no Shell tab action; traverse GPUI's focus tree.
         let mut focused_header = false;
         for _ in 0..20 {
-            cx.update(|window, _| window.focus_next());
+            cx.update(|window, cx| window.focus_next(cx));
             cx.run_until_parked();
-            cx.simulate_keystrokes("enter");
+            press(cx, "enter");
             cx.run_until_parked();
             if model.read_with(cx, |model, _| model.sort.is_some()) {
                 focused_header = true;
@@ -1884,14 +1773,14 @@ mod tests {
             model.read_with(cx, |model, _| model.sort.as_ref().unwrap().direction),
             SortDirection::Ascending
         );
-        cx.simulate_keystrokes("space");
+        press(cx, "space");
         cx.run_until_parked();
         model.read_with(cx, |model, _| {
             let sort = model.sort.as_ref().unwrap();
             assert_eq!(sort.column, column);
             assert_eq!(sort.direction, SortDirection::Descending);
         });
-        cx.simulate_keystrokes("enter");
+        press(cx, "enter");
         cx.run_until_parked();
         assert!(model.read_with(cx, |model, _| model.sort.is_none()));
     }
@@ -1950,7 +1839,6 @@ mod tests {
 
     #[gpui::test]
     fn clause_inputs_keep_drafts_until_apply_and_clear(cx: &mut TestAppContext) {
-        cx.update(crate::desktop::bind_keys);
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let profile = SourceProfile {
             host: "127.0.0.1".into(),
@@ -1965,7 +1853,7 @@ mod tests {
             model.page = Some(std::sync::Arc::new(page()));
             model
         });
-        let (browser, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
+        let (browser, cx) = kit_window(cx, |cx| SourceBrowser::new(model.clone(), cx));
         cx.simulate_resize(gpui::size(px(1000.), px(800.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
@@ -1983,7 +1871,7 @@ mod tests {
             assert_eq!(browser.where_input.read(app).value(), "id > 1");
             assert_eq!(browser.order_input.read(app).value(), "name DESC, id ASC");
         });
-        cx.simulate_keystrokes("enter");
+        press(cx, "enter");
         cx.run_until_parked();
         model.read_with(cx, |model, _| {
             assert_eq!(model.where_clause, "id > 1");
@@ -2013,7 +1901,7 @@ mod tests {
             model.selected_source = Some(id.clone());
             model
         });
-        let (_, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        let (_, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
         cx.refresh().unwrap();
         cx.run_until_parked();
         assert!(cx.debug_bounds("confirm-delete").is_none());
@@ -2060,7 +1948,7 @@ mod tests {
             ..mysql.clone()
         };
         let model = cx.new(|_| SourceModel::for_tests(vec![mysql, maria]));
-        let (_, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        let (_, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
         cx.simulate_resize(gpui::size(px(320.), px(600.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
@@ -2107,15 +1995,22 @@ mod tests {
             assert!(!m.busy);
         });
         click(cx, "source-actions-maria-fixture");
-        assert!(cx.debug_bounds("source-actions-menu").is_some());
-        click(cx, "source-action-manage");
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        press(cx, "enter");
+        cx.run_until_parked();
         model.read_with(cx, |m, _| {
             assert!(m.form_open);
             assert_eq!(m.form_profile.as_ref().unwrap().id, "maria-fixture");
         });
-        assert_eq!(source_color(Some("#ff0000")), 0xff0000);
+        let fallback: Hsla = rgb(0x808080).into();
+        assert_eq!(
+            source_color(Some("#ff0000"), fallback),
+            Hsla::from(rgb(0xff0000))
+        );
+        assert_eq!(source_color(None, fallback), fallback);
         for invalid in ["ff0000", "#fff", "#zzzzzz", "#1000000"] {
-            assert_eq!(source_color(Some(invalid)), MUTED);
+            assert_eq!(source_color(Some(invalid), fallback), fallback);
         }
     }
 
@@ -2136,7 +2031,7 @@ mod tests {
             model.explorer_source = Some("11111111-1111-4111-8111-111111111111".into());
             model
         });
-        let (explorer, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        let (explorer, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
         cx.refresh().unwrap();
         click(cx, "source-actions-22222222-2222-4222-8222-222222222222");
         model.read_with(cx, |model, _| {
@@ -2147,9 +2042,11 @@ mod tests {
             assert!(model.tree.expanded_sources.is_empty());
             assert!(model.tree.loading.is_empty());
         });
-        cx.simulate_keystrokes("tab");
+        cx.simulate_keystrokes("down");
         cx.run_until_parked();
-        cx.simulate_keystrokes("enter");
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        press(cx, "enter");
         cx.run_until_parked();
         model.read_with(cx, |model, _| {
             assert!(model.form_open);
@@ -2184,7 +2081,7 @@ mod tests {
             m.tree.expanded_sources.insert("virtual-source".into());
             m
         });
-        let (explorer, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        let (explorer, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
         cx.simulate_resize(gpui::size(px(200.), px(420.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
@@ -2222,7 +2119,7 @@ mod tests {
         );
         explorer.read_with(cx, |view, _| assert!(view.last_rendered_row_count <= 40));
         let focus = explorer.read_with(cx, |view, _| view.tree_focus.clone());
-        cx.update(|window, _| focus.focus(window));
+        cx.update(|window, cx| focus.focus(window, cx));
         cx.simulate_keystrokes("end");
         cx.run_until_parked();
         explorer.read_with(cx, |view, _| {
@@ -2272,7 +2169,7 @@ mod tests {
             m.tree.expand_loaded();
             m
         });
-        let (explorer, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        let (explorer, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
         cx.simulate_resize(gpui::size(px(240.), px(420.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
@@ -2300,7 +2197,7 @@ mod tests {
             view.select_key(table, cx);
         });
         let focus = explorer.read_with(cx, |view, _| view.tree_focus.clone());
-        cx.update(|window, _| focus.focus(window));
+        cx.update(|window, cx| focus.focus(window, cx));
         cx.simulate_keystrokes("left");
         cx.run_until_parked();
         explorer.read_with(cx, |view, _| {
@@ -2332,7 +2229,7 @@ mod tests {
             m.selected_source = Some(profile.id.clone());
             m
         });
-        let (_, cx) = cx.add_window_view(|_, cx| SourceExplorer::new(model.clone(), cx));
+        let (_, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
         cx.refresh().unwrap();
         click(cx, &format!("source-actions-{}", profile.id));
         click(cx, "source-action-manage");
@@ -2371,7 +2268,7 @@ mod tests {
     #[gpui::test]
     fn empty_browser_connect_is_centered_and_keyboard_accessible(cx: &mut TestAppContext) {
         let model = cx.new(|_| SourceModel::for_tests(vec![]));
-        let (_, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
+        let (_, cx) = kit_window(cx, |cx| SourceBrowser::new(model.clone(), cx));
         cx.simulate_resize(gpui::size(px(1000.), px(800.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
@@ -2386,8 +2283,8 @@ mod tests {
                 m.form_open = false;
                 cx.notify();
             });
-            cx.update(|window, _| window.focus_next());
-            cx.simulate_keystrokes(key);
+            cx.update(|window, cx| window.focus_next(cx));
+            press(cx, key);
             cx.run_until_parked();
             assert!(model.read_with(cx, |m, _| m.form_open));
         }
@@ -2413,7 +2310,7 @@ mod tests {
                 .insert("offline-prompt".into(), vec!["cached_db".into()]);
             m
         });
-        let (_, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
+        let (_, cx) = kit_window(cx, |cx| SourceBrowser::new(model.clone(), cx));
         cx.simulate_resize(gpui::size(px(1000.), px(800.)));
         cx.refresh().unwrap();
         cx.run_until_parked();
@@ -2469,7 +2366,7 @@ mod tests {
     #[gpui::test]
     fn committed_order_changes_sync_without_clobbering_where_draft(cx: &mut TestAppContext) {
         let model = cx.new(|_| SourceModel::for_tests(vec![]));
-        let (browser, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
+        let (browser, cx) = kit_window(cx, |cx| SourceBrowser::new(model.clone(), cx));
         browser.update(cx, |browser, cx| {
             browser
                 .where_input
@@ -2492,7 +2389,7 @@ mod tests {
     #[gpui::test]
     fn selection_observer_resets_clause_drafts(cx: &mut TestAppContext) {
         let model = cx.new(|_| SourceModel::for_tests(vec![]));
-        let (browser, cx) = cx.add_window_view(|_, cx| SourceBrowser::new(model.clone(), cx));
+        let (browser, cx) = kit_window(cx, |cx| SourceBrowser::new(model.clone(), cx));
         browser.update(cx, |browser, cx| {
             browser
                 .where_input

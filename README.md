@@ -11,7 +11,7 @@
 
 ## Introduction
 
-Dalan means “ways” in Javanese. It is a native Rust + GPUI database workspace with DataGrip-inspired workflows, compact Zed-style UI, and the Carbonfox opaque theme.
+Dalan means “ways” in Javanese. It is a native Rust + GPUI Kit database workspace with DataGrip-inspired workflows, compact layout, Kit standard controls and Kit's default theme.
 
 MySQL and MariaDB are experimental: source management, offline schema browsing, table tabs, WHERE/ORDER BY, restricted read-only query consoles, and loaded CSV export are implemented. PostgreSQL, Redis, plugins, and live ACP-only AI integration are planned. No application BYOK or general-purpose IDE tools.
 

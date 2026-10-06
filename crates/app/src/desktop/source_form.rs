@@ -8,16 +8,19 @@ use dalan_drivers::sources::{
     Authentication, ConnectionMode, DbEngine, SchemaSelection, SourceProfile, TlsMode, Transport,
 };
 use gpui::{
-    App, Context, Div, Entity, FocusHandle, Stateful, Subscription, Window, div, prelude::*, px,
-    rgb,
+    App, Context, Div, Entity, FocusHandle, Subscription, Window, div, prelude::*, px, rgb,
+};
+
+use gpui::component::{
+    Disableable, Selectable, Sizable,
+    button::{Button, ButtonVariants},
+    checkbox::Checkbox,
+    menu::{DropdownMenu, PopupMenuItem},
+    tab::{Tab, TabBar},
 };
 
 use super::{
-    Dismiss, NextFocus, PreviousFocus,
-    icons::{Icon, icon},
-    input::TextInput,
-    source_model::SourceModel,
-    theme::*,
+    Dismiss, NextFocus, PreviousFocus, input::TextInput, source_model::SourceModel, theme::*,
 };
 
 const COLOR_PRESETS: [(&str, &str, &str, Option<u32>); 6] = [
@@ -35,7 +38,6 @@ pub(super) struct SourceForm {
     model: Entity<SourceModel>,
     inputs: HashMap<&'static str, Entity<TextInput>>,
     last_values: HashMap<&'static str, String>,
-    controls: HashMap<&'static str, FocusHandle>,
     root_focus: FocusHandle,
     engine: DbEngine,
     transport: u8,
@@ -46,7 +48,6 @@ pub(super) struct SourceForm {
     ssh_selected: Option<String>,
     ssh_combo_open: bool,
     selected_schema_names: HashSet<String>,
-    ssh_scroll: gpui::UniformListScrollHandle,
     schema_scroll: gpui::UniformListScrollHandle,
     ssh_keys: Vec<dalan_app::ssh_keys::SshKeyCandidate>,
     key_picker_open: bool,
@@ -253,50 +254,6 @@ impl SourceForm {
             inputs.insert(id, input);
         }
         subscriptions.push(cx.observe(&model, |_, _, cx| cx.notify()));
-        let controls = [
-            "source-engine-mysql",
-            "source-engine-mariadb",
-            "source-direct",
-            "source-ssh",
-            "source-http",
-            "source-https",
-            "source-tls-verify",
-            "source-tls-disabled",
-            "source-save-password",
-            "source-test",
-            "source-save",
-            "source-cancel",
-            "source-keys",
-            "source-ca-browse",
-            "source-tab-general",
-            "source-tab-options",
-            "source-tab-ssh",
-            "source-tab-schemas",
-            "source-driver",
-            "source-ssh-profile",
-            "source-manage-ssh",
-            "source-ssh-custom",
-            "source-fetch-schemas",
-            "source-tls-mode",
-            "source-tls-required",
-            "source-tls-verify-ca",
-            "source-authentication",
-            "source-auth-user-password",
-            "source-auth-none",
-            "source-mode-default",
-            "source-mode-socket",
-            "source-mode-url",
-            "source-schemas-all",
-            "source-schemas-selected",
-            "source-parse-ssh-config",
-            "source-socket-browse",
-            "source-client-cert-browse",
-            "source-client-key-browse",
-        ]
-        .into_iter()
-        .chain(COLOR_PRESETS.iter().map(|(id, _, _, _)| *id))
-        .map(|id| (id, cx.focus_handle().tab_stop(true)))
-        .collect();
         #[cfg(not(feature = "ui-tests"))]
         {
             let task = cx.background_executor().spawn(async {
@@ -334,7 +291,6 @@ impl SourceForm {
                 SchemaSelection::All => HashSet::new(),
                 SchemaSelection::Selected(names) => names.iter().cloned().collect(),
             },
-            ssh_scroll: gpui::UniformListScrollHandle::new(),
             schema_scroll: gpui::UniformListScrollHandle::new(),
             engine: profile.engine,
             tls: profile.tls,
@@ -357,7 +313,6 @@ impl SourceForm {
             model,
             inputs,
             last_values,
-            controls,
             root_focus: cx.focus_handle().tab_stop(false),
             transport,
             ssh_keys: vec![],
@@ -410,6 +365,7 @@ impl SourceForm {
     }
 
     fn ssh_profile_control(&self, cx: &mut Context<Self>) -> Div {
+        let palette = colors(cx);
         let label = self
             .ssh_profiles
             .iter()
@@ -427,65 +383,73 @@ impl SourceForm {
                     "Custom SSH connection".into()
                 }
             });
-        let trigger = div()
-            .id("source-ssh-profile")
+        let profiles = self.ssh_profiles.clone();
+        let selected = self.ssh_selected.clone();
+        let entity = cx.entity().downgrade();
+        let disabled = self.model.read(cx).saving;
+        let trigger = Button::new("source-ssh-profile")
             .debug_selector(|| "source-ssh-profile".into())
-            .track_focus(&self.controls["source-ssh-profile"])
-            .tab_index(0)
-            .min_w(px(0.))
-            .flex_1()
-            .h(px(CONTROL_HEIGHT))
-            .px(px(8.))
-            .flex()
-            .items_center()
-            .border_1()
-            .border_color(rgb(MUTED))
-            .rounded(px(CONTROL_RADIUS))
-            .cursor_pointer()
-            .focus(|style| style.border_color(rgb(FOCUS)))
-            .on_click(cx.listener(|this, _, _, cx| this.activate("source-ssh-profile", cx)))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    this.activate("source-ssh-profile", cx);
-                }
-            }))
-            .child(div().text_ellipsis().child(label));
-        let control = div().relative().w_full().flex().gap(px(8.))
-            .child(trigger).child(self.button("source-manage-ssh", "…", false, 0, cx))
-            .when(self.ssh_combo_open, |container| container.child(gpui::deferred(
-                div().absolute().top(px(CONTROL_HEIGHT + 2.)).left(px(0.)).w(px(360.))
-                    .occlude().bg(rgb(HEADER)).border_1().border_color(rgb(MUTED)).p(px(4.))
-                    .child(self.button("source-ssh-custom", "Custom SSH connection", self.ssh_selected.is_none(), 0, cx))
-                    .child(gpui::uniform_list("source-ssh-profile-list", self.ssh_profiles.len(),
-                        cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                            range.map(|index| {
-                                let profile = this.ssh_profiles[index].clone();
-                                let label = format!("{} · {}@{}:{}", profile.name, profile.user, profile.host, profile.port);
-                                let keyboard_profile = profile.clone();
-                                div().id(gpui::SharedString::from(format!("source-ssh-profile-{index}")))
+            .label(label.clone())
+            .tooltip(label)
+            .small()
+            .disabled(disabled)
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _, _| {
+                let custom_entity = entity.clone();
+                let mut menu = menu.item(
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .debug_selector(|| "source-ssh-custom".into())
+                            .child("Custom SSH connection")
+                    })
+                    .checked(selected.is_none())
+                    .disabled(disabled)
+                    .on_click(move |_, _, cx| {
+                        let _ = custom_entity
+                            .update(cx, |this, cx| this.activate("source-ssh-custom", cx));
+                    }),
+                );
+                for (index, profile) in profiles.iter().enumerate() {
+                    let profile = profile.clone();
+                    let entity = entity.clone();
+                    menu = menu.item(
+                        PopupMenuItem::element({
+                            let label = format!(
+                                "{} · {}@{}:{}",
+                                profile.name, profile.user, profile.host, profile.port
+                            );
+                            move |_, _| {
+                                div()
                                     .debug_selector(move || format!("source-ssh-profile-{index}"))
-                                    .tab_index(0).h(px(32.)).w_full().px(px(8.)).flex().items_center()
-                                    .cursor_pointer().hover(|style| style.bg(rgb(HOVER)))
-                                    .focus(|style| style.bg(rgb(HOVER)))
-                                    .on_click(cx.listener(move |this, _, _, cx| this.set_ssh_configuration(profile.clone(), cx)))
-                                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                            cx.stop_propagation(); this.set_ssh_configuration(keyboard_profile.clone(), cx);
-                                        }
-                                    })).child(div().text_ellipsis().child(label))
-                            }).collect::<Vec<_>>()
-                        }))
-                        .h(px((self.ssh_profiles.len().min(6) * 32) as f32))
-                        .track_scroll(self.ssh_scroll.clone()))
-            ).with_priority(1)));
+                                    .child(label.clone())
+                            }
+                        })
+                        .checked(Some(&profile.id) == selected.as_ref())
+                        .disabled(disabled)
+                        .on_click(move |_, _, cx| {
+                            let _ = entity.update(cx, |this, cx| {
+                                this.set_ssh_configuration(profile.clone(), cx)
+                            });
+                        }),
+                    );
+                }
+                menu
+            });
         self.row(
             "SSH configuration",
             div()
-                .child(control)
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .gap(px(8.))
+                        .child(trigger)
+                        .child(self.button("source-manage-ssh", "…", false, 0, cx)),
+                )
                 .when_some(self.ssh_load_error.clone(), |container, error| {
-                    container.child(div().text_color(rgb(ERROR)).child(error))
+                    container.child(div().text_color(palette.error).child(error))
                 }),
+            cx,
         )
     }
 
@@ -534,6 +498,7 @@ impl SourceForm {
     }
 
     fn schema_list(&self, cx: &mut Context<Self>) -> Div {
+        let palette = colors(cx);
         let count = self.filtered_schemas(cx).len();
         div()
             .child(
@@ -548,50 +513,31 @@ impl SourceForm {
                                 let checked =
                                     this.schemas_all || this.selected_schema_names.contains(&name);
                                 let label = name.clone();
-                                let keyboard_name = name.clone();
-                                div()
-                                    .id(gpui::SharedString::from(format!("source-schema-{index}")))
-                                    .debug_selector(move || format!("source-schema-{index}"))
-                                    .tab_index(0)
-                                    .h(px(30.))
-                                    .w_full()
-                                    .px(px(8.))
-                                    .flex()
-                                    .items_center()
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(rgb(HOVER)))
-                                    .focus(|style| style.bg(rgb(HOVER)))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.toggle_schema(name.clone(), cx)
-                                    }))
-                                    .on_key_down(cx.listener(
-                                        move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                            if matches!(
-                                                event.keystroke.key.as_str(),
-                                                "enter" | "space"
-                                            ) {
-                                                cx.stop_propagation();
-                                                this.toggle_schema(keyboard_name.clone(), cx);
-                                            }
-                                        },
-                                    ))
-                                    .gap(px(8.0))
-                                    .child(check_indicator(checked))
-                                    .child(
-                                        div().flex_1().min_w(px(0.0)).text_ellipsis().child(label),
-                                    )
+                                Checkbox::new(gpui::SharedString::from(format!(
+                                    "source-schema-{index}"
+                                )))
+                                .debug_selector(move || format!("source-schema-{index}"))
+                                .label(label)
+                                .checked(checked)
+                                .small()
+                                .h(px(30.))
+                                .w_full()
+                                .disabled(this.model.read(cx).saving)
+                                .on_change(cx.listener(
+                                    move |this, _, _, cx| this.toggle_schema(name.clone(), cx),
+                                ))
                             })
                             .collect::<Vec<_>>()
                     }),
                 )
                 .debug_selector(|| "source-schema-list".into())
                 .h(px((count * 30).clamp(120, 260) as f32))
-                .track_scroll(self.schema_scroll.clone()),
+                .track_scroll(&self.schema_scroll),
             )
             .when(count == 0, |container| {
                 container.child(
                     div()
-                        .text_color(rgb(MUTED))
+                        .text_color(palette.muted)
                         .child("No matching schemas. Fetch schemas or add names below."),
                 )
             })
@@ -611,10 +557,6 @@ impl SourceForm {
 
     pub(super) fn preferred_first_focus(&self, cx: &App) -> FocusHandle {
         self.inputs["source-name"].read(cx).focus_handle()
-    }
-
-    pub(super) fn focus(&self, window: &mut Window, cx: &App) {
-        self.preferred_first_focus(cx).focus(window);
     }
 
     pub(super) fn profile(&self, cx: &App) -> Result<SourceProfile> {
@@ -915,76 +857,22 @@ impl SourceForm {
         selected: bool,
         _index: isize,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    ) -> Button {
         let disabled = self.model.read(cx).saving
             || (matches!(id, "source-save" | "source-test") && self.model.read(cx).form_busy);
-        let primary = id == "source-save";
-        div()
-            .id(id)
+        Button::new(id)
             .debug_selector(move || id.into())
-            .track_focus(&self.controls[id])
-            .flex()
-            .items_center()
-            .justify_center()
-            .px(px(10.))
-            .h(px(CONTROL_HEIGHT))
-            .rounded(px(CONTROL_RADIUS))
-            .border_1()
-            .border_color(rgb(if primary {
-                FOCUS
-            } else if selected {
-                SELECTION
-            } else {
-                PANEL
-            }))
-            .bg(rgb(if primary && !disabled {
-                FOCUS
-            } else if selected {
-                SELECTION
-            } else if id == "source-test" {
-                HEADER
-            } else {
-                PANEL
-            }))
-            .text_color(rgb(if disabled {
-                MUTED
-            } else if primary {
-                PANEL
-            } else if selected {
-                FOCUS
-            } else {
-                TEXT
-            }))
-            .cursor_pointer()
-            .when(disabled, |style| style.cursor_default())
-            .hover(move |style| {
-                style.bg(rgb(if primary && !disabled {
-                    FOCUS
-                } else if selected {
-                    SELECTION
-                } else {
-                    HOVER
-                }))
-            })
-            .focus(|style| style.border_color(rgb(FOCUS)))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.controls[id].focus(window);
-                this.activate(id, cx);
-            }))
-            .on_key_down(
-                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                    if this.controls[id].is_focused(window)
-                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                    {
-                        cx.stop_propagation();
-                        this.activate(id, cx);
-                    }
-                }),
-            )
-            .child(label)
+            .label(label)
+            .tooltip(label)
+            .selected(selected)
+            .small()
+            .disabled(disabled)
+            .when(id == "source-save", |button| button.primary())
+            .on_click(cx.listener(move |this, _, _, cx| this.activate(id, cx)))
     }
 
-    fn row(&self, label: &'static str, content: impl IntoElement) -> Div {
+    fn row(&self, label: &'static str, content: impl IntoElement, cx: &App) -> Div {
+        let palette = colors(cx);
         div()
             .flex()
             .items_center()
@@ -996,13 +884,13 @@ impl SourceForm {
                 div()
                     .w(px(140.))
                     .flex_shrink_0()
-                    .text_color(rgb(MUTED))
+                    .text_color(palette.muted)
                     .child(label),
             )
             .child(div().flex_1().min_w(px(0.)).child(content))
     }
 
-    fn field(&self, id: &'static str, label: &'static str, _index: isize, _cx: &App) -> Div {
+    fn field(&self, id: &'static str, label: &'static str, _index: isize, cx: &App) -> Div {
         // Only TextInput tracks its handle. Equal indices follow the visual tree order.
         self.row(
             label,
@@ -1012,11 +900,18 @@ impl SourceForm {
                 .w_full()
                 .min_w(px(0.))
                 .child(self.inputs[id].clone()),
+            cx,
         )
     }
 
     // Wrappers deliberately do not track focus: native traversal visits each input once.
-    fn host_port_row(&self, label: &'static str, host: &'static str, port: &'static str) -> Div {
+    fn host_port_row(
+        &self,
+        label: &'static str,
+        host: &'static str,
+        port: &'static str,
+        cx: &App,
+    ) -> Div {
         self.row(
             label,
             div()
@@ -1044,59 +939,30 @@ impl SourceForm {
                         .flex_shrink_0()
                         .child(self.inputs[port].clone()),
                 ),
+            cx,
         )
     }
 
     fn color_row(&self, cx: &mut Context<Self>) -> Div {
+        let palette = colors(cx);
         let value = self.value("source-color", cx);
-        let disabled = self.model.read(cx).saving;
         let presets = COLOR_PRESETS.iter().map(|&(id, label, hex, swatch)| {
             let selected = value.eq_ignore_ascii_case(hex);
-            div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .track_focus(&self.controls[id])
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .px(px(6.))
-                .h(px(CONTROL_HEIGHT))
-                .rounded(px(CONTROL_RADIUS))
-                .border_1()
-                .border_color(rgb(if selected { SELECTION } else { PANEL }))
-                .bg(rgb(if selected { SELECTION } else { PANEL }))
-                .text_size(px(12.))
-                .text_color(rgb(if selected { FOCUS } else { TEXT }))
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(HOVER)))
-                .focus(|style| style.border_color(rgb(FOCUS)))
-                .when(disabled, |style| {
-                    style.text_color(rgb(MUTED)).cursor_default()
-                })
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.controls[id].focus(window);
-                    this.activate(id, cx);
-                }))
-                .on_key_down(
-                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                        if this.controls[id].is_focused(window)
-                            && matches!(event.keystroke.key.as_str(), "space" | "enter")
-                        {
-                            cx.stop_propagation();
-                            this.activate(id, cx);
-                        }
-                    }),
-                )
-                .child(
-                    div()
-                        .size(px(12.))
-                        .flex_shrink_0()
-                        .rounded(px(CONTROL_RADIUS))
-                        .border_1()
-                        .border_color(rgb(swatch.unwrap_or(MUTED)))
-                        .bg(rgb(swatch.unwrap_or(PANEL))),
-                )
-                .child(label)
+            self.button(id, label, selected, 0, cx).gap(px(5.)).child(
+                div()
+                    .size(px(12.))
+                    .flex_shrink_0()
+                    .rounded(px(CONTROL_RADIUS))
+                    .border_1()
+                    .border_color(
+                        swatch
+                            .map(|color| rgb(color).into())
+                            .unwrap_or(palette.muted),
+                    )
+                    .bg(swatch
+                        .map(|color| rgb(color).into())
+                        .unwrap_or(palette.panel)),
+            )
         });
         self.row(
             "Color (optional)",
@@ -1113,68 +979,18 @@ impl SourceForm {
                         .child(self.inputs["source-color"].clone()),
                 )
                 .child(div().flex().flex_wrap().gap(px(4.)).children(presets)),
+            cx,
         )
     }
 
-    fn checkbox(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let disabled = self.model.read(cx).saving;
-        div()
-            .id("source-save-password")
+    fn checkbox(&self, cx: &mut Context<Self>) -> Checkbox {
+        Checkbox::new("source-save-password")
             .debug_selector(|| "source-save-password".into())
-            .track_focus(&self.controls["source-save-password"])
-            .h(px(CONTROL_HEIGHT))
-            .px(px(4.0))
-            .flex()
-            .items_center()
-            .gap(px(7.0))
-            .flex_shrink_0()
-            .rounded(px(CONTROL_RADIUS))
-            .border_1()
-            .border_color(rgb(PANEL))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(HOVER)))
-            .focus(|style| style.border_color(rgb(FOCUS)))
-            .when(disabled, |style| {
-                style.text_color(rgb(MUTED)).cursor_default()
-            })
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.controls["source-save-password"].focus(window);
-                this.activate("source-save-password", cx);
-            }))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "space" | "enter") {
-                    cx.stop_propagation();
-                    this.activate("source-save-password", cx);
-                }
-            }))
-            .child(
-                div()
-                    .id("keychain-checkbox-indicator")
-                    .debug_selector(|| "keychain-checkbox-indicator".into())
-                    .size(px(18.0))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(CONTROL_RADIUS))
-                    .border_1()
-                    .border_color(rgb(MUTED))
-                    .bg(rgb(if self.save_password { SELECTION } else { PANEL }))
-                    .when(self.save_password, |indicator| {
-                        indicator.child(
-                            div()
-                                .id("keychain-checkbox-check")
-                                .child(icon(Icon::Check, FOCUS)),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .id("keychain-checkbox-label")
-                    .debug_selector(|| "keychain-checkbox-label".into())
-                    .text_size(px(12.0))
-                    .child("Save in Keychain"),
-            )
+            .label("Save in Keychain")
+            .checked(self.save_password)
+            .small()
+            .disabled(self.model.read(cx).saving)
+            .on_change(cx.listener(|this, _, _, cx| this.activate("source-save-password", cx)))
     }
 
     fn ca_picker_options() -> gpui::PathPromptOptions {
@@ -1248,7 +1064,7 @@ impl SourceForm {
                 cx.notify();
             }),
         }
-        self.inputs[field].read(cx).focus_handle().focus(window);
+        self.inputs[field].read(cx).focus_handle().focus(window, cx);
         cx.notify();
     }
 
@@ -1284,35 +1100,14 @@ impl SourceForm {
         cx.notify();
     }
 
-    fn ca_browse_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        div()
-            .id("source-ca-browse")
+    fn ca_browse_button(&self, cx: &mut Context<Self>) -> Button {
+        Button::new("source-ca-browse")
             .debug_selector(|| "source-ca-browse".into())
-            .track_focus(&self.controls["source-ca-browse"])
-            .h(px(30.0))
-            .px(px(10.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .flex_shrink_0()
-            .border_1()
-            .border_color(rgb(PANEL))
-            .rounded(px(CONTROL_RADIUS))
-            .bg(rgb(PANEL))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(HOVER)))
-            .focus(|style| style.border_color(rgb(FOCUS)))
-            .when(self.ca_picker_open || self.model.read(cx).saving, |style| {
-                style.text_color(rgb(MUTED)).cursor_default()
-            })
+            .label("Browse…")
+            .tooltip("Choose a CA certificate file")
+            .small()
+            .disabled(self.ca_picker_open || self.model.read(cx).saving)
             .on_click(cx.listener(|this, _, window, cx| this.browse_ca(window, cx)))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "space" | "enter") {
-                    cx.stop_propagation();
-                    this.browse_ca(window, cx);
-                }
-            }))
-            .child("Browse…")
     }
 
     fn path_field(
@@ -1337,33 +1132,17 @@ impl SourceForm {
                         .child(self.inputs[field].clone()),
                 )
                 .child(
-                    div()
-                        .id(browse)
+                    Button::new(browse)
                         .debug_selector(move || browse.into())
-                        .track_focus(&self.controls[browse])
-                        .h(px(CONTROL_HEIGHT))
-                        .px(px(10.))
-                        .flex()
-                        .items_center()
-                        .rounded(px(CONTROL_RADIUS))
-                        .border_1()
-                        .border_color(rgb(PANEL))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(rgb(HOVER)))
-                        .focus(|s| s.border_color(rgb(FOCUS)))
+                        .label("Browse…")
+                        .tooltip(label)
+                        .small()
+                        .disabled(self.model.read(cx).saving || self.ca_picker_open)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.browse_path(field, window, cx)
-                        }))
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    cx.stop_propagation();
-                                    this.browse_path(field, window, cx);
-                                }
-                            },
-                        ))
-                        .child("Browse…"),
+                        })),
                 ),
+            cx,
         )
     }
 
@@ -1371,37 +1150,38 @@ impl SourceForm {
         &self,
         id: &'static str,
         label: &'static str,
-        open: bool,
+        _open: bool,
         choices: &[(&'static str, &'static str, bool)],
         cx: &mut Context<Self>,
     ) -> Div {
-        div()
-            .relative()
-            .child(self.button(id, label, open, 0, cx))
-            .when(open, |container| {
-                container.child(
-                    gpui::deferred(
-                        div()
-                            .absolute()
-                            .top(px(CONTROL_HEIGHT + 2.))
-                            .left(px(0.))
-                            .w(px(210.))
-                            .occlude()
-                            .bg(rgb(HEADER))
-                            .border_1()
-                            .border_color(rgb(MUTED))
-                            .rounded(px(CONTROL_RADIUS))
-                            .p(px(4.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .children(choices.iter().map(|&(id, label, selected)| {
-                                self.button(id, label, selected, 0, cx)
-                            })),
-                    )
-                    .with_priority(1),
-                )
-            })
+        let choices = choices.to_vec();
+        let entity = cx.entity().downgrade();
+        let disabled = self.model.read(cx).saving;
+        div().child(
+            Button::new(id)
+                .debug_selector(move || id.into())
+                .label(label)
+                .tooltip(label)
+                .small()
+                .disabled(disabled)
+                .dropdown_caret(true)
+                .dropdown_menu(move |mut menu, _, _| {
+                    for &(choice, label, selected) in &choices {
+                        let entity = entity.clone();
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, _| {
+                                div().debug_selector(move || choice.into()).child(label)
+                            })
+                            .checked(selected)
+                            .disabled(disabled)
+                            .on_click(move |_, _, cx| {
+                                let _ = entity.update(cx, |this, cx| this.activate(choice, cx));
+                            }),
+                        );
+                    }
+                    menu
+                }),
+        )
     }
 
     fn choose_key(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -1415,7 +1195,7 @@ impl SourceForm {
         self.inputs["source-tunnel-key"]
             .read(cx)
             .focus_handle()
-            .focus(window);
+            .focus(window, cx);
         cx.notify();
     }
 
@@ -1425,49 +1205,25 @@ impl SourceForm {
         label: String,
         path: String,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    ) -> Button {
         let id = id.into();
         let selector = id.clone();
-        let keyboard_path = path.clone();
-        let disabled = self.model.read(cx).saving;
-        div()
-            .id(id)
+        Button::new(id)
             .debug_selector(move || selector.to_string())
-            .tab_index(0)
+            .label(label.clone())
+            .tooltip(label)
+            .small()
             .w_full()
-            .h(px(30.0))
-            .min_w(px(0.))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .px(px(8.0))
-            .rounded(px(CONTROL_RADIUS))
-            .border_1()
-            .border_color(rgb(PANEL))
-            .bg(rgb(PANEL))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(HOVER)))
-            .focus(|style| style.border_color(rgb(FOCUS)))
-            .when(disabled, |style| {
-                style.text_color(rgb(MUTED)).cursor_default()
-            })
+            .disabled(self.model.read(cx).saving)
             .on_click(
                 cx.listener(move |this, _, window, cx| this.choose_key(path.clone(), window, cx)),
             )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        this.choose_key(keyboard_path.clone(), window, cx);
-                    }
-                }),
-            )
-            .child(div().min_w(px(0.)).flex_1().text_ellipsis().child(label))
     }
 }
 
 impl Render for SourceForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = colors(cx);
         let feedback = self.model.read(cx).form_feedback.clone();
         let busy = self.model.read(cx).form_busy;
         let mut body = div()
@@ -1508,6 +1264,7 @@ impl Render for SourceForm {
                             ],
                             cx,
                         ),
+                        cx,
                     ))
                     .child(
                         self.row(
@@ -1536,19 +1293,20 @@ impl Render for SourceForm {
                                     0,
                                     cx,
                                 )),
+                            cx,
                         ),
                     );
                 if self.endpoint_mode == 0 {
-                    body = body.child(self.host_port_row("Host", "source-host", "source-port"));
+                    body = body.child(self.host_port_row("Host", "source-host", "source-port", cx));
                 } else if self.endpoint_mode == 1 {
                     body = body.child(self.path_field("source-socket", "Socket path", "source-socket-browse", cx))
-                        .child(div().text_color(rgb(WARNING)).child("Unix socket connections use local socket permissions; TLS unavailable."));
+                        .child(div().text_color(palette.warning).child("Unix socket connections use local socket permissions; TLS unavailable."));
                 }
                 if self.endpoint_mode != 1 {
                     body = body.child(self.field("source-url", "Connection URL", 0, cx))
-                        .child(self.row("", div().text_color(rgb(MUTED)).text_size(px(12.)).child(if self.endpoint_mode == 2 {
+                        .child(self.row("", div().text_color(palette.muted).text_size(px(12.)).child(if self.endpoint_mode == 2 {
                             "URL controls host, port and database. Credentials are configured below."
-                        } else { "Edit URL switches to URL-only. Generated URLs contain no credentials." })));
+                        } else { "Edit URL switches to URL-only. Generated URLs contain no credentials." }), cx));
                 }
                 body = body.child(self.row(
                     "Authentication",
@@ -1574,6 +1332,7 @@ impl Render for SourceForm {
                         ],
                         cx,
                     ),
+                    cx,
                 ));
                 if self.authentication == Authentication::UserPassword {
                     body = body.child(self.field("source-user", "User", 0, cx)).child(
@@ -1593,6 +1352,7 @@ impl Render for SourceForm {
                                         .child(self.inputs["source-password"].clone()),
                                 )
                                 .child(self.checkbox(cx)),
+                            cx,
                         ),
                     );
                 }
@@ -1605,13 +1365,13 @@ impl Render for SourceForm {
                     .child(self.field("source-connect-timeout", "Connect timeout (s)", 0, cx))
                     .child(self.field("source-query-timeout", "Query timeout (s)", 0, cx))
                     .child(self.field("source-page-size", "Page size", 0, cx))
-                    .child(div().text_color(rgb(MUTED)).child(
+                    .child(div().text_color(palette.muted).child(
                         "Connect: 1–60 seconds · Query: 1–120 seconds · Page size: 1–200 rows",
                     ));
             }
             2 => {
                 if self.endpoint_mode == 1 {
-                    body = body.child(div().text_color(rgb(WARNING)).child("Unix socket connections use local socket permissions; TLS unavailable. SSH and proxies are unavailable for local sockets."));
+                    body = body.child(div().text_color(palette.warning).child("Unix socket connections use local socket permissions; TLS unavailable. SSH and proxies are unavailable for local sockets."));
                 } else {
                     body = body.child(
                         self.row(
@@ -1642,6 +1402,7 @@ impl Render for SourceForm {
                                     0,
                                     cx,
                                 )),
+                            cx,
                         ),
                     );
                     if self.transport == 1 {
@@ -1649,8 +1410,9 @@ impl Render for SourceForm {
                             self.row(
                                 "Local port",
                                 div()
-                                    .text_color(rgb(MUTED))
+                                    .text_color(palette.muted)
                                     .child("Dynamic (assigned when connecting)"),
+                                cx,
                             ),
                         );
                         if self.ssh_selected.is_none() {
@@ -1659,11 +1421,11 @@ impl Render for SourceForm {
                                     "SSH host",
                                     "source-tunnel-host",
                                     "source-tunnel-port",
-                                ))
+                                 cx))
                                 .child(self.field("source-tunnel-user", "SSH user", 0, cx))
                                 .child(self.field("source-tunnel-key", "Identity file", 0, cx))
                                 .child(self.field("source-known-hosts", "Known hosts file", 0, cx))
-                                .when(self.parse_ssh_config, |body| body.child(div().text_color(rgb(WARNING))
+                                .when(self.parse_ssh_config, |body| body.child(div().text_color(palette.warning)
                                     .child("Only enable trusted SSH configuration: ProxyCommand and Match exec can run local commands.")))
                                 .child(self.row(
                                     "SSH config",
@@ -1674,7 +1436,7 @@ impl Render for SourceForm {
                                         0,
                                         cx,
                                     ),
-                                ))
+                                 cx))
                                 .child(self.row(
                                     "",
                                     self.button(
@@ -1684,7 +1446,7 @@ impl Render for SourceForm {
                                         0,
                                         cx,
                                     ),
-                                ));
+                                 cx));
                             if self.key_picker_open {
                                 let mut picker = div()
                                     .id("ssh-key-picker")
@@ -1696,7 +1458,7 @@ impl Render for SourceForm {
                                     .flex_col()
                                     .gap(px(4.0))
                                     .p(px(8.0))
-                                    .bg(rgb(HEADER))
+                                    .bg(palette.header)
                                     .child(self.key_row(
                                         "ssh-use-agent",
                                         "Use SSH agent (no explicit identity file)".into(),
@@ -1736,9 +1498,9 @@ impl Render for SourceForm {
                                             },
                                         )),
                                 );
-                                picker = picker.child(div().text_size(px(12.0)).text_color(rgb(MUTED))
+                                picker = picker.child(div().text_size(px(12.0)).text_color(palette.muted)
                     .child("Candidates are listed by filename only. Unlock encrypted keys with ssh-add; private key contents are not read by this picker."));
-                                body = body.child(self.row("", picker));
+                                body = body.child(self.row("", picker, cx));
                             }
                         }
                     } else if self.transport == 2 || self.transport == 3 {
@@ -1750,6 +1512,7 @@ impl Render for SourceForm {
                             } else {
                                 "source-proxy-port"
                             },
+                            cx,
                         ));
                     }
                     body = body.child(self.row(
@@ -1787,13 +1550,14 @@ impl Render for SourceForm {
                             ],
                             cx,
                         ),
+                        cx,
                     ));
                     if let Some(warning) = tls_warning(self.tls) {
                         body = body.child(
                             div()
                                 .id("source-tls-warning")
                                 .debug_selector(|| "source-tls-warning".into())
-                                .text_color(rgb(WARNING))
+                                .text_color(palette.warning)
                                 .child(warning),
                         );
                     }
@@ -1815,6 +1579,7 @@ impl Render for SourceForm {
                                                 .child(self.inputs["source-ca"].clone()),
                                         )
                                         .child(self.ca_browse_button(cx)),
+                                    cx,
                                 ),
                             )
                             .child(self.path_field(
@@ -1840,32 +1605,25 @@ impl Render for SourceForm {
                             div()
                                 .flex()
                                 .gap(px(8.))
-                                .child(
-                                    self.button(
-                                        "source-schemas-all",
-                                        "All schemas",
-                                        self.schemas_all,
-                                        0,
-                                        cx,
-                                    )
-                                    .gap(px(7.0))
-                                    .child(check_indicator(self.schemas_all)),
-                                )
-                                .child(
-                                    self.button(
-                                        "source-schemas-selected",
-                                        "Selected schemas",
-                                        !self.schemas_all,
-                                        0,
-                                        cx,
-                                    )
-                                    .gap(px(7.0))
-                                    .child(check_indicator(!self.schemas_all)),
-                                ),
+                                .child(self.button(
+                                    "source-schemas-all",
+                                    "All schemas",
+                                    self.schemas_all,
+                                    0,
+                                    cx,
+                                ))
+                                .child(self.button(
+                                    "source-schemas-selected",
+                                    "Selected schemas",
+                                    !self.schemas_all,
+                                    0,
+                                    cx,
+                                )),
+                            cx,
                         ),
                     )
                     .child(
-                        div().text_color(rgb(MUTED)).child(
+                        div().text_color(palette.muted).child(
                             "Display filtering only; this does not restrict database access.",
                         ),
                     );
@@ -1875,34 +1633,35 @@ impl Render for SourceForm {
                     .child(self.row(
                         "",
                         self.button("source-fetch-schemas", "Fetch schemas", false, 0, cx),
+                        cx,
                     ));
                 if !self.schemas_all {
                     body = body.child(self.field("source-schemas", "Additional schemas", 0, cx))
-                        .child(div().text_color(rgb(MUTED)).child("Enter schema names separated by commas. An empty selection displays no schemas."));
+                        .child(div().text_color(palette.muted).child("Enter schema names separated by commas. An empty selection displays no schemas."));
                 }
             }
         }
         body = body
             .when_some(feedback, |body, feedback| {
                 let color = if feedback.starts_with("Connected:") {
-                    SUCCESS
+                    palette.success
                 } else if feedback.starts_with("Connection failed:")
                     || feedback.starts_with("Not saved:")
                 {
-                    ERROR
+                    palette.error
                 } else {
-                    MUTED
+                    palette.muted
                 };
                 body.child(
                     div()
                         .id("source-feedback")
                         .debug_selector(|| "source-feedback".into())
-                        .text_color(rgb(color))
+                        .text_color(color)
                         .child(feedback),
                 )
             })
             .when(busy, |body| {
-                body.child(div().text_color(rgb(MUTED)).child("Working…"))
+                body.child(div().text_color(palette.muted).child("Working…"))
             });
         div()
             .id("source-form")
@@ -1914,16 +1673,16 @@ impl Render for SourceForm {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(PANEL))
-            .text_color(rgb(TEXT))
+            .bg(palette.panel)
+            .text_color(palette.text)
             .text_size(px(13.))
             .on_action(cx.listener(|_, _: &NextFocus, window, cx| {
                 cx.stop_propagation();
-                window.focus_next();
+                window.focus_next(cx);
             }))
             .on_action(cx.listener(|_, _: &PreviousFocus, window, cx| {
                 cx.stop_propagation();
-                window.focus_prev();
+                window.focus_prev(cx);
             }))
             .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
                 cx.stop_propagation();
@@ -1950,7 +1709,7 @@ impl Render for SourceForm {
                     .w_full()
                     .flex()
                     .items_center()
-                    .bg(rgb(HEADER))
+                    .bg(palette.header)
                     .child(
                         div()
                             .w(px(84.))
@@ -1961,19 +1720,32 @@ impl Render for SourceForm {
                                 window.start_window_move()
                             }),
                     )
-                    .children(
-                        [
-                            ("source-tab-general", "General", 0),
-                            ("source-tab-options", "Options", 1),
-                            ("source-tab-ssh", "SSH/SSL", 2),
-                            ("source-tab-schemas", "Schemas", 3),
-                        ]
-                        .into_iter()
-                        .map(|(id, label, tab)| {
-                            self.button(id, label, self.active_tab == tab, 0, cx)
-                                .h(px(34.))
-                                .rounded(px(0.))
-                        }),
+                    .child(
+                        TabBar::new("source-form-tabs")
+                            .small()
+                            .selected_index(self.active_tab as usize)
+                            .children(
+                                [
+                                    ("source-tab-general", "General"),
+                                    ("source-tab-options", "Options"),
+                                    ("source-tab-ssh", "SSH/SSL"),
+                                    ("source-tab-schemas", "Schemas"),
+                                ]
+                                .into_iter()
+                                .map(|(id, label)| {
+                                    Tab::new()
+                                        .aria_label(label)
+                                        .prefix(
+                                            div().debug_selector(move || id.into()).child(label),
+                                        )
+                                        .disabled(self.model.read(cx).saving)
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.activate(id, cx)
+                                            }),
+                                        )
+                                }),
+                            ),
                     )
                     .child(
                         div()
@@ -2021,22 +1793,6 @@ impl Render for SourceForm {
     }
 }
 
-fn check_indicator(checked: bool) -> Div {
-    div()
-        .size(px(18.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(3.0))
-        .border_1()
-        .border_color(rgb(if checked { FOCUS } else { MUTED }))
-        .bg(rgb(if checked { SELECTION } else { PANEL }))
-        .when(checked, |indicator| {
-            indicator.child(icon(Icon::Check, FOCUS))
-        })
-}
-
 fn tls_warning(mode: TlsMode) -> Option<&'static str> {
     match mode {
         TlsMode::Disabled => {
@@ -2077,12 +1833,15 @@ mod tests {
         Entity<SourceModel>,
         &mut VisualTestContext,
     ) {
+        // Kit globals must exist before constructing inputs or popup controls.
+        cx.update(gpui::init);
         cx.update(crate::desktop::bind_keys);
         let model = cx.new(|_| SourceModel::for_tests(vec![]));
         model.update(cx, |model, cx| model.new_source(cx));
         let profile = model.read_with(cx, |model, _| model.form_profile.clone().unwrap());
-        let (form, visual) =
-            cx.add_window_view(|_, cx| SourceForm::new(profile, model.clone(), cx));
+        let form = cx.new(|cx| SourceForm::new(profile, model.clone(), cx));
+        let (_, visual) =
+            cx.add_window_view(|window, cx| gpui::base::Root::new(form.clone(), window, cx));
         visual.simulate_resize(gpui::size(px(850.), px(600.)));
         visual.refresh().unwrap();
         visual.run_until_parked();
@@ -2115,15 +1874,29 @@ mod tests {
     }
 
     #[test]
-    fn form_input_and_about_use_opaque_theme_tokens() {
-        for source in [
-            include_str!("source_form.rs"),
-            include_str!("input.rs"),
-            include_str!("about.rs"),
-        ] {
+    fn form_and_fields_use_kit_components_and_semantic_theme_roles() {
+        let form = include_str!("source_form.rs");
+        let input = include_str!("input.rs");
+        let about = include_str!("about.rs");
+        assert!(form.contains("let palette = colors(cx)"));
+        assert!(form.contains("Checkbox::new"));
+        assert!(form.contains("TabBar::new"));
+        assert!(form.contains(".dropdown_menu("));
+        assert!(input.contains("InputState::new"));
+        assert!(input.contains("Input::new"));
+        for source in [form, input, about] {
             assert!(!source.contains(&["rgb(", "0x"].concat()));
-            assert!(!source.contains(&["rgba", "("].concat()));
-            assert!(!source.contains(&[".opacity", "("].concat()));
+            for legacy in [
+                "ERROR",
+                "MUTED",
+                "PANEL",
+                "HEADER",
+                "TEXT",
+                "INPUT_BG",
+                "INPUT_BORDER",
+            ] {
+                assert!(!source.contains(&format!("rgb({legacy})")));
+            }
         }
     }
 
@@ -2142,10 +1915,15 @@ mod tests {
                 cx.debug_bounds("source-tab-bar").unwrap().size.height,
                 px(34.)
             );
-            assert_eq!(cx.debug_bounds(id).unwrap().size.height, px(34.));
+            let tab_label = cx.debug_bounds(id).unwrap();
+            let tab_bar = cx.debug_bounds("source-tab-bar").unwrap();
+            assert!(tab_label.size.height > px(0.));
+            assert!(tab_label.top() >= tab_bar.top());
+            assert!(tab_label.bottom() <= tab_bar.bottom());
             assert!(cx.debug_bounds("source-name").is_some());
             let footer = cx.debug_bounds("source-form-footer").unwrap();
-            assert_eq!(footer.size.height, px(CONTROL_HEIGHT + 16.));
+            // Small Kit buttons are 24px, plus the footer's 8px vertical padding.
+            assert_eq!(footer.size.height, px(24. + 16.));
             assert!(footer.bottom() <= px(600.));
             assert_eq!(
                 form.read_with(cx, |form, app| form.value("source-name", app)),
@@ -2164,9 +1942,26 @@ mod tests {
         click(cx, "source-engine-mariadb");
         assert_eq!(form.read_with(cx, |form, _| form.engine), DbEngine::MariaDb);
         assert!(!form.read_with(cx, |form, _| form.driver_open));
-        cx.update(|window, app| form.read(app).controls["source-driver"].focus(window));
-        cx.simulate_keystrokes("space");
+        click(cx, "source-driver");
+        cx.simulate_keystrokes("escape");
         cx.run_until_parked();
+        // Kit restores a context handle after dismissal. Traverse the native
+        // focus tree again rather than assuming that handle is the button.
+        for _ in 0..30 {
+            cx.update(|window, cx| window.focus_next(cx));
+            cx.run_until_parked();
+            let keystroke = gpui::Keystroke::parse("space").unwrap();
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(gpui::KeyUpEvent { keystroke });
+            cx.run_until_parked();
+            if cx.debug_bounds("source-engine-mysql").is_some() {
+                break;
+            }
+        }
         assert!(cx.debug_bounds("source-engine-mysql").is_some());
         click(cx, "source-engine-mysql");
         set(&form, cx, "source-password", "fixture-secret");
@@ -2268,8 +2063,12 @@ mod tests {
             ..SourceProfile::default()
         };
         let model = cx.new(|_| SourceModel::for_tests(vec![profile.clone()]));
-        let (form, visual) =
-            cx.add_window_view(|_, cx| SourceForm::new(profile.clone(), model.clone(), cx));
+        // Kit globals must exist before constructing inputs or popup controls.
+        cx.update(gpui::init);
+        cx.update(crate::desktop::bind_keys);
+        let form = cx.new(|cx| SourceForm::new(profile.clone(), model.clone(), cx));
+        let (_, visual) =
+            cx.add_window_view(|window, cx| gpui::base::Root::new(form.clone(), window, cx));
         assert_eq!(
             visual.update(|_, app| form.read(app).profile(app).unwrap()),
             profile
@@ -2336,7 +2135,7 @@ mod tests {
             form.read(app).inputs["source-tunnel-host"]
                 .read(app)
                 .focus_handle()
-                .focus(window)
+                .focus(window, app)
         });
         cx.simulate_keystrokes("tab");
         assert!(cx.update(|window, app| {

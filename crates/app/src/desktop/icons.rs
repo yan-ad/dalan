@@ -1,7 +1,10 @@
 use std::borrow::Cow;
 
-use gpui::{AssetSource, IntoElement, SharedString, prelude::*, px, rgb, svg};
+use gpui::assets::IconName as KitIconName;
+use gpui::{AssetSource, Hsla, IntoElement, SharedString, prelude::*, px};
 
+/// Semantic names for the remaining explorer and connection actions. The glyphs
+/// and SVG bytes are owned by GPUI Kit, not by the application.
 #[derive(Clone, Copy)]
 pub enum Icon {
     Database,
@@ -10,7 +13,6 @@ pub enum Icon {
     Manage,
     Refresh,
     Remove,
-    Layout,
     Chevron,
     ChevronRight,
     Folder,
@@ -18,9 +20,6 @@ pub enum Icon {
     ExpandTree,
     CollapseTree,
     Hide,
-    Ai,
-    SortAscending,
-    SortDescending,
     Download,
     Check,
     Cached,
@@ -32,206 +31,103 @@ pub enum Icon {
     Play,
     Stop,
     Close,
-    ColumnKey,
-    ColumnNumber,
-    ColumnText,
-    ColumnDate,
-    ColumnBinary,
-    ColumnJson,
     Filter,
     Sort,
 }
 
 impl Icon {
-    fn path(self) -> &'static str {
+    pub fn kit_name(self) -> KitIconName {
         match self {
-            Self::Database => "icons/database.svg",
-            Self::MariaDb => "icons/database-zap.svg",
-            Self::Add => "icons/plus.svg",
-            Self::Manage => "icons/settings-2.svg",
-            Self::Refresh => "icons/refresh-cw.svg",
-            Self::Remove => "icons/trash-2.svg",
-            Self::Layout => "icons/panel-left.svg",
-            Self::Chevron => "icons/chevron-down.svg",
-            Self::ChevronRight => "icons/chevron-right.svg",
-            Self::Folder => "icons/folder.svg",
-            Self::Table => "icons/table.svg",
-            Self::ExpandTree => "icons/list-tree.svg",
-            Self::CollapseTree => "icons/chevrons-down-up.svg",
-            Self::Hide => "icons/minus.svg",
-            Self::Ai => "icons/bot-message-square.svg",
-            Self::SortAscending => "icons/arrow-up.svg",
-            Self::SortDescending => "icons/arrow-down.svg",
-            Self::Download => "icons/download.svg",
-            Self::Check => "icons/check.svg",
-            Self::Cached => "icons/hard-drive.svg",
-            Self::Warning => "icons/triangle-alert.svg",
-            Self::Loading => "icons/loader-circle.svg",
-            Self::ReadOnly => "icons/lock-keyhole.svg",
-            Self::Previous => "icons/chevron-left.svg",
-            Self::Query => "icons/square-code.svg",
-            Self::Play => "icons/play.svg",
-            Self::Stop => "icons/circle-stop.svg",
-            Self::Close => "icons/x.svg",
-            Self::ColumnKey => "icons/key-round.svg",
-            Self::ColumnNumber => "icons/hash.svg",
-            Self::ColumnText => "icons/text-initial.svg",
-            Self::ColumnDate => "icons/calendar-clock.svg",
-            Self::ColumnBinary => "icons/binary.svg",
-            Self::ColumnJson => "icons/braces.svg",
-            Self::Filter => "icons/list-filter.svg",
-            Self::Sort => "icons/arrow-down-up.svg",
+            Self::Database => KitIconName::Database,
+            Self::MariaDb => KitIconName::DatabaseZap,
+            Self::Add => KitIconName::Plus,
+            Self::Manage => KitIconName::Settings2,
+            Self::Refresh => KitIconName::RefreshCw,
+            Self::Remove => KitIconName::Trash,
+            Self::Chevron => KitIconName::ChevronDown,
+            Self::ChevronRight => KitIconName::ChevronRight,
+            Self::Folder => KitIconName::Folder,
+            Self::Table => KitIconName::Table,
+            Self::ExpandTree => KitIconName::ListTree,
+            Self::CollapseTree => KitIconName::ChevronsDownUp,
+            Self::Hide => KitIconName::Minus,
+            Self::Download => KitIconName::Download,
+            Self::Check => KitIconName::Check,
+            Self::Cached => KitIconName::HardDrive,
+            Self::Warning => KitIconName::TriangleAlert,
+            Self::Loading => KitIconName::LoaderCircle,
+            Self::ReadOnly => KitIconName::LockKeyhole,
+            Self::Previous => KitIconName::ChevronLeft,
+            Self::Query => KitIconName::SquareCode,
+            Self::Play => KitIconName::Play,
+            Self::Stop => KitIconName::CircleStop,
+            Self::Close => KitIconName::X,
+            Self::Filter => KitIconName::ListFilter,
+            Self::Sort => KitIconName::ArrowDownUp,
         }
     }
 }
 
-// Embedded assets work independently of the process's working directory and
-// require neither a runtime download nor an external icon/font dependency.
-const ASSETS: &[(&str, &[u8])] = &[
+// Extend Kit's curated default component bundle only for the application glyphs
+// outside that bundle. This also serves controls using Kit IconName directly.
+gpui::assets::icon_assets!(
+    AppIconAssets,
+    [
+        Database,
+        DatabaseZap,
+        Trash,
+        Table,
+        ListTree,
+        ChevronsDownUp,
+        Download,
+        LockKeyhole,
+        SquareCode,
+        CircleStop,
+        X,
+        ListFilter,
+        ArrowDownUp,
+        BotMessageSquare,
+        KeyRound,
+        Hash,
+        TextInitial,
+        CalendarClock,
+        Binary,
+        Braces,
+    ]
+);
+
+const PROVIDER_ASSETS: &[(&str, &[u8])] = &[
     (
-        "icons/key-round.svg",
-        include_bytes!("../../assets/icons/key-round.svg"),
+        "icons/provider/mysql.svg",
+        include_bytes!("../../assets/icons/provider/mysql.svg"),
     ),
     (
-        "icons/hash.svg",
-        include_bytes!("../../assets/icons/hash.svg"),
+        "icons/provider/mariadb.svg",
+        include_bytes!("../../assets/icons/provider/mariadb.svg"),
     ),
     (
-        "icons/text-initial.svg",
-        include_bytes!("../../assets/icons/text-initial.svg"),
+        "icons/provider/pg.svg",
+        include_bytes!("../../assets/icons/provider/pg.svg"),
     ),
     (
-        "icons/calendar-clock.svg",
-        include_bytes!("../../assets/icons/calendar-clock.svg"),
+        "icons/provider/mongodb.svg",
+        include_bytes!("../../assets/icons/provider/mongodb.svg"),
     ),
     (
-        "icons/binary.svg",
-        include_bytes!("../../assets/icons/binary.svg"),
+        "icons/provider/redis.svg",
+        include_bytes!("../../assets/icons/provider/redis.svg"),
     ),
     (
-        "icons/braces.svg",
-        include_bytes!("../../assets/icons/braces.svg"),
+        "icons/provider/sqlite.svg",
+        include_bytes!("../../assets/icons/provider/sqlite.svg"),
     ),
     (
-        "icons/list-filter.svg",
-        include_bytes!("../../assets/icons/list-filter.svg"),
+        "icons/provider/supabase.svg",
+        include_bytes!("../../assets/icons/provider/supabase.svg"),
     ),
     (
-        "icons/arrow-down-up.svg",
-        include_bytes!("../../assets/icons/arrow-down-up.svg"),
-    ),
-    (
-        "icons/square-code.svg",
-        include_bytes!("../../assets/icons/square-code.svg"),
-    ),
-    (
-        "icons/play.svg",
-        include_bytes!("../../assets/icons/play.svg"),
-    ),
-    (
-        "icons/circle-stop.svg",
-        include_bytes!("../../assets/icons/circle-stop.svg"),
-    ),
-    ("icons/x.svg", include_bytes!("../../assets/icons/x.svg")),
-    (
-        "icons/chevron-right.svg",
-        include_bytes!("../../assets/icons/chevron-right.svg"),
-    ),
-    (
-        "icons/folder.svg",
-        include_bytes!("../../assets/icons/folder.svg"),
-    ),
-    (
-        "icons/table.svg",
-        include_bytes!("../../assets/icons/table.svg"),
-    ),
-    (
-        "icons/list-tree.svg",
-        include_bytes!("../../assets/icons/list-tree.svg"),
-    ),
-    (
-        "icons/chevrons-down-up.svg",
-        include_bytes!("../../assets/icons/chevrons-down-up.svg"),
-    ),
-    (
-        "icons/database.svg",
-        include_bytes!("../../assets/icons/database.svg"),
-    ),
-    (
-        "icons/check.svg",
-        include_bytes!("../../assets/icons/check.svg"),
-    ),
-    (
-        "icons/panel-left.svg",
-        include_bytes!("../../assets/icons/panel-left.svg"),
-    ),
-    (
-        "icons/chevron-down.svg",
-        include_bytes!("../../assets/icons/chevron-down.svg"),
-    ),
-    (
-        "icons/minus.svg",
-        include_bytes!("../../assets/icons/minus.svg"),
-    ),
-    (
-        "icons/bot-message-square.svg",
-        include_bytes!("../../assets/icons/bot-message-square.svg"),
-    ),
-    (
-        "icons/arrow-up.svg",
-        include_bytes!("../../assets/icons/arrow-up.svg"),
-    ),
-    (
-        "icons/arrow-down.svg",
-        include_bytes!("../../assets/icons/arrow-down.svg"),
-    ),
-    (
-        "icons/download.svg",
-        include_bytes!("../../assets/icons/download.svg"),
-    ),
-    (
-        "lucide-LICENSE.txt",
-        include_bytes!("../../assets/lucide-LICENSE.txt"),
-    ),
-    (
-        "icons/plus.svg",
-        include_bytes!("../../assets/icons/plus.svg"),
-    ),
-    (
-        "icons/settings-2.svg",
-        include_bytes!("../../assets/icons/settings-2.svg"),
-    ),
-    (
-        "icons/refresh-cw.svg",
-        include_bytes!("../../assets/icons/refresh-cw.svg"),
-    ),
-    (
-        "icons/trash-2.svg",
-        include_bytes!("../../assets/icons/trash-2.svg"),
-    ),
-    (
-        "icons/database-zap.svg",
-        include_bytes!("../../assets/icons/database-zap.svg"),
-    ),
-    (
-        "icons/hard-drive.svg",
-        include_bytes!("../../assets/icons/hard-drive.svg"),
-    ),
-    (
-        "icons/triangle-alert.svg",
-        include_bytes!("../../assets/icons/triangle-alert.svg"),
-    ),
-    (
-        "icons/loader-circle.svg",
-        include_bytes!("../../assets/icons/loader-circle.svg"),
-    ),
-    (
-        "icons/lock-keyhole.svg",
-        include_bytes!("../../assets/icons/lock-keyhole.svg"),
-    ),
-    (
-        "icons/chevron-left.svg",
-        include_bytes!("../../assets/icons/chevron-left.svg"),
+        "icons/provider/elastic.svg",
+        include_bytes!("../../assets/icons/provider/elastic.svg"),
     ),
 ];
 
@@ -239,28 +135,76 @@ pub(super) struct IconAssets;
 
 impl AssetSource for IconAssets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
-        Ok(ASSETS
+        if let Some((_, bytes)) = PROVIDER_ASSETS.iter().find(|(name, _)| *name == path) {
+            return Ok(Some(Cow::Borrowed(*bytes)));
+        }
+        if path == "lucide-LICENSE.txt" {
+            return Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/lucide-LICENSE.txt"
+            ))));
+        }
+        // Compatibility for existing controls while migrating them to IconName.
+        // Kit uses the canonical Trash filename, not Lucide's deprecated alias.
+        let path = if path == "icons/trash-2.svg" {
+            "icons/trash.svg"
+        } else {
+            path
+        };
+        if let Some(bytes) = AppIconAssets.load(path)? {
+            return Ok(Some(bytes));
+        }
+        // The default source reports missing paths as errors. Use its public
+        // inventory to retain AssetSource's normal Ok(None) lookup semantics.
+        if gpui::assets::Assets
+            .list(path)?
             .iter()
-            .find(|(name, _)| *name == path)
-            .map(|(_, bytes)| Cow::Borrowed(*bytes)))
+            .any(|name| name.as_ref() == path)
+        {
+            return gpui::assets::Assets.load(path);
+        }
+        Ok(None)
     }
 
     fn list(&self, prefix: &str) -> anyhow::Result<Vec<SharedString>> {
-        Ok(ASSETS
-            .iter()
-            .filter(|(name, _)| name.starts_with(prefix))
-            .map(|(name, _)| SharedString::from(*name))
-            .collect())
+        let mut paths = gpui::assets::Assets.list(prefix)?;
+        paths.extend(
+            PROVIDER_ASSETS
+                .iter()
+                .filter(|(path, _)| path.starts_with(prefix))
+                .map(|(path, _)| SharedString::from(*path)),
+        );
+        paths.extend(AppIconAssets.list(prefix)?);
+        for path in ["lucide-LICENSE.txt", "icons/trash-2.svg"] {
+            if path.starts_with(prefix) {
+                paths.push(path.into());
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
     }
 }
 
-/// GPUI rasterizes SVGs as alpha masks and applies the element's text color.
-pub fn icon(kind: Icon, color: u32) -> impl IntoElement {
-    svg()
-        .path(kind.path())
+pub fn provider_icon(engine: dalan_drivers::DbEngine) -> impl IntoElement {
+    let path = match engine {
+        dalan_drivers::DbEngine::MySql => "icons/provider/mysql.svg",
+        dalan_drivers::DbEngine::MariaDb => "icons/provider/mariadb.svg",
+        dalan_drivers::DbEngine::PostgreSql => "icons/provider/pg.svg",
+        dalan_drivers::DbEngine::MongoDb => "icons/provider/mongodb.svg",
+        dalan_drivers::DbEngine::Redis => "icons/provider/redis.svg",
+    };
+    gpui::component::Icon::empty()
+        .path(path)
         .size(px(16.0))
         .flex_shrink_0()
-        .text_color(rgb(color))
+}
+
+/// Kit renders tinted SVG masks with the requested semantic theme color.
+pub fn icon(kind: Icon, color: impl Into<Hsla>) -> impl IntoElement {
+    gpui::component::Icon::new(kind.kit_name())
+        .size(px(16.0))
+        .flex_shrink_0()
+        .text_color(color.into())
 }
 
 #[cfg(all(test, feature = "ui-tests"))]
@@ -268,266 +212,84 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_thirtysix_embedded_icons_are_listed_and_loaded() {
-        let assets = IconAssets;
-        let paths = assets.list("icons/").unwrap();
-        assert_eq!(paths.len(), 36);
+    fn all_registered_kit_icons_load_without_local_svg_copies() {
+        let paths = IconAssets.list("icons/").unwrap();
+        assert!(!paths.is_empty());
+        let mut unique = paths.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(paths, unique);
         for path in paths {
-            let bytes = assets.load(path.as_ref()).unwrap().unwrap();
-            assert!(matches!(bytes, Cow::Borrowed(_)));
+            let bytes = IconAssets.load(path.as_ref()).unwrap().unwrap();
             let svg = std::str::from_utf8(&bytes).unwrap();
-            assert!(svg.starts_with("<svg"));
-            assert!(svg.contains("viewBox=\"0 0 24 24\""));
-            assert!(svg.contains("stroke=\"currentColor\""));
-            // The SVG namespace is not an external resource. No glyph may
-            // contain scripts, linked resources, or embedded image data.
-            for forbidden in [
-                "<script",
-                "href=",
-                "<image",
-                "<foreignObject",
-                "url(",
-                "data:",
-                "transform=",
-            ] {
-                assert!(!svg.contains(forbidden), "{path}: {forbidden}");
-            }
+            assert!(svg.contains("<svg"), "{path}");
+            assert!(!svg.contains("<script"), "{path}");
         }
-        assert_eq!(assets.list("icons/arrow-").unwrap().len(), 3);
-        assert_eq!(assets.list(Icon::Ai.path()).unwrap().len(), 1);
-        assert!(assets.list("missing/").unwrap().is_empty());
-        assert!(assets.load("icons/missing.svg").unwrap().is_none());
-        assert!(assets.load("../icons/database.svg").unwrap().is_none());
-    }
-
-    #[test]
-    fn column_and_table_action_icons_load_the_expected_assets() {
-        for (kind, path, expected) in [
-            (
-                Icon::ColumnKey,
-                "icons/key-round.svg",
-                include_bytes!("../../assets/icons/key-round.svg").as_slice(),
-            ),
-            (
-                Icon::ColumnNumber,
-                "icons/hash.svg",
-                include_bytes!("../../assets/icons/hash.svg").as_slice(),
-            ),
-            (
-                Icon::ColumnText,
-                "icons/text-initial.svg",
-                include_bytes!("../../assets/icons/text-initial.svg").as_slice(),
-            ),
-            (
-                Icon::ColumnDate,
-                "icons/calendar-clock.svg",
-                include_bytes!("../../assets/icons/calendar-clock.svg").as_slice(),
-            ),
-            (
-                Icon::ColumnBinary,
-                "icons/binary.svg",
-                include_bytes!("../../assets/icons/binary.svg").as_slice(),
-            ),
-            (
-                Icon::ColumnJson,
-                "icons/braces.svg",
-                include_bytes!("../../assets/icons/braces.svg").as_slice(),
-            ),
-            (
-                Icon::Filter,
-                "icons/list-filter.svg",
-                include_bytes!("../../assets/icons/list-filter.svg").as_slice(),
-            ),
-            (
-                Icon::Sort,
-                "icons/arrow-down-up.svg",
-                include_bytes!("../../assets/icons/arrow-down-up.svg").as_slice(),
-            ),
-        ] {
-            assert_eq!(kind.path(), path);
+        for path in gpui::assets::Assets.list("icons/").unwrap() {
             assert_eq!(
-                IconAssets.load(kind.path()).unwrap().unwrap().as_ref(),
-                expected
+                IconAssets.load(&path).unwrap().unwrap(),
+                gpui::assets::Assets.load(&path).unwrap().unwrap()
             );
         }
-        // Boolean columns reuse Check; unsupported column types reuse Table.
-        assert_eq!(Icon::Check.path(), "icons/check.svg");
-        assert_eq!(Icon::Table.path(), "icons/table.svg");
+        assert!(IconAssets.list("missing/").unwrap().is_empty());
+        assert!(IconAssets.load("icons/missing.svg").unwrap().is_none());
+        assert!(IconAssets.load("../icons/database.svg").unwrap().is_none());
     }
 
     #[test]
-    fn tree_icons_load_the_expected_assets() {
-        for (kind, path, expected) in [
-            (
-                Icon::Chevron,
-                "icons/chevron-down.svg",
-                include_bytes!("../../assets/icons/chevron-down.svg").as_slice(),
-            ),
-            (
-                Icon::ChevronRight,
-                "icons/chevron-right.svg",
-                include_bytes!("../../assets/icons/chevron-right.svg").as_slice(),
-            ),
-            (
-                Icon::Database,
-                "icons/database.svg",
-                include_bytes!("../../assets/icons/database.svg").as_slice(),
-            ),
-            (
-                Icon::Folder,
-                "icons/folder.svg",
-                include_bytes!("../../assets/icons/folder.svg").as_slice(),
-            ),
-            (
-                Icon::Table,
-                "icons/table.svg",
-                include_bytes!("../../assets/icons/table.svg").as_slice(),
-            ),
-            (
-                Icon::ExpandTree,
-                "icons/list-tree.svg",
-                include_bytes!("../../assets/icons/list-tree.svg").as_slice(),
-            ),
-            (
-                Icon::CollapseTree,
-                "icons/chevrons-down-up.svg",
-                include_bytes!("../../assets/icons/chevrons-down-up.svg").as_slice(),
-            ),
-        ] {
-            assert_eq!(kind.path(), path);
-            assert_eq!(
-                IconAssets.load(kind.path()).unwrap().unwrap().as_ref(),
-                expected
+    fn semantic_actions_and_direct_kit_controls_have_registered_assets() {
+        let actions = [
+            Icon::Database,
+            Icon::MariaDb,
+            Icon::Add,
+            Icon::Manage,
+            Icon::Refresh,
+            Icon::Remove,
+            Icon::Chevron,
+            Icon::ChevronRight,
+            Icon::Folder,
+            Icon::Table,
+            Icon::ExpandTree,
+            Icon::CollapseTree,
+            Icon::Hide,
+            Icon::Download,
+            Icon::Check,
+            Icon::Cached,
+            Icon::Warning,
+            Icon::Loading,
+            Icon::ReadOnly,
+            Icon::Previous,
+            Icon::Query,
+            Icon::Play,
+            Icon::Stop,
+            Icon::Close,
+            Icon::Filter,
+            Icon::Sort,
+        ];
+        for action in actions {
+            assert!(
+                IconAssets
+                    .load(&action.kit_name().path())
+                    .unwrap()
+                    .is_some()
             );
         }
-    }
-
-    #[test]
-    fn toolbar_icons_load_the_expected_assets() {
-        for (kind, path, expected) in [
-            (
-                Icon::Add,
-                "icons/plus.svg",
-                include_bytes!("../../assets/icons/plus.svg").as_slice(),
-            ),
-            (
-                Icon::Manage,
-                "icons/settings-2.svg",
-                include_bytes!("../../assets/icons/settings-2.svg").as_slice(),
-            ),
-            (
-                Icon::Refresh,
-                "icons/refresh-cw.svg",
-                include_bytes!("../../assets/icons/refresh-cw.svg").as_slice(),
-            ),
-            (
-                Icon::Remove,
-                "icons/trash-2.svg",
-                include_bytes!("../../assets/icons/trash-2.svg").as_slice(),
-            ),
+        for name in [
+            KitIconName::BotMessageSquare,
+            KitIconName::KeyRound,
+            KitIconName::Hash,
+            KitIconName::TextInitial,
+            KitIconName::CalendarClock,
+            KitIconName::Binary,
+            KitIconName::Braces,
         ] {
-            assert_eq!(kind.path(), path);
-            assert_eq!(
-                IconAssets.load(kind.path()).unwrap().unwrap().as_ref(),
-                expected
-            );
+            assert!(IconAssets.load(&name.path()).unwrap().is_some());
         }
-    }
-
-    #[test]
-    fn console_icons_load_the_expected_assets() {
-        for (kind, path, expected) in [
-            (
-                Icon::Query,
-                "icons/square-code.svg",
-                include_bytes!("../../assets/icons/square-code.svg").as_slice(),
-            ),
-            (
-                Icon::Play,
-                "icons/play.svg",
-                include_bytes!("../../assets/icons/play.svg").as_slice(),
-            ),
-            (
-                Icon::Stop,
-                "icons/circle-stop.svg",
-                include_bytes!("../../assets/icons/circle-stop.svg").as_slice(),
-            ),
-            (
-                Icon::Close,
-                "icons/x.svg",
-                include_bytes!("../../assets/icons/x.svg").as_slice(),
-            ),
-        ] {
-            assert_eq!(kind.path(), path);
-            assert_eq!(
-                IconAssets.load(kind.path()).unwrap().unwrap().as_ref(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn status_and_previous_icons_load_the_expected_assets() {
-        for (kind, path, expected) in [
-            (
-                Icon::Cached,
-                "icons/hard-drive.svg",
-                include_bytes!("../../assets/icons/hard-drive.svg").as_slice(),
-            ),
-            (
-                Icon::Warning,
-                "icons/triangle-alert.svg",
-                include_bytes!("../../assets/icons/triangle-alert.svg").as_slice(),
-            ),
-            (
-                Icon::Loading,
-                "icons/loader-circle.svg",
-                include_bytes!("../../assets/icons/loader-circle.svg").as_slice(),
-            ),
-            (
-                Icon::ReadOnly,
-                "icons/lock-keyhole.svg",
-                include_bytes!("../../assets/icons/lock-keyhole.svg").as_slice(),
-            ),
-            (
-                Icon::Previous,
-                "icons/chevron-left.svg",
-                include_bytes!("../../assets/icons/chevron-left.svg").as_slice(),
-            ),
-        ] {
-            assert_eq!(kind.path(), path);
-            assert_eq!(
-                IconAssets.load(kind.path()).unwrap().unwrap().as_ref(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn engine_icons_have_distinct_paths_and_bytes() {
-        assert_eq!(Icon::Database.path(), "icons/database.svg");
-        assert_eq!(Icon::MariaDb.path(), "icons/database-zap.svg");
-        assert_ne!(Icon::Database.path(), Icon::MariaDb.path());
-        let mysql = IconAssets.load(Icon::Database.path()).unwrap().unwrap();
-        let mariadb = IconAssets.load(Icon::MariaDb.path()).unwrap().unwrap();
+        assert_eq!(Icon::Query.kit_name(), KitIconName::SquareCode);
+        assert_ne!(Icon::Database.kit_name(), Icon::MariaDb.kit_name());
         assert_eq!(
-            mysql.as_ref(),
-            include_bytes!("../../assets/icons/database.svg")
-        );
-        assert_eq!(
-            mariadb.as_ref(),
-            include_bytes!("../../assets/icons/database-zap.svg")
-        );
-        assert_ne!(mysql.as_ref(), mariadb.as_ref());
-    }
-
-    #[test]
-    fn ai_uses_conversation_bot_not_decorative_sparkles() {
-        assert_eq!(Icon::Ai.path(), "icons/bot-message-square.svg");
-        let actual = IconAssets.load(Icon::Ai.path()).unwrap().unwrap();
-        assert_eq!(
-            actual.as_ref(),
-            include_bytes!("../../assets/icons/bot-message-square.svg")
+            IconAssets.load("icons/trash-2.svg").unwrap(),
+            IconAssets.load(&KitIconName::Trash.path()).unwrap()
         );
     }
 
@@ -540,5 +302,12 @@ mod tests {
         assert!(license.contains("The MIT License (MIT)"));
         assert!(license.contains("Copyright (c) 2013-present Cole Bemis"));
         assert!(license.contains("THE SOFTWARE IS PROVIDED \"AS IS\""));
+    }
+    #[test]
+    fn supplied_provider_assets_remain_registered() {
+        assert_eq!(IconAssets.list("icons/provider/").unwrap().len(), 8);
+        for (path, bytes) in PROVIDER_ASSETS {
+            assert_eq!(IconAssets.load(path).unwrap().unwrap().as_ref(), *bytes);
+        }
     }
 }

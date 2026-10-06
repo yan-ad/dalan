@@ -206,6 +206,13 @@ impl Session {
         .await
     }
     async fn connect_resolved(profile: &SourceProfile, password: &str) -> Result<Self> {
+        ensure!(
+            matches!(
+                profile.engine,
+                crate::sources::DbEngine::MySql | crate::sources::DbEngine::MariaDb
+            ),
+            "This executor supports MySQL and MariaDB only; use an implemented driver for the selected engine"
+        );
         let relay = if matches!(profile.endpoint, ConnectionMode::UnixSocket { .. }) {
             None
         } else {
@@ -778,6 +785,27 @@ pub async fn browse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn future_engine_identifiers_are_rejected_before_connecting() {
+        for engine in [
+            crate::sources::DbEngine::PostgreSql,
+            crate::sources::DbEngine::MongoDb,
+            crate::sources::DbEngine::Redis,
+        ] {
+            let profile = SourceProfile {
+                engine,
+                ..Default::default()
+            };
+            let error = match Session::connect(&profile, "fixture-not-sent").await {
+                Ok(_) => panic!("Unimplemented engine reached the MySQL executor"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("MySQL and MariaDB only"));
+            assert!(!error.to_string().contains("fixture-not-sent"));
+        }
+    }
+
     #[test]
     fn catalog_metadata_caps_and_names_are_checked_without_leaks() {
         let mut databases = Vec::new();

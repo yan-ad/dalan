@@ -22,6 +22,7 @@ fn port(engine: DbEngine, suffix: &str) -> anyhow::Result<u16> {
     let name = match engine {
         DbEngine::MySql => "MYSQL",
         DbEngine::MariaDb => "MARIADB",
+        _ => panic!("This fixture targets MySQL/MariaDB only"),
     };
     Ok(std::env::var(format!("DALAN_SECURE_{name}_{suffix}"))?.parse()?)
 }

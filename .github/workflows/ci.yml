@@ -36,11 +36,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Toolchain
         run: rustup show
-      - name: Metal prerequisites
+      - name: Native platform prerequisites
         run: |
           xcode-select -p
-          xcrun --find metal
-          xcrun --find metallib
+          xcrun --show-sdk-path
       - name: Check
         run: cargo check -p dalan-app --bin dalan --features desktop --locked
       - name: Lint
@@ -54,7 +53,7 @@ jobs:
       - name: Bundle helper tests
         run: python3 -m unittest discover -s scripts/tests -v
       - name: Debug application bundle
-        run: ./scripts/macos --offline-shaders
+        run: ./scripts/macos
 
   database-fixtures:
     name: MySQL and MariaDB read-only fixtures
@@ -68,3 +67,20 @@ jobs:
         run: ./scripts/test-databases
       - name: Verified TLS and proxy rejection
         run: ./scripts/test-secure-transports
+
+  kit-pilot-macos:
+    name: GPUI Kit isolated pilot
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup show
+      - name: Pilot format
+        run: cargo fmt --manifest-path experiments/gpui-kit-pilot/Cargo.toml --all --check
+      - name: Pilot tests
+        run: cargo test --manifest-path experiments/gpui-kit-pilot/Cargo.toml --locked -- --nocapture
+      - name: Pilot lint
+        run: cargo clippy --manifest-path experiments/gpui-kit-pilot/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Pilot build
+        run: cargo build --manifest-path experiments/gpui-kit-pilot/Cargo.toml --locked

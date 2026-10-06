@@ -1,6 +1,6 @@
 # Read-only table browser
 
-Status: implemented experimental MySQL/MariaDB table UX, informed by DataGrip workflows while retaining compact **Carbonfox - opaque** styling. This is not a DataGrip visual replica or a completed SQL client. See [source setup](mysql-sources.md), [architecture](architecture.md) and [verification](testing.md#rich-canvas-table-browser).
+Status: implemented experimental MySQL/MariaDB table UX, informed by DataGrip workflows with Kit standard controls/default theme and compact layout. Specialized two-axis canvas paint remains app-owned and consumes active Kit semantic colors; it is not a Kit Table/DataTable replacement. The DataTable pilot remains a benchmark candidate, not proven performance/memory/interaction parity. This is not a DataGrip visual replica or a completed SQL client. See [source setup](mysql-sources.md), [architecture](architecture.md), [migration](gpui-kit-migration.md) and [verification](testing.md#rich-canvas-table-browser).
 
 ## Titles, columns and row numbers
 

@@ -28,6 +28,24 @@ fn runtime() -> &'static Runtime {
     })
 }
 
+/// Await a Tokio worker without registering a GPUI waker on its foreign runtime.
+///
+/// Kit's deterministic scheduler rejects *both* local and background scheduling
+/// from external threads, so merely awaiting the handle in a GPUI background task
+/// is not a bridge. Poll completion using a scheduler-owned timer instead. Only
+/// await the handle once Tokio reports it finished, when it cannot retain our
+/// waker. There is no deadline: slow/offline database work remains cancellable by
+/// its original abort handle and is not artificially limited by the bridge.
+async fn await_tokio_job<T: Send + 'static>(
+    job: tokio::task::JoinHandle<T>,
+    executor: gpui::BackgroundExecutor,
+) -> std::result::Result<T, tokio::task::JoinError> {
+    while !job.is_finished() {
+        executor.timer(std::time::Duration::from_millis(10)).await;
+    }
+    job.await
+}
+
 /// Serialize ticket allocation, including blocking work outliving a canceled refresh.
 async fn admit_cache_work<T: Send + 'static>(
     gate: Arc<Mutex<()>>,
@@ -711,8 +729,9 @@ impl SourceModel {
         let job = runtime().spawn(future);
         self.tree_operations
             .insert(key.clone(), (generation, job.abort_handle()));
+        let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
-            let result = job
+            let result = await_tokio_job(job, executor)
                 .await
                 .map_err(|_| anyhow!("Catalog worker stopped"))
                 .and_then(|result| result);
@@ -967,6 +986,7 @@ impl SourceModel {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let picker = cx.prompt_for_new_path(&home, Some("Dalan-loaded-page.csv"));
+        let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
             let selection = picker.await.map_err(|_| anyhow!("Save dialog closed unexpectedly")).and_then(|result| result);
             let mut proceed = false;
@@ -986,7 +1006,8 @@ impl SourceModel {
             if !proceed { return; }
             let path = selection.unwrap().unwrap();
             let count = page.rows.len();
-            let result = runtime().spawn_blocking(move || dalan_app::table_export::export_loaded_page(&path, &page, &Default::default())).await
+            let job = runtime().spawn_blocking(move || dalan_app::table_export::export_loaded_page(&path, &page, &Default::default()));
+            let result = await_tokio_job(job, executor).await
                 .map_err(|_| anyhow!("Export worker stopped")).and_then(|result| result);
             let _ = this.update(cx, |this, cx| {
                 this.export_busy = false;
@@ -1133,8 +1154,9 @@ impl SourceModel {
         let generation = self.generation;
         let job = runtime().spawn(future);
         self.operation = Some(job.abort_handle());
+        let executor = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
-            let result = job
+            let result = await_tokio_job(job, executor)
                 .await
                 .map_err(|_| anyhow!("Operation cancelled or worker stopped"))
                 .and_then(|result| result);
@@ -1813,6 +1835,57 @@ mod tests {
     use dalan_drivers::{CellValue, FilterOperator, mysql::ColumnInfo};
     use gpui::{AppContext, TestAppContext};
 
+    /// Worker completion is observed by scheduler-owned timers. Real Tokio/IO
+    /// progress is driven by the existing bounded wait loops; advance only the
+    /// virtual GUI clock here, without weakening scheduler thread assertions.
+    fn pump_workers(cx: &mut TestAppContext) {
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn worker_bridge_waits_for_foreign_completion_without_foreign_gui_wake(
+        cx: &mut TestAppContext,
+    ) {
+        let model = cx.new(|_| SourceModel::for_tests(Vec::new()));
+        let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = completed.clone();
+        let gui_thread = std::thread::current().id();
+        model.update(cx, |model, cx| {
+            model.run(
+                async move { Ok(receiver.await?) },
+                cx,
+                move |model, result, _| {
+                    assert_eq!(std::thread::current().id(), gui_thread);
+                    model.metadata_notice = Some(result.unwrap());
+                    observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                },
+            );
+        });
+        // Poll the bridge while the worker is definitely pending. Registering a
+        // Tokio JoinHandle waker here would expose Kit to the foreign wake below.
+        pump_workers(cx);
+        assert!(!completed.load(std::sync::atomic::Ordering::SeqCst));
+        std::thread::spawn(move || sender.send("finished".into()).unwrap())
+            .join()
+            .unwrap();
+        for _ in 0..100 {
+            pump_workers(cx);
+            if completed.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+        model.read_with(cx, |model, _| {
+            assert_eq!(model.metadata_notice.as_deref(), Some("finished"));
+            assert!(model.operation.is_none());
+        });
+    }
+
     fn snapshot(table: &str) -> CatalogSnapshot {
         CatalogSnapshot {
             databases: vec![
@@ -1881,7 +1954,7 @@ mod tests {
         });
         let mut accepted = false;
         for _ in 0..200 {
-            cx.run_until_parked();
+            pump_workers(cx);
             if let Ok((peer, _)) = server.accept() {
                 accepted = true;
                 drop(peer);
@@ -2256,7 +2329,7 @@ mod tests {
             )
         });
         for _ in 0..100 {
-            cx.run_until_parked();
+            pump_workers(cx);
             if model.read_with(cx, |model, _| model.tree_operations.is_empty()) {
                 break;
             }
@@ -2496,7 +2569,7 @@ mod tests {
             );
         });
         let _ = sender.send(());
-        cx.run_until_parked();
+        pump_workers(cx);
     }
 
     #[gpui::test]
@@ -2616,9 +2689,9 @@ mod tests {
             .detach();
         });
         model.update(cx, |model, cx| model.collapse_tree(cx));
-        cx.run_until_parked();
+        pump_workers(cx);
         model.update(cx, |model, cx| model.expand_loaded_tree(cx));
-        cx.run_until_parked();
+        pump_workers(cx);
         assert!(observed.load(std::sync::atomic::Ordering::Relaxed) >= 2);
         model.read_with(cx, |model, _| {
             assert!(Arc::ptr_eq(&page, model.page.as_ref().unwrap()));
@@ -2646,7 +2719,7 @@ mod tests {
 
     fn wait_for_export(model: &gpui::Entity<SourceModel>, cx: &mut TestAppContext) {
         for _ in 0..100 {
-            cx.run_until_parked();
+            pump_workers(cx);
             if !model.read_with(cx, |model, _| model.export_busy) {
                 return;
             }
@@ -2689,7 +2762,7 @@ mod tests {
             assert!(model.tree.loading.is_empty());
             assert_eq!(model.page.as_ref().unwrap().offset, 40);
         });
-        cx.run_until_parked();
+        pump_workers(cx);
         model.read_with(cx, |model, _| assert!(model.tree.errors.is_empty()));
     }
 
@@ -2928,7 +3001,7 @@ mod tests {
             assert!(!model.delete_confirm);
         });
         for _ in 0..100 {
-            cx.run_until_parked();
+            pump_workers(cx);
             if !model.read_with(cx, |model, _| model.saving) {
                 break;
             }
@@ -3291,7 +3364,7 @@ mod tests {
         });
         sender.send("current result".into()).unwrap();
         for _ in 0..50 {
-            cx.run_until_parked();
+            pump_workers(cx);
             if model.read_with(cx, |model, _| model.form_feedback.is_some()) {
                 break;
             }
@@ -3331,7 +3404,7 @@ mod tests {
             model.save(profile, "ephemeral-fixture-secret".into(), cx)
         });
         for _ in 0..100 {
-            cx.run_until_parked();
+            pump_workers(cx);
             if !model.read_with(cx, |model, _| model.saving) {
                 break;
             }
@@ -3352,7 +3425,7 @@ mod tests {
             model.confirm_delete(cx);
         });
         for _ in 0..100 {
-            cx.run_until_parked();
+            pump_workers(cx);
             if !model.read_with(cx, |model, _| model.saving) {
                 break;
             }
@@ -3418,7 +3491,7 @@ mod tests {
         });
         let mut accepted = false;
         for _ in 0..200 {
-            cx.run_until_parked();
+            pump_workers(cx);
             if let Ok((peer, _)) = socket.accept() {
                 accepted = true;
                 drop(peer);
@@ -3588,7 +3661,7 @@ mod tests {
                 model.open_tree_table(id.clone(), "offline".into(), "items".into(), cx)
             });
             for _ in 0..200 {
-                cx.run_until_parked();
+                pump_workers(cx);
                 if let Ok((peer, _)) = server.accept() {
                     connections += 1;
                     drop(peer);
@@ -3636,7 +3709,7 @@ mod tests {
             });
             model.update(cx, |model, cx| model.load_page(0, cx));
             for _ in 0..100 {
-                cx.run_until_parked();
+                pump_workers(cx);
                 if !model.read_with(cx, |model, _| model.busy) {
                     break;
                 }

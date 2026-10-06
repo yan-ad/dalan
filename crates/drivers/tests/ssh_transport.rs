@@ -12,6 +12,7 @@ fn profile(engine: DbEngine) -> anyhow::Result<SourceProfile> {
     let name = match engine {
         DbEngine::MySql => "MYSQL",
         DbEngine::MariaDb => "MARIADB",
+        _ => panic!("This fixture targets MySQL/MariaDB only"),
     };
     Ok(SourceProfile {
         engine,

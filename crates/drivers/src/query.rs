@@ -410,15 +410,20 @@ pub async fn execute_read_only(
             .query_drop("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'")
             .await
             .map_err(mysql::driver_error)?;
-        let deadline = match profile.engine {
-            DbEngine::MySql => format!(
+        let deadline = if profile.engine == DbEngine::MySql {
+            format!(
                 "SET SESSION MAX_EXECUTION_TIME = {}",
                 profile.options.query_timeout_seconds * 1000
-            ),
-            DbEngine::MariaDb => format!(
+            )
+        } else if profile.engine == DbEngine::MariaDb {
+            format!(
                 "SET SESSION max_statement_time = {}",
                 profile.options.query_timeout_seconds
-            ),
+            )
+        } else {
+            return Err(anyhow::anyhow!(
+                "SQL console execution for the selected engine is not implemented"
+            ));
         };
         session
             .conn()

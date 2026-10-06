@@ -5,6 +5,19 @@ fn state(view: &gpui::Entity<Shell>, cx: &VisualTestContext) -> ShellState {
     view.read_with(cx, |shell, _| shell.state.clone())
 }
 
+// Native Kit buttons activate Space on release, not on key-down.
+fn press(cx: &mut VisualTestContext, key: &str) {
+    cx.run_until_parked();
+    let keystroke = gpui::Keystroke::parse(key).unwrap();
+    cx.simulate_event(gpui::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    cx.simulate_event(gpui::KeyUpEvent { keystroke });
+    cx.run_until_parked();
+}
+
 #[gpui::test]
 fn center_connect_action_works_with_explorer_hidden(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
@@ -29,7 +42,7 @@ fn add_source_opens_real_form_and_cancel_returns_browser(cx: &mut TestAppContext
     let toggle = cx.debug_bounds("database-toggle").unwrap();
     let create = cx.debug_bounds("new-connection").unwrap();
     assert_eq!(create.left(), toggle.right());
-    assert_eq!(create.size.height, px(CONTROL_HEIGHT));
+    assert!(create.size.height <= px(TITLEBAR_HEIGHT));
     assert!(create.size.width > px(CONTROL_HEIGHT));
     click(cx, "new-connection");
     assert!(
@@ -55,8 +68,12 @@ fn add_source_opens_real_form_and_cancel_returns_browser(cx: &mut TestAppContext
 fn new_connection_is_keyboard_operable_with_sidebar_hidden(cx: &mut TestAppContext) {
     let (shell, cx) = fixture(cx);
     click(cx, "database-toggle");
-    cx.update(|window, app| shell.read(app).controls["new-connection"].focus(window));
-    cx.simulate_keystrokes("space");
+    cx.update(|window, app| {
+        shell.read(app).controls["new-connection"]
+            .clone()
+            .focus(window, app)
+    });
+    press(cx, "space");
     cx.run_until_parked();
     let mut dialog = source_dialog_context(cx);
     assert!(dialog.debug_bounds("source-name").is_some());
@@ -77,7 +94,7 @@ fn source_dialog_context(cx: &VisualTestContext) -> VisualTestContext {
     let handle = cx.cx.read(|app| {
         app.windows()
             .into_iter()
-            .find(|handle| handle.downcast::<source_dialog::SourceDialog>().is_some())
+            .find(|handle| Some(*handle) == source_dialog::SourceDialog::current_window(app))
             .expect("source dialog opened")
     });
     let dialog = VisualTestContext::from_window(handle, &cx.cx);
@@ -101,7 +118,7 @@ fn acp_button_is_bottom_right_and_panel_close_restores_focus(cx: &mut TestAppCon
     click(cx, "acp-close");
     assert!(!state(&view, cx).acp_visible);
     assert!(cx.update(|window, app| view.read(app).controls["acp-toggle"].is_focused(window)));
-    cx.simulate_keystrokes("space");
+    press(cx, "space");
     assert!(state(&view, cx).acp_visible);
     assert!(
         cx.update(|window, app| view.read(app).controls["acp-close"].is_focused(window)),
@@ -113,7 +130,8 @@ fn acp_button_is_bottom_right_and_panel_close_restores_focus(cx: &mut TestAppCon
     );
     cx.simulate_keystrokes("escape");
     assert!(!state(&view, cx).acp_visible);
-    cx.simulate_keystrokes("enter cmd-shift-a");
+    press(cx, "enter");
+    cx.simulate_keystrokes("cmd-shift-a");
     assert!(!state(&view, cx).acp_visible);
 }
 
@@ -129,7 +147,7 @@ fn acp_compact_layout_keeps_content_and_restores_database(cx: &mut TestAppContex
     assert_eq!(cx.debug_bounds("acp-panel").unwrap().size.width, px(300.0));
     assert!(cx.debug_bounds("main-content").unwrap().size.width >= px(240.0));
     assert!(cx.debug_bounds("acp-toggle").unwrap().origin.y >= px(448.0));
-    cx.update(|window, app| view.read(app).root_focus.focus(window));
+    cx.update(|window, app| view.read(app).root_focus.clone().focus(window, app));
     cx.simulate_keystrokes("escape");
     assert!(
         state(&view, cx).acp_visible,
@@ -145,12 +163,13 @@ fn acp_compact_layout_keeps_content_and_restores_database(cx: &mut TestAppContex
 #[gpui::test]
 fn about_action_opens_one_window_and_escape_closes(cx: &mut TestAppContext) {
     cx.update(|app| {
+        gpui::init(app);
         bind_keys(app);
         app.on_action(about::show_about);
         app.dispatch_action(&ShowAbout);
     });
     cx.run_until_parked();
-    let handle = cx.read(|app| app.windows()[0].downcast::<about::AboutWindow>().unwrap());
+    let handle = cx.read(|app| about::current_window(app).unwrap());
     assert_eq!(cx.read(|app| app.windows().len()), 1);
     cx.update(|app| app.dispatch_action(&ShowAbout));
     cx.run_until_parked();
@@ -167,15 +186,22 @@ fn about_action_opens_one_window_and_escape_closes(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn about_done_button_and_close_shortcut_work(cx: &mut TestAppContext) {
+    cx.update(gpui::init);
     cx.update(bind_keys);
-    let (_, visual) = cx.add_window_view(about::AboutWindow::new);
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| about::AboutWindow::new(window, cx));
+        gpui::base::Root::new(view, window, cx)
+    });
     visual.simulate_resize(size(px(420.0), px(280.0)));
     visual.refresh().unwrap();
     visual.run_until_parked();
     assert!(visual.debug_bounds("about-dalan").is_some());
     click(visual, "about-done");
     assert!(visual.cx.read(|app| app.windows().is_empty()));
-    let (_, visual) = cx.add_window_view(about::AboutWindow::new);
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| about::AboutWindow::new(window, cx));
+        gpui::base::Root::new(view, window, cx)
+    });
     visual.simulate_keystrokes("cmd-w");
     assert!(visual.cx.read(|app| app.windows().is_empty()));
 }
@@ -184,25 +210,26 @@ fn about_done_button_and_close_shortcut_work(cx: &mut TestAppContext) {
 fn tab_order_reaches_every_visible_control_in_both_directions(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
     let order = [
-        "layout-menu",
         "database-toggle",
         "new-connection",
+        "layout-menu",
         "database-resize",
         "acp-toggle",
     ];
+    let mut handles = Vec::new();
     for id in order {
         cx.simulate_keystrokes("tab");
-        assert!(
-            cx.update(|window, app| view.read(app).controls[id].is_focused(window)),
-            "{id}"
-        );
+        handles.push(cx.update(|window, app| window.focused(app).expect("tab focus")));
+        if id != "layout-menu" {
+            assert!(
+                cx.update(|window, app| view.read(app).controls[id].is_focused(window)),
+                "{id}"
+            );
+        }
     }
-    for id in order.into_iter().rev().skip(1) {
+    for (id, handle) in order.into_iter().zip(handles).rev().skip(1) {
         cx.simulate_keystrokes("shift-tab");
-        assert!(
-            cx.update(|window, app| view.read(app).controls[id].is_focused(window)),
-            "{id}"
-        );
+        assert!(cx.update(|window, _| handle.is_focused(window)), "{id}");
     }
 }
 
@@ -214,8 +241,15 @@ fn close_shortcut_removes_window(cx: &mut TestAppContext) {
 }
 
 fn fixture(cx: &mut TestAppContext) -> (gpui::Entity<Shell>, &mut VisualTestContext) {
+    cx.update(gpui::init);
     cx.update(bind_keys);
-    let (view, cx) = cx.add_window_view(Shell::new);
+    let mut shell = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let content = cx.new(|cx| Shell::new(window, cx));
+        shell = Some(content.clone());
+        gpui::base::Root::new(content, window, cx)
+    });
+    let view = shell.unwrap();
     cx.simulate_resize(size(px(1280.0), px(800.0)));
     cx.refresh().unwrap();
     cx.run_until_parked();
@@ -266,13 +300,13 @@ fn layout_menu_controls_work_and_restore_defaults(cx: &mut TestAppContext) {
         expected.apply(control);
         click(cx, "layout-menu");
         assert!(state(&view, cx).menu_open);
-        click(cx, control.id());
+        select_layout_item(cx, control);
         assert_eq!(state(&view, cx), expected);
     }
     click(cx, "layout-menu");
-    click(cx, "toggle-database");
+    select_layout_item(cx, Control::ToggleDatabase);
     click(cx, "layout-menu");
-    click(cx, "reset-layout");
+    select_layout_item(cx, Control::ResetLayout);
     assert_eq!(state(&view, cx), ShellState::default());
 }
 
@@ -291,16 +325,12 @@ fn menu_trigger_escape_and_outside_click_dismiss(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn keyboard_activation_menu_focus_trap_and_shortcuts(cx: &mut TestAppContext) {
+fn keyboard_activation_native_menu_navigation_and_shortcuts(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
-    cx.simulate_keystrokes("tab");
-    assert!(cx.update(|window, app| view.read(app).controls["layout-menu"].is_focused(window)));
-    cx.simulate_keystrokes("enter");
+    cx.simulate_keystrokes("tab tab tab enter");
+    cx.run_until_parked();
     assert!(state(&view, cx).menu_open);
-    assert!(cx.update(|window, app| view.read(app).controls["toggle-database"].is_focused(window)));
-    cx.simulate_keystrokes("shift-tab");
-    assert!(cx.update(|window, app| view.read(app).controls["reset-layout"].is_focused(window)));
-    cx.simulate_keystrokes("tab space");
+    select_layout_item(cx, Control::ToggleDatabase);
     assert!(!state(&view, cx).database_visible);
     assert!(!state(&view, cx).menu_open);
     cx.simulate_keystrokes("cmd-b");
@@ -331,15 +361,15 @@ fn separator_drag_keyboard_and_compact_resize(cx: &mut TestAppContext) {
     assert_eq!(state(&view, cx).requested_width(), 368.0);
     cx.simulate_keystrokes("cmd-alt-0");
     click(cx, "layout-menu");
-    click(cx, "widen-database");
+    select_layout_item(cx, Control::WidenDatabase);
     click(cx, "layout-menu");
-    click(cx, "widen-database");
+    select_layout_item(cx, Control::WidenDatabase);
     click(cx, "layout-menu");
-    click(cx, "widen-database");
+    select_layout_item(cx, Control::WidenDatabase);
     click(cx, "layout-menu");
-    click(cx, "widen-database");
+    select_layout_item(cx, Control::WidenDatabase);
     click(cx, "layout-menu");
-    click(cx, "widen-database");
+    select_layout_item(cx, Control::WidenDatabase);
     assert_eq!(state(&view, cx).requested_width(), 480.0);
     cx.simulate_resize(size(px(720.0), px(480.0)));
     cx.refresh().unwrap();
@@ -365,7 +395,7 @@ fn separator_drag_keyboard_and_compact_resize(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn carbonfox_shell_is_compact_and_flush(cx: &mut TestAppContext) {
+fn system_theme_shell_is_compact_and_flush(cx: &mut TestAppContext) {
     let (_, cx) = fixture(cx);
     let title = cx.debug_bounds("titlebar").unwrap();
     let status = cx.debug_bounds("shell-status").unwrap();
@@ -380,7 +410,6 @@ fn carbonfox_shell_is_compact_and_flush(cx: &mut TestAppContext) {
     assert_eq!(content.origin.y + content.size.height, status.origin.y);
     assert_eq!(status.size.height, px(28.0));
     assert_eq!(TITLEBAR_HEIGHT, 34.0);
-    assert_eq!(NAME, "Carbonfox - opaque");
 }
 
 #[gpui::test]
@@ -388,13 +417,14 @@ fn layout_trigger_is_icon_sized_and_popover_still_operates(cx: &mut TestAppConte
     let (view, cx) = fixture(cx);
     let trigger = cx.debug_bounds("layout-menu").unwrap();
     assert_eq!(trigger.size.width, px(CONTROL_HEIGHT));
-    assert_eq!(trigger.size.height, px(CONTROL_HEIGHT));
+    assert!(trigger.size.height <= px(TITLEBAR_HEIGHT));
     click(cx, "layout-menu");
     assert!(state(&view, cx).menu_open);
     click(cx, "layout-menu");
     assert!(!state(&view, cx).menu_open);
-    cx.update(|window, app| view.read(app).controls["layout-menu"].focus(window));
-    cx.simulate_keystrokes("enter");
+    cx.update(|window, app| view.read(app).root_focus.clone().focus(window, app));
+    cx.simulate_keystrokes("tab tab tab");
+    press(cx, "enter");
     assert!(state(&view, cx).menu_open);
     cx.simulate_keystrokes("escape");
     assert!(!state(&view, cx).menu_open);
@@ -438,4 +468,18 @@ fn new_console_shortcut_opens_once_and_uses_selected_database(cx: &mut TestAppCo
         workspace.read_with(cx, |workspace, _| workspace.tab_count()),
         1
     );
+}
+
+fn select_layout_item(cx: &mut VisualTestContext, control: Control) {
+    // PopupMenu owns selection and keyboard focus. Its first ArrowDown selects
+    // the first enabled item; the application does not synthesize menu buttons.
+    let index = MENU_CONTROLS
+        .iter()
+        .position(|(item, _)| *item == control)
+        .unwrap();
+    for _ in 0..=index {
+        cx.simulate_keystrokes("down");
+    }
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
 }

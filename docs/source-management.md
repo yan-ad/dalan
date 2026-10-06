@@ -1,12 +1,12 @@
 # Source management
 
-Status: implemented experimental MySQL/MariaDB configuration subset, not an exact replica of DataGrip or its native/JDBC properties. Dalan remains a database-only workspace with compact **Carbonfox - opaque** styling. Source-control relocation does not change engine glyphs, provider assets or their existing attribution. See [setup and browsing](mysql-sources.md), [security](security.md) and [verification](testing.md#relocated-source-controls).
+Status: implemented experimental MySQL/MariaDB configuration subset, not an exact replica of DataGrip or its native/JDBC properties. Dalan uses Kit standard controls and Kit's default theme with compact app-owned layout. Driver/authentication choices are Kit dropdown menus; saved SSH choices are Kit popup lists, not claimed Combobox/Select usage. Kit InputState owns editing/IME/selection; a thin value adapter and native password surrounding-text privacy handler preserve model/safety contracts alongside Kit masked clipboard protections. Current native/UI validation remains gated. Source-control relocation does not change engine glyphs, provider assets or attribution. See [setup and browsing](mysql-sources.md), [security](security.md) and [migration](gpui-kit-migration.md).
 
 ## Source window and actions
 
 Titlebar **New Connection**, row **Manage / Copy** and **Connect to a Source** use one retained independent, resizable source window without replacing an unsaved draft. Creation works with the sidebar hidden because the root retains the source-model subscription and dialog lifecycle. New Connection combines the existing plus glyph and explicit label at 28 px high immediately right of the Database collapse toggle at x = 84 px. Pointer, Enter and Space activation, tooltip and loading/saving guards apply; no explorer plus button remains.
 
-The source window starts at 1040 × 760, minimum 780 × 560; it is not a modal sheet or a main-window focus trap. A 34 px tab strip occupies the transparent native titlebar, reserves 84 px for traffic lights, and contains **General**, **Options**, **SSH/SSL** and **Schemas**. `TitlebarOptions` has an empty title to suppress duplicate native “Data Sources · Dalan” text. Transparent titlebar integration does not make the Carbonfox window body translucent or add blur.
+The source window starts at 1040 × 760, minimum 780 × 560; it is not a modal sheet or a main-window focus trap. Kit tabs occupy the 34 px native-titlebar layout, reserve 84 px for traffic lights, and contain **General**, **Options**, **SSH/SSL** and **Schemas**. `TitlebarOptions` has an empty title to suppress duplicate native “Data Sources · Dalan” text. Kit open_window/Base Root owns overlays in source and SSH windows; transparent titlebar integration is not a blur feature or a Carbonfox runtime override.
 
 ### Row actions and copy boundaries
 

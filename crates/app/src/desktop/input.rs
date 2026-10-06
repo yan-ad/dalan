@@ -1,48 +1,29 @@
-// Adapted from GPUI 0.2.2 examples/input.rs (Zed Industries, Apache-2.0).
+//! Compatibility bridge for window-less field construction and Kit's input state.
+//!
+//! Kit owns editing, selection, IME, painting and clipboard actions. The cached
+//! value keeps existing form observers synchronous; only value changes notify
+//! those observers, not cursor movement or focus changes.
+use gpui::component::{
+    Sizable,
+    input::{Input, InputEvent, InputState},
+};
+use gpui::{
+    App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity, EntityInputHandler,
+    FocusHandle, Focusable, Pixels, Point, SharedString, TextInputConfiguration, UTF16Selection,
+    Window, canvas, div, prelude::*,
+};
 use std::ops::Range;
 
-use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
-    point, prelude::*, px, relative, rgb, size,
-};
-use unicode_segmentation::*;
-
-use super::theme::*;
-
-actions!(
-    dalan_input,
-    [
-        Backspace,
-        Delete,
-        Left,
-        Right,
-        SelectLeft,
-        SelectRight,
-        SelectAll,
-        Home,
-        End,
-        ShowCharacterPalette,
-        Paste,
-        Cut,
-        Copy,
-    ]
-);
-
 pub(super) struct TextInput {
-    focus_handle: FocusHandle,
+    fallback_focus: FocusHandle,
+    input_focus: Option<FocusHandle>,
+    state: Option<Entity<InputState>>,
+    password_handler: Option<Entity<PasswordInputHandler>>,
     content: SharedString,
-    placeholder: SharedString,
+    pending_value: Option<SharedString>,
+    placeholder: &'static str,
     secret: bool,
-    scroll_offset: Pixels,
-    selected_range: Range<usize>,
-    selection_reversed: bool,
-    marked_range: Option<Range<usize>>,
-    last_layout: Option<ShapedLine>,
-    last_bounds: Option<Bounds<Pixels>>,
-    is_selecting: bool,
+    tab_order: isize,
 }
 
 impl TextInput {
@@ -52,19 +33,18 @@ impl TextInput {
         secret: bool,
         cx: &mut Context<Self>,
     ) -> Self {
-        let content = single_line(&value.into()).into();
+        let content: SharedString = single_line(&value.into()).into();
         Self {
-            focus_handle: cx.focus_handle().tab_stop(true),
+            // This handle is only a pre-render focus target, never a tab stop.
+            fallback_focus: cx.focus_handle(),
+            input_focus: None,
+            state: None,
+            password_handler: None,
+            pending_value: Some(content.clone()),
             content,
-            placeholder: placeholder.into(),
+            placeholder,
             secret,
-            selected_range: 0..0,
-            selection_reversed: false,
-            marked_range: None,
-            last_layout: None,
-            last_bounds: None,
-            is_selecting: false,
-            scroll_offset: px(0.),
+            tab_order: 0,
         }
     }
 
@@ -73,668 +53,284 @@ impl TextInput {
     }
 
     pub(super) fn set_value(&mut self, value: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.content = single_line(&value.into()).into();
-        self.selected_range = self.content.len()..self.content.len();
-        self.selection_reversed = false;
-        self.marked_range = None;
-        self.last_layout = None;
-        self.last_bounds = None;
-        self.scroll_offset = px(0.);
+        let value: SharedString = single_line(&value.into()).into();
+        self.pending_value = Some(value.clone());
+        self.content = value;
+        // A Window is deliberately not required here. Render flushes the write
+        // to Kit, which also resets selection, composition and editing history.
         cx.notify();
     }
 
     pub(super) fn focus_handle(&self) -> FocusHandle {
-        self.focus_handle.clone()
+        self.input_focus
+            .as_ref()
+            .unwrap_or(&self.fallback_focus)
+            .clone()
     }
 
     pub(super) fn set_tab_order(&mut self, index: isize) {
-        self.focus_handle = self.focus_handle.clone().tab_index(index);
+        self.tab_order = index;
     }
 
-    fn display_text(&self) -> SharedString {
-        if self.secret {
-            "•".repeat(self.content.graphemes(true).count()).into()
-        } else {
-            self.content.clone()
-        }
-    }
-
-    // Layout byte offsets differ from the model for passwords; no secret reaches shaping.
-    fn display_offset(&self, offset: usize) -> usize {
-        if self.secret {
-            self.content
-                .grapheme_indices(true)
-                .take_while(|(i, _)| *i < offset)
-                .count()
-                * "•".len()
-        } else {
-            offset
-        }
-    }
-
-    fn model_offset(&self, offset: usize) -> usize {
-        if self.secret {
-            self.content
-                .grapheme_indices(true)
-                .nth(offset / "•".len())
-                .map(|(i, _)| i)
-                .unwrap_or(self.content.len())
-        } else {
-            self.content
-                .grapheme_indices(true)
-                .map(|(i, _)| i)
-                .chain(std::iter::once(self.content.len()))
-                .min_by_key(|i| i.abs_diff(offset))
-                .unwrap_or(0)
-        }
-    }
-
-    fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.move_to(self.previous_boundary(self.cursor_offset()), cx);
-        } else {
-            self.move_to(self.selected_range.start, cx)
-        }
-    }
-
-    fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.move_to(self.next_boundary(self.selected_range.end), cx);
-        } else {
-            self.move_to(self.selected_range.end, cx)
-        }
-    }
-
-    fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.previous_boundary(self.cursor_offset()), cx);
-    }
-
-    fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.next_boundary(self.cursor_offset()), cx);
-    }
-
-    fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(0, cx);
-        self.select_to(self.content.len(), cx)
-    }
-
-    fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(0, cx);
-    }
-
-    fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.content.len(), cx);
-    }
-
-    fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.previous_boundary(self.cursor_offset()), cx)
-        }
-        self.replace_text_in_range(None, "", window, cx)
-    }
-
-    fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.next_boundary(self.cursor_offset()), cx)
-        }
-        self.replace_text_in_range(None, "", window, cx)
-    }
-
-    fn on_mouse_down(
-        &mut self,
-        event: &MouseDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.focus_handle.focus(window);
-        if event.click_count >= 2 {
-            self.is_selecting = false;
-            self.select_all(&SelectAll, window, cx);
-            return;
-        }
-        self.is_selecting = true;
-
-        if event.modifiers.shift {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
-        } else {
-            self.move_to(self.index_for_mouse_position(event.position), cx)
-        }
-    }
-
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
-        self.is_selecting = false;
-    }
-
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.is_selecting {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
-        }
-    }
-
-    fn show_character_palette(
-        &mut self,
-        _: &ShowCharacterPalette,
-        window: &mut Window,
-        _: &mut Context<Self>,
-    ) {
-        window.show_character_palette();
-    }
-
-    fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text, window, cx);
-        }
-    }
-
-    fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.secret && !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
-            ));
-        }
-    }
-    fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.secret && !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
-            ));
-            self.replace_text_in_range(None, "", window, cx)
-        }
-    }
-
-    fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        self.selected_range = offset..offset;
-        self.selection_reversed = false;
-        cx.notify()
-    }
-
-    fn cursor_offset(&self) -> usize {
-        if self.selection_reversed {
-            self.selected_range.start
-        } else {
-            self.selected_range.end
-        }
-    }
-
-    fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
-        if self.content.is_empty() {
-            return 0;
-        }
-
-        let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
-        else {
-            return 0;
-        };
-        if position.y < bounds.top() {
-            return 0;
-        }
-        if position.y > bounds.bottom() {
-            return self.content.len();
-        }
-        self.model_offset(line.closest_index_for_x(position.x - bounds.left() + self.scroll_offset))
-    }
-
-    fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        if self.selection_reversed {
-            self.selected_range.start = offset
-        } else {
-            self.selected_range.end = offset
-        };
-        if self.selected_range.end < self.selected_range.start {
-            self.selection_reversed = !self.selection_reversed;
-            self.selected_range = self.selected_range.end..self.selected_range.start;
-        }
-        cx.notify()
-    }
-
-    fn offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16_offset = 0;
-        let mut utf8_count = 0;
-
-        for ch in self.content.chars() {
-            if utf8_count >= offset {
-                break;
+    fn ensure_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        if self.state.is_none() {
+            let value = self.content.clone();
+            let placeholder = self.placeholder;
+            let secret = self.secret;
+            let state = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(value)
+                    .placeholder(placeholder)
+                    .masked(secret)
+            });
+            self.input_focus = Some(state.read(cx).focus_handle(cx));
+            cx.subscribe(&state, |this, state, event: &InputEvent, cx| {
+                if !matches!(event, InputEvent::Change) || this.pending_value.is_some() {
+                    return;
+                }
+                let raw = state.read(cx).value();
+                let value: SharedString = single_line(&raw).into();
+                if raw != value {
+                    this.pending_value = Some(value.clone());
+                }
+                if this.content != value {
+                    this.content = value;
+                    cx.notify();
+                }
+            })
+            .detach();
+            if secret {
+                let input_state = state.clone();
+                self.password_handler =
+                    Some(cx.new(|_| PasswordInputHandler { state: input_state }));
             }
-            utf8_count += ch.len_utf8();
-            utf16_offset += ch.len_utf16();
+            self.state = Some(state);
         }
-
-        utf16_offset
-    }
-
-    fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
-        self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
-    }
-
-    fn range_from_utf16(&self, range_utf16: &Range<usize>) -> Range<usize> {
-        utf16_range(&self.content, range_utf16)
-    }
-
-    fn previous_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0)
-    }
-
-    fn next_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .find_map(|(idx, _)| (idx > offset).then_some(idx))
-            .unwrap_or(self.content.len())
-    }
-}
-
-impl EntityInputHandler for TextInput {
-    fn text_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        actual_range: &mut Option<Range<usize>>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<String> {
-        // Never expose password text through OS surrounding-text/extraction APIs.
-        // IMEs may lose reconversion/context, but insertion and marked replacement work.
-        if self.secret {
-            *actual_range = None;
-            return None;
+        let state = self.state.as_ref().unwrap().clone();
+        if let Some(value) = self.pending_value.take() {
+            state.update(cx, |state, cx| state.set_value(value, window, cx));
         }
-        let range = self.range_from_utf16(&range_utf16);
-        actual_range.replace(self.range_to_utf16(&range));
-        Some(self.content[range].to_string())
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _ignore_disabled_input: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        Some(UTF16Selection {
-            range: self.range_to_utf16(&self.selected_range),
-            reversed: self.selection_reversed,
-        })
-    }
-
-    fn marked_text_range(
-        &self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Range<usize>> {
-        self.marked_range
-            .as_ref()
-            .map(|range| self.range_to_utf16(range))
-    }
-
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.marked_range = None;
-        _cx.notify();
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        new_text: &str,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
-
-        let new_text = single_line(new_text);
-        self.content =
-            (self.content[0..range.start].to_owned() + &new_text + &self.content[range.end..])
-                .into();
-        self.selected_range = range.start + new_text.len()..range.start + new_text.len();
-        self.marked_range.take();
-        self.selection_reversed = false;
-        cx.notify();
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        new_text: &str,
-        new_selected_range_utf16: Option<Range<usize>>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
-
-        let new_text = single_line(new_text);
-        self.content =
-            (self.content[0..range.start].to_owned() + &new_text + &self.content[range.end..])
-                .into();
-        if !new_text.is_empty() {
-            self.marked_range = Some(range.start..range.start + new_text.len());
-        } else {
-            self.marked_range = None;
+        if self.fallback_focus.is_focused(window) {
+            self.input_focus.as_ref().unwrap().focus(window, cx);
         }
-        self.selected_range = new_selected_range_utf16
-            .as_ref()
-            .map(|range_utf16| utf16_range(&new_text, range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.start)
-            .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
-
-        self.selection_reversed = false;
-        cx.notify();
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        bounds: Bounds<Pixels>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.last_layout.as_ref()?;
-        let range = self.range_from_utf16(&range_utf16);
-        Some(Bounds::from_corners(
-            point(
-                bounds.left() + last_layout.x_for_index(self.display_offset(range.start))
-                    - self.scroll_offset,
-                bounds.top(),
-            ),
-            point(
-                bounds.left() + last_layout.x_for_index(self.display_offset(range.end))
-                    - self.scroll_offset,
-                bounds.bottom(),
-            ),
-        ))
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        point: gpui::Point<Pixels>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        let bounds = self.last_bounds?;
-        bounds.localize(&point)?;
-        let line = self.last_layout.as_ref()?;
-        let index = line.closest_index_for_x(point.x - bounds.left() + self.scroll_offset);
-        Some(self.offset_to_utf16(self.model_offset(index)))
-    }
-}
-
-struct TextElement {
-    input: Entity<TextInput>,
-}
-
-struct PrepaintState {
-    line: Option<ShapedLine>,
-    cursor: Option<PaintQuad>,
-    selection: Option<PaintQuad>,
-    scroll_offset: Pixels,
-}
-
-impl IntoElement for TextElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl Element for TextElement {
-    type RequestLayoutState = ();
-    type PrepaintState = PrepaintState;
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.size.width = relative(1.).into();
-        style.size.height = window.line_height().into();
-        (window.request_layout(style, [], cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        let input = self.input.read(cx);
-        let content = input.display_text();
-        let selected_range = input.display_offset(input.selected_range.start)
-            ..input.display_offset(input.selected_range.end);
-        let cursor = input.display_offset(input.cursor_offset());
-        let style = window.text_style();
-
-        let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), rgb(MUTED).into())
-        } else {
-            (content, style.color)
-        };
-
-        let run = TextRun {
-            len: display_text.len(),
-            font: style.font(),
-            color: text_color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let marked_range = input
-            .marked_range
-            .as_ref()
-            .map(|r| input.display_offset(r.start)..input.display_offset(r.end));
-        let runs = if let Some(marked_range) = marked_range.as_ref() {
-            vec![
-                TextRun {
-                    len: marked_range.start,
-                    ..run.clone()
-                },
-                TextRun {
-                    len: marked_range.end - marked_range.start,
-                    underline: Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.0),
-                        wavy: false,
-                    }),
-                    ..run.clone()
-                },
-                TextRun {
-                    len: display_text.len() - marked_range.end,
-                    ..run
-                },
-            ]
-            .into_iter()
-            .filter(|run| run.len > 0)
-            .collect()
-        } else {
-            vec![run]
-        };
-
-        let font_size = style.font_size.to_pixels(window.rem_size());
-        let line = window
-            .text_system()
-            .shape_line(display_text, font_size, &runs, None);
-
-        let cursor_pos = line.x_for_index(cursor);
-        let mut scroll_offset = input.scroll_offset;
-        if cursor_pos - scroll_offset > bounds.size.width - px(2.) {
-            scroll_offset = (cursor_pos - bounds.size.width + px(2.)).max(px(0.));
-        } else if cursor_pos < scroll_offset {
-            scroll_offset = cursor_pos;
-        }
-        scroll_offset = scroll_offset.min((line.width - bounds.size.width + px(2.)).max(px(0.)));
-        let origin_x = bounds.left() - scroll_offset;
-        let (selection, cursor) = if selected_range.is_empty() {
-            (
-                None,
-                Some(fill(
-                    Bounds::new(
-                        point(origin_x + cursor_pos, bounds.top()),
-                        size(px(2.), bounds.bottom() - bounds.top()),
-                    ),
-                    rgb(FOCUS),
-                )),
-            )
-        } else {
-            (
-                Some(fill(
-                    Bounds::from_corners(
-                        point(
-                            origin_x + line.x_for_index(selected_range.start),
-                            bounds.top(),
-                        ),
-                        point(
-                            origin_x + line.x_for_index(selected_range.end),
-                            bounds.bottom(),
-                        ),
-                    ),
-                    rgb(TEXT_SELECTION),
-                )),
-                None,
-            )
-        };
-        PrepaintState {
-            line: Some(line),
-            cursor,
-            selection,
-            scroll_offset,
-        }
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let focus_handle = self.input.read(cx).focus_handle.clone();
-        window.handle_input(
-            &focus_handle,
-            ElementInputHandler::new(bounds, self.input.clone()),
-            cx,
-        );
-        if let Some(selection) = prepaint.selection.take() {
-            window.paint_quad(selection)
-        }
-        let line = prepaint.line.take().unwrap();
-        line.paint(
-            point(bounds.left() - prepaint.scroll_offset, bounds.top()),
-            window.line_height(),
-            window,
-            cx,
-        )
-        .unwrap();
-
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
-
-        self.input.update(cx, |input, _cx| {
-            input.scroll_offset = prepaint.scroll_offset;
-            input.last_layout = Some(line);
-            input.last_bounds = Some(bounds);
-        });
+        state
     }
 }
 
 impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.ensure_state(window, cx);
+        let paste_state = state.clone();
+        let password_handler = self.password_handler.clone();
+        let focus_handle = self.focus_handle();
         div()
             .id("dalan-input")
             .debug_selector(|| "dalan-input".into())
-            .flex()
-            .items_center()
+            .relative()
             .w_full()
-            .h(px(CONTROL_HEIGHT))
-            .px(px(7.))
-            .border_1()
-            .rounded(px(CONTROL_RADIUS))
-            .border_color(rgb(if self.focus_handle.is_focused(window) {
-                FOCUS
-            } else {
-                INPUT_BORDER
-            }))
-            .bg(rgb(INPUT_BG))
-            .text_color(rgb(TEXT))
-            .text_size(px(13.))
-            .line_height(px(18.))
-            .overflow_hidden()
-            .key_context("DalanInput")
-            .track_focus(&self.focus_handle)
-            .cursor(CursorStyle::IBeam)
-            .on_action(cx.listener(Self::backspace))
-            .on_action(cx.listener(Self::delete))
-            .on_action(cx.listener(Self::left))
-            .on_action(cx.listener(Self::right))
-            .on_action(cx.listener(Self::select_left))
-            .on_action(cx.listener(Self::select_right))
-            .on_action(cx.listener(Self::select_all))
-            .on_action(cx.listener(Self::home))
-            .on_action(cx.listener(Self::end))
-            .on_action(cx.listener(Self::show_character_palette))
-            .on_action(cx.listener(Self::paste))
-            .on_action(cx.listener(Self::cut))
-            .on_action(cx.listener(Self::copy))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .child(TextElement { input: cx.entity() })
+            // The Kit state handle is private. An ordered tab group orders its
+            // native tab stop without adding a second focusable element.
+            .tab_group()
+            .tab_index(self.tab_order)
+            .track_focus(&self.fallback_focus)
+            .tab_stop(false)
+            .child(
+                Input::new(&state)
+                    .small()
+                    .on_paste(move |item, window, cx| {
+                        let Some(text) = item.text() else {
+                            return false;
+                        };
+                        paste_state.update(cx, |state, cx| {
+                            state.replace_text_in_range(None, &single_line(&text), window, cx);
+                        });
+                        true
+                    }),
+            )
+            .when_some(password_handler, |this, handler| {
+                // Kit registers its native handler during paint. Register after
+                // that child so password extraction cannot reach its raw rope.
+                // This canvas neither paints nor installs a mouse hitbox: all
+                // editing, selection and rendering remain owned by Kit.
+                this.child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, (), window, cx| {
+                            window.handle_input(
+                                &focus_handle,
+                                ElementInputHandler::new(bounds, handler),
+                                cx,
+                            );
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            })
     }
 }
 
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
+        self.focus_handle()
     }
 }
 
-// Deliberately no Tab or Enter binding: the owner controls navigation/submission.
-pub(super) fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, Some("DalanInput")),
-        KeyBinding::new("delete", Delete, Some("DalanInput")),
-        KeyBinding::new("left", Left, Some("DalanInput")),
-        KeyBinding::new("right", Right, Some("DalanInput")),
-        KeyBinding::new("shift-left", SelectLeft, Some("DalanInput")),
-        KeyBinding::new("shift-right", SelectRight, Some("DalanInput")),
-        KeyBinding::new("cmd-a", SelectAll, Some("DalanInput")),
-        KeyBinding::new("cmd-v", Paste, Some("DalanInput")),
-        KeyBinding::new("cmd-c", Copy, Some("DalanInput")),
-        KeyBinding::new("cmd-x", Cut, Some("DalanInput")),
-        KeyBinding::new("home", Home, Some("DalanInput")),
-        KeyBinding::new("end", End, Some("DalanInput")),
-        KeyBinding::new("cmd-left", Home, Some("DalanInput")),
-        KeyBinding::new("cmd-right", End, Some("DalanInput")),
-        KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some("DalanInput")),
-    ]);
+/// A native-only privacy adapter. Kit still owns the password and every edit;
+/// only OS surrounding-text extraction is suppressed.
+struct PasswordInputHandler {
+    state: Entity<InputState>,
 }
+
+impl EntityInputHandler for PasswordInputHandler {
+    fn text_for_range(
+        &mut self,
+        _range: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        *adjusted_range = None;
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        ignore_disabled_input: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::selected_text_range(state, ignore_disabled_input, window, cx)
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::marked_text_range(state, window, cx)
+        })
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::unmark_text(state, window, cx)
+        })
+    }
+
+    fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::paste(state, item, window, cx)
+        })
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::replace_text_in_range(state, range, text, window, cx)
+        })
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::replace_and_mark_text_in_range(
+                state,
+                range,
+                text,
+                selected_range,
+                window,
+                cx,
+            )
+        })
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range: Range<usize>,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::bounds_for_range(state, range, bounds, window, cx)
+        })
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        point: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::character_index_for_point(state, point, window, cx)
+        })
+    }
+
+    fn set_selected_text_range(
+        &mut self,
+        range: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::set_selected_text_range(state, range, window, cx)
+        })
+    }
+
+    fn text_length_utf16(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<usize> {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::text_length_utf16(state, window, cx)
+        })
+    }
+
+    fn accepts_text_input(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::accepts_text_input(state, window, cx)
+        })
+    }
+
+    fn text_input_configuration(
+        &mut self,
+
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> TextInputConfiguration {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::text_input_configuration(state, window, cx)
+        })
+    }
+
+    fn text_input_editable_range(
+        &mut self,
+
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        self.state.update(cx, |state, cx| {
+            EntityInputHandler::text_input_editable_range(state, window, cx)
+        })
+    }
+}
+
+// Existing callers may keep this hook; gpui::init installs Kit's key bindings.
+pub(super) fn bind_keys(_: &mut App) {}
 
 fn single_line(value: &str) -> String {
     value
@@ -742,145 +338,201 @@ fn single_line(value: &str) -> String {
         .replace(['\r', '\n', '\t', '\u{2028}', '\u{2029}'], " ")
 }
 
-fn utf16_range(text: &str, range: &Range<usize>) -> Range<usize> {
-    fn offset(text: &str, requested: usize) -> usize {
-        let mut units = 0;
-        for (byte, ch) in text.char_indices() {
-            if units >= requested {
-                return byte;
-            }
-            units += ch.len_utf16();
-        }
-        text.len()
-    }
-    let start = offset(text, range.start);
-    start..offset(text, range.end).max(start)
-}
-
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::component::input::{Copy, Cut, SelectAll};
+    use gpui::{ClipboardItem, TestAppContext};
 
     #[gpui::test]
-    fn unicode_navigation_and_backspace(cx: &mut TestAppContext) {
-        cx.update(bind_keys);
-        let (input, visual) =
-            cx.add_window_view(|_, cx| TextInput::new("aé👩‍💻e\u{301}", "", false, cx));
-        visual.update(|window, app| {
-            input.update(app, |input, cx| {
-                input.focus_handle.focus(window);
-                input.end(&End, window, cx);
-                input.backspace(&Backspace, window, cx);
-                assert_eq!(input.value(), "aé👩‍💻");
-                input.left(&Left, window, cx);
-                assert_eq!(input.cursor_offset(), "aé".len());
-                input.delete(&Delete, window, cx);
-                assert_eq!(input.value(), "aé");
-                assert_eq!(input.range_from_utf16(&(1..2)), 1..3);
-            })
+    fn cached_values_work_without_a_window(cx: &mut TestAppContext) {
+        let input = cx.new(|cx| TextInput::new("é\r\n😀\t文", "Name", false, cx));
+        input.read_with(cx, |input, _| assert_eq!(input.value(), "é 😀 文"));
+        input.update(cx, |input, cx| {
+            input.set_value("new\nvalue", cx);
+            assert_eq!(input.value(), "new value");
+            assert!(input.state.is_none());
         });
     }
 
     #[gpui::test]
-    fn password_mask_does_not_copy_or_cut(cx: &mut TestAppContext) {
-        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("é👩‍💻", "", true, cx));
+    fn native_ime_commit_updates_the_unicode_cache(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("prefix", "", false, cx));
         visual.update(|window, app| {
-            app.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
             input.update(app, |input, cx| {
-                assert_eq!(input.display_text().as_ref(), "••");
-                assert_eq!(input.value(), "é👩‍💻");
-                input.select_all(&SelectAll, window, cx);
-                input.copy(&Copy, window, cx);
-                input.cut(&Cut, window, cx);
-                assert_eq!(input.value(), "é👩‍💻");
-                assert_eq!(
-                    cx.read_from_clipboard().unwrap().text().as_deref(),
-                    Some("sentinel")
-                );
-                let mut actual = None;
-                assert!(
-                    input
-                        .text_for_range(0..7, &mut actual, window, cx)
-                        .is_none()
-                );
-            });
-        });
-        visual.refresh().unwrap();
-        visual.run_until_parked();
-        input.read_with(visual, |input, _| {
-            assert_eq!(input.last_layout.as_ref().unwrap().text.as_ref(), "••")
-        });
-    }
-
-    #[gpui::test]
-    fn double_click_selects_all_unicode_and_secret_text(cx: &mut TestAppContext) {
-        cx.update(bind_keys);
-        for secret in [false, true] {
-            let text = "é👩‍💻e\u{301}";
-            let (input, visual) = cx.add_window_view(|_, cx| TextInput::new(text, "", secret, cx));
-            visual.refresh().unwrap();
-            visual.run_until_parked();
-            let position = visual.debug_bounds("dalan-input").unwrap().center();
-            visual.simulate_event(MouseDownEvent {
-                position,
-                modifiers: gpui::Modifiers::default(),
-                button: MouseButton::Left,
-                click_count: 2,
-                first_mouse: false,
-            });
-            // Movement after the second click must not shrink the full selection.
-            visual.simulate_event(MouseMoveEvent {
-                position,
-                pressed_button: Some(MouseButton::Left),
-                modifiers: gpui::Modifiers::default(),
-            });
-            visual.update(|window, app| {
-                app.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
-                input.update(app, |input, cx| {
-                    assert_eq!(input.selected_range, 0..text.len());
-                    assert!(!input.is_selecting);
-                    if secret {
-                        input.copy(&Copy, window, cx);
-                        input.cut(&Cut, window, cx);
-                        assert_eq!(input.value(), text);
-                        assert_eq!(
-                            cx.read_from_clipboard().unwrap().text().as_deref(),
-                            Some("sentinel")
-                        );
-                        let mut actual = None;
-                        assert!(
-                            input
-                                .text_for_range(0..100, &mut actual, window, cx)
-                                .is_none()
-                        );
-                        assert_eq!(input.last_layout.as_ref().unwrap().text.as_ref(), "•••");
-                    }
+                let state = input.ensure_state(window, cx);
+                state.update(cx, |state, cx| {
+                    state.replace_and_mark_text_in_range(None, "😀é", Some(2..3), window, cx);
+                    state.replace_text_in_range(None, "文", window, cx);
+                    assert!(state.marked_text_range(window, cx).is_none());
                 });
             });
-            visual.simulate_input("replacement");
-            input.read_with(visual, |input, _| assert_eq!(input.value(), "replacement"));
-        }
+        });
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| assert_eq!(input.value(), "prefix文"));
     }
 
     #[gpui::test]
-    fn paste_scrubs_lines_and_ime_selection_is_relative(cx: &mut TestAppContext) {
-        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("x", "", false, cx));
+    fn password_native_handler_hides_text_and_preserves_unicode_ime(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("A😀Z", "", true, cx));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
         visual.update(|window, app| {
-            app.write_to_clipboard(ClipboardItem::new_string("a\r\nb\nc\rd\te\u{2028}f".into()));
-            input.update(app, |input, cx| {
-                input.end(&End, window, cx);
-                input.paste(&Paste, window, cx);
-                assert_eq!(input.value(), "xa b c d e f");
-                input.set_value("prefix", cx);
-                input.replace_and_mark_text_in_range(None, "😀é", Some(2..3), window, cx);
-                assert_eq!(input.value(), "prefix😀é");
-                assert_eq!(input.selected_range, 10..12);
-                assert_eq!(input.range_to_utf16(&input.selected_range), 8..9);
-                input.replace_text_in_range(None, "文", window, cx);
-                assert_eq!(input.value(), "prefix文");
-                assert!(input.marked_range.is_none());
+            input.read(app).focus_handle().focus(window, app);
+            let handler = input.read(app).password_handler.clone().unwrap();
+            // GPUI keeps the installed platform handler private. Exercise its
+            // public native bridge against the same retained adapter entity.
+            handler.update(app, |handler, cx| {
+                let mut adjusted = Some(1..3);
+                assert_eq!(
+                    handler.text_for_range(0..4, &mut adjusted, window, cx),
+                    None
+                );
+                assert_eq!(adjusted, None);
+                handler.replace_and_mark_text_in_range(Some(1..3), "に😀", Some(1..3), window, cx);
+                assert_eq!(handler.marked_text_range(window, cx), Some(1..4));
+                assert_eq!(
+                    handler
+                        .selected_text_range(false, window, cx)
+                        .unwrap()
+                        .range,
+                    2..4
+                );
+                assert_eq!(
+                    handler.text_for_range(1..4, &mut adjusted, window, cx),
+                    None
+                );
+                assert_eq!(adjusted, None);
+                handler.replace_text_in_range(None, "日本語", window, cx);
+                assert_eq!(handler.marked_text_range(window, cx), None);
+                assert_eq!(
+                    handler
+                        .selected_text_range(false, window, cx)
+                        .unwrap()
+                        .range,
+                    4..4
+                );
+                handler.replace_and_mark_text_in_range(None, "é", None, window, cx);
+                handler.unmark_text(window, cx);
+                assert_eq!(handler.marked_text_range(window, cx), None);
+                assert_eq!(handler.state.read(cx).value().as_ref(), "A日本語éZ");
             });
+        });
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| assert_eq!(input.value(), "A日本語éZ"));
+        // Ordinary native input still routes through the installed adapter.
+        visual.simulate_input("文");
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| assert_eq!(input.value(), "A日本語é文Z"));
+    }
+
+    #[gpui::test]
+    fn plain_native_handler_keeps_surrounding_text(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("A😀Z", "", false, cx));
+        visual.update(|window, app| {
+            input.update(app, |input, cx| {
+                let state = input.ensure_state(window, cx);
+                assert!(input.password_handler.is_none());
+                state.update(cx, |state, cx| {
+                    let mut adjusted = None;
+                    assert_eq!(
+                        state.text_for_range(1..3, &mut adjusted, window, cx),
+                        Some("😀".into())
+                    );
+                    assert_eq!(adjusted, Some(1..3));
+                });
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn plain_kit_input_copies_unicode(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("é😀文", "", false, cx));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        visual.update(|window, app| {
+            input.read(app).focus_handle().focus(window, app);
+        });
+        visual.dispatch_action(SelectAll);
+        visual.dispatch_action(Copy);
+        visual.update(|_, app| {
+            assert_eq!(
+                app.read_from_clipboard().unwrap().text().as_deref(),
+                Some("é😀文")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn kit_changes_update_the_form_cache(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("", "Name", false, cx));
+        visual.update(|window, app| {
+            input.update(app, |input, cx| {
+                let state = input.ensure_state(window, cx);
+                state.update(cx, |state, cx| {
+                    state.replace_text_in_range(None, "é😀文", window, cx);
+                });
+            });
+        });
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| assert_eq!(input.value(), "é😀文"));
+    }
+
+    #[gpui::test]
+    fn programmatic_write_is_flushed_to_kit(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("old", "", false, cx));
+        visual.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.ensure_state(window, cx);
+                input.set_value("new\r\nvalue", cx);
+                assert_eq!(input.value(), "new value");
+                let state = input.ensure_state(window, cx);
+                assert_eq!(state.read(cx).value().as_ref(), "new value");
+                assert!(input.pending_value.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn focus_requested_before_render_transfers_to_kit(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("", "", false, cx));
+        visual.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.fallback_focus.focus(window, cx);
+                input.ensure_state(window, cx);
+                assert!(input.focus_handle().is_focused(window));
+                assert!(!input.fallback_focus.is_focused(window));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn masked_kit_input_blocks_copy_and_cut(cx: &mut TestAppContext) {
+        cx.update(gpui::init);
+        let (input, visual) = cx.add_window_view(|_, cx| TextInput::new("é😀secret", "", true, cx));
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        visual.update(|window, app| {
+            app.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
+            input.read(app).focus_handle().focus(window, app);
+        });
+        visual.dispatch_action(SelectAll);
+        visual.dispatch_action(Copy);
+        visual.dispatch_action(Cut);
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| assert_eq!(input.value(), "é😀secret"));
+        visual.update(|_, app| {
+            assert_eq!(
+                app.read_from_clipboard().unwrap().text().as_deref(),
+                Some("sentinel")
+            );
         });
     }
 }
