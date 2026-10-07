@@ -77,6 +77,7 @@ pub(super) struct SourceForm {
     authentication_open: bool,
     tls_open: bool,
     mongo_direct_connection: bool,
+    java_runtime: Entity<super::java_runtime::JavaRuntimeField>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -325,6 +326,9 @@ impl SourceForm {
             })
             .detach();
         }
+        let java_runtime = cx.new(|cx| {
+            super::java_runtime::JavaRuntimeField::new(inputs["source-jdbc-java"].clone(), cx)
+        });
         Self {
             embedded: false,
             dirty: false,
@@ -355,6 +359,7 @@ impl SourceForm {
             authentication_open: false,
             tls_open: false,
             mongo_direct_connection,
+            java_runtime,
             original: profile,
             model,
             inputs,
@@ -1857,7 +1862,12 @@ impl Render for SourceForm {
                     } else {
                         body = body
                             .child(self.jdbc_driver_control(cx))
-                            .child(self.field("source-jdbc-java", "Java executable", 0, cx))
+                            .child(
+                                div()
+                                    .id("source-jdbc-java")
+                                    .debug_selector(|| "source-jdbc-java".into())
+                                    .child(self.java_runtime.clone()),
+                            )
                             .child(self.field("source-jdbc-url", "Vendor JDBC URL", 0, cx));
                     }
                     body = body.child(self.row(

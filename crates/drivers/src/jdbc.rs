@@ -152,6 +152,90 @@ pub async fn runtime_info(java_path: &str) -> Result<RuntimeInfo> {
         .await
         .map_err(|_| anyhow!("Java runtime check timed out"))?
 }
+/// A discovered local runtime, not a managed/downloaded JVM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedJava {
+    pub executable: String,
+    pub runtime: RuntimeInfo,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn executable_from_java_home(output: &[u8]) -> Result<PathBuf> {
+    let text = std::str::from_utf8(output).map_err(|_| anyhow!("Invalid JDK locator output"))?;
+    let home = text.trim();
+    ensure!(
+        !home.is_empty() && home.len() <= 4096 && !home.chars().any(char::is_control),
+        "Invalid JDK locator output"
+    );
+    ensure!(
+        Path::new(home).is_absolute(),
+        "JDK locator requires an absolute home"
+    );
+    java_executable(&Path::new(home).join("bin/java").to_string_lossy())
+}
+
+/// macOS's system locator only. No shell, PATH/JAVA_HOME lookup, installation,
+/// directory crawling or driver JAR execution. Both children have deadlines.
+pub async fn detect_local_java() -> Result<DetectedJava> {
+    #[cfg(target_os = "macos")]
+    {
+        detect_with_locator(Path::new("/usr/libexec/java_home")).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(anyhow!(
+            "Automatic JDK detection is available on macOS only"
+        ))
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+async fn detect_with_locator(locator: &Path) -> Result<DetectedJava> {
+    let locate = async {
+        let mut child = tokio::process::Command::new(locator)
+            .args(["-F", "-v", "17+"])
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|_| anyhow!("Cannot start system JDK locator"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Missing JDK locator output"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("Missing JDK locator output"))?;
+        let (out, _, status) = tokio::try_join!(
+            read_bounded(stdout, 4096),
+            read_bounded(stderr, 4096),
+            async {
+                child
+                    .wait()
+                    .await
+                    .map_err(|_| anyhow!("JDK locator failed"))
+            }
+        )?;
+        ensure!(status.success(), "No matching installed JDK found");
+        executable_from_java_home(&out)
+    };
+    let executable = tokio::time::timeout(Duration::from_secs(5), locate)
+        .await
+        .map_err(|_| anyhow!("JDK detection timed out"))??;
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| anyhow!("Invalid JDK executable path"))?
+        .to_owned();
+    let runtime = runtime_info(&executable).await?;
+    Ok(DetectedJava {
+        executable,
+        runtime,
+    })
+}
+
 fn checked_jar(path: &str, expected: &str, destination: &Path) -> Result<u64> {
     let path = Path::new(path);
     ensure!(path.is_absolute(), "JDBC JAR path must be absolute");
@@ -465,6 +549,57 @@ mod tests {
     fn relative_java_rejected() {
         assert!(java_executable("java").is_err());
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn jdk_locator_uses_fixed_args_and_validates_local_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = PrivateDir::new().unwrap();
+        let home = dir.0.join("JDK with spaces");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        let java = home.join("bin/java");
+        std::fs::write(&java, "#!/bin/sh\necho 'openjdk version \"21.0.2\"' >&2\n").unwrap();
+        std::fs::set_permissions(&java, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let locator = dir.0.join("java_home");
+        let args = dir.0.join("locator-args");
+        std::fs::write(
+            &locator,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s\\n' '{}'\n",
+                args.display(),
+                home.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&locator, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let detected = detect_with_locator(&locator).await.unwrap();
+        assert_eq!(detected.runtime.major, 21);
+        assert_eq!(
+            Path::new(&detected.executable),
+            java.canonicalize().unwrap()
+        );
+        assert_eq!(std::fs::read_to_string(args).unwrap(), "-F\n-v\n17+\n");
+        // No launcher stub, older JDK, malformed output or nonzero locator fallback.
+        std::fs::write(&java, "#!/bin/sh\necho 'openjdk version \"11.0.1\"' >&2\n").unwrap();
+        assert!(detect_with_locator(&locator).await.is_err());
+        std::fs::write(&locator, "#!/bin/sh\nexit 1\n").unwrap();
+        assert!(detect_with_locator(&locator).await.is_err());
+        for output in [
+            b"relative/path".as_slice(),
+            b"",
+            b"/first\n/second",
+            b"/bad\0path",
+            b"/nonexistent/synthetic/jdk",
+        ] {
+            assert!(executable_from_java_home(output).is_err());
+        }
+        std::fs::write(
+            &locator,
+            "#!/bin/sh\ni=0; while [ $i -lt 5000 ]; do printf x; i=$((i+1)); done\n",
+        )
+        .unwrap();
+        assert!(detect_with_locator(&locator).await.is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlink_jar_rejected() {

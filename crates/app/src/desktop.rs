@@ -3,6 +3,7 @@ mod confirm;
 mod data_grid;
 mod icons;
 mod input;
+mod java_runtime;
 mod query_console;
 mod schema_picker;
 mod source_browser;

@@ -1,6 +1,6 @@
 # Native drivers and support matrix
 
-Status: experimental read-only implementations, not release certification. Dalan now exposes five built-in engines: MySQL, MariaDB, PostgreSQL, MongoDB and Redis. PostgreSQL/MongoDB/Redis are native protocol adapters. A separate [optional JDBC bridge and curated installer](jdbc-drivers.md) is now implemented; it requires an explicitly supplied Java 17+ executable and trusted installed JARs, with vendor/server qualification unrun. A JDBC-shaped native URL prefix alone does not select that bridge or install Java. Broader external workers remain later work.
+Status: experimental read-only implementations, not release certification. Dalan now exposes five built-in engines: MySQL, MariaDB, PostgreSQL, MongoDB and Redis. PostgreSQL/MongoDB/Redis are native protocol adapters. A separate [optional JDBC bridge and curated installer](jdbc-drivers.md) is now implemented; it requires a local Java 17+ executable (auto-detected on macOS or manually configured) and trusted installed JARs, with vendor/server qualification unrun. A JDBC-shaped native URL prefix alone does not select that bridge or install Java. Broader external workers remain later work.
 
 ## Bundled library versions and selection
 

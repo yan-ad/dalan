@@ -56,6 +56,7 @@ pub(super) struct SourceDialog {
     jdbc_search: Entity<super::input::TextInput>,
     jdbc_java: Entity<super::input::TextInput>,
     jdbc_runtime: Option<String>,
+    java_runtime: Entity<super::java_runtime::JavaRuntimeField>,
     driver_choices: std::collections::BTreeMap<String, String>,
     driver_choices_saved: std::collections::BTreeMap<String, String>,
     confirm_close: bool,
@@ -129,6 +130,20 @@ impl SourceDialog {
             .try_global::<super::AppearanceSettings>()
             .map(|s| s.config.driver_versions.clone())
             .unwrap_or_default();
+        let jdbc_java = cx.new(|cx| {
+            super::input::TextInput::new(
+                profile
+                    .jdbc
+                    .as_ref()
+                    .map(|j| j.java_path.as_str())
+                    .unwrap_or(""),
+                "Absolute path to Java 17+ executable",
+                false,
+                cx,
+            )
+        });
+        let java_runtime =
+            cx.new(|cx| super::java_runtime::JavaRuntimeField::new(jdbc_java.clone(), cx));
         let mut this = Self {
             model: model.clone(),
             form: form.clone(),
@@ -154,18 +169,8 @@ impl SourceDialog {
             jdbc_search: cx.new(|cx| {
                 super::input::TextInput::new("", "Search built-in and JDBC drivers", false, cx)
             }),
-            jdbc_java: cx.new(|cx| {
-                super::input::TextInput::new(
-                    profile
-                        .jdbc
-                        .as_ref()
-                        .map(|j| j.java_path.as_str())
-                        .unwrap_or(""),
-                    "Absolute path to Java 17+ executable",
-                    false,
-                    cx,
-                )
-            }),
+            jdbc_java,
+            java_runtime,
             jdbc_runtime: None,
             driver_choices_saved: driver_choices.clone(),
             driver_choices,
@@ -895,7 +900,7 @@ impl SourceDialog {
             ),
             (
                 "Runtime",
-                "Explicit local Java 17+ (no automatic Java download)".into(),
+                "Local Java 17+ · macOS auto-detection · no Java download".into(),
             ),
             (
                 "Operations",
@@ -914,7 +919,7 @@ impl SourceDialog {
                 .child(Button::new("jdbc-install").debug_selector(||"jdbc-install".into()).label(if is_installed{"Installed"}else{"Install"}).primary().small().disabled(disabled||is_installed||chosen.is_none()).on_click(cx.listener(|d,_,_,cx|d.install_jdbc(cx))))
                 .child(Button::new("jdbc-new-source").debug_selector(||"jdbc-new-source".into()).label("Create connection").small().disabled(disabled||!is_installed).on_click(cx.listener(|d,_,window,cx|d.create_jdbc_source(window,cx)))))
             .child(Table::new().small().accessibility_label("JDBC driver package details").child(TableHeader::new().child(TableRow::new().child(TableHead::new().child("Field")).child(TableHead::new().child("Details")))).child(body))
-            .child("Java executable (absolute path)").child(self.jdbc_java.clone())
+            .child(self.java_runtime.clone())
             .child(Button::new("jdbc-check-java").debug_selector(||"jdbc-check-java".into()).label("Check Java runtime").small().disabled(disabled).on_click(cx.listener(|d,_,_,cx|d.check_java(cx))))
             .when_some(self.jdbc_runtime.clone(),|body,status|body.child(status))
             .children(dalan_app::jdbc_catalog::catalog_notices().iter().map(|notice|div().text_sm().text_color(cx.theme().muted_foreground).child(*notice)))
