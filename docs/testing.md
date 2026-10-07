@@ -1,5 +1,13 @@
 # Test strategy and release evidence
 
+## Source context menus, schema counters and full-row environment colors
+
+Removed source configuration gears and tiny environment color bars. Kit context menus capture the right-clicked source for Manage / Copy / Remove, retain destructive AlertDialog confirmation and reject busy/saving/open-settings operations. A compact database counter follows each source name, displaying total loaded databases or visible-of-total. Its Kit popover uses searchable virtualized cached checkboxes, All databases and a default-database visibility shortcut. Enter/Apply/outside click persists display-only visibility; Escape cancels. It does not open source settings, discover metadata, read credentials, change the default connection database or select an execution target. Persistence failures preserve previous settings; changed source/catalog snapshots invalidate popup commits.
+
+Full-row configured color tints are blended into opaque theme backgrounds with stronger selected/hovered states; uncolored rows retain normal selection and provider icons preserve original fills. Regressions cover counter semantics, light/dark opaque blending, actual right-click menu actions, popup cancellation/Enter/outside behavior and stale snapshots, plus synthetic visibility storage success/failure and unchanged settings/credentials/catalogs. Existing large-tree virtualization/search and workspace tests remain passing.
+
+Local verification: **244 headless unit tests + one native-wire integration test, 253 production UI tests, 14 Python tests**, formatting and strict workspace/desktop Clippy. The macOS debug bundle passes plist and ad-hoc signature checks. UI event/geometry tests are not native visual or screen-reader certification; live/private servers and credentials were not used. CI remains skipped.
+
 ## MongoDB Compass-style connection string URI and Direct Connection controls
 
 Added support for full MongoDB connection string URIs including options (`retryWrites`, `loadBalanced`, `serverSelectionTimeoutMS`, `connectTimeoutMS`, `authSource`, `authMechanism`, `directConnection`, `tls`/`ssl`, and standard driver parameters). Extended `parse_mongo_uri`, `MongoOptions`, and `set_mongo_uri_direct_connection` in `dalan-drivers`, and propagated parsed options (`auth_mechanism`, `retry_writes`, `load_balanced`, timeouts) into native `mongodb` `ClientOptions` and `Credential`.

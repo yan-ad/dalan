@@ -4,6 +4,7 @@ mod data_grid;
 mod icons;
 mod input;
 mod query_console;
+mod schema_picker;
 mod source_browser;
 mod source_dialog;
 mod source_form;

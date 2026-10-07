@@ -11,8 +11,8 @@ use dalan_app::source_store::{NativeSecretStore, SecretStore, SourceRepository};
 use dalan_app::ssh_config_store::resolve_ssh_profile;
 use dalan_app::workspace_tabs::WorkspaceOpen;
 use dalan_drivers::{
-    Authentication, BrowseRequest, CatalogSnapshot, DatabaseCatalog, SortDirection, SourceProfile,
-    TableFilter, TableInfo, TablePage, TableSort, discover_catalog,
+    Authentication, BrowseRequest, CatalogSnapshot, DatabaseCatalog, SchemaSelection,
+    SortDirection, SourceProfile, TableFilter, TableInfo, TablePage, TableSort, discover_catalog,
 };
 use gpui::Context;
 use tokio::{runtime::Runtime, sync::Mutex, task::AbortHandle};
@@ -754,6 +754,76 @@ impl SourceModel {
                         )
                     }
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    /// Persist display-only schema visibility using the already materialized catalog.
+    pub fn set_visible_schemas(
+        &mut self,
+        id: String,
+        selection: SchemaSelection,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving || self.form_open || !self.storage_ready {
+            return;
+        }
+        let Some(mut profile) = self.profiles.iter().find(|p| p.id == id).cloned() else {
+            return;
+        };
+        if let SchemaSelection::Selected(names) = &selection
+            && names.iter().any(|name| {
+                !self
+                    .tree
+                    .databases
+                    .get(&id)
+                    .is_some_and(|databases| databases.contains(name))
+            })
+        {
+            self.metadata_notice = Some("Select schemas from the loaded catalog.".into());
+            cx.notify();
+            return;
+        }
+        // Do not resolve the connection or touch credentials: only this field changes.
+        profile.schemas = selection;
+        if profile.validate().is_err() {
+            self.metadata_notice = Some("Invalid schema visibility selection.".into());
+            cx.notify();
+            return;
+        }
+        let Some(repo) = self.repository.clone() else {
+            self.metadata_notice = Some(
+                "Source settings storage is unavailable; schema visibility was not changed.".into(),
+            );
+            cx.notify();
+            return;
+        };
+        let mut profiles = self.profiles.clone();
+        if let Some(p) = profiles.iter_mut().find(|p| p.id == id) {
+            *p = profile;
+        }
+        self.saving = true;
+        let task = cx
+            .background_executor()
+            .spawn(async move { repo.save(&profiles).map(|()| profiles) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |m, cx| {
+                m.saving = false;
+                match result {
+                    Ok(profiles) => {
+                        m.profiles = profiles;
+                        m.metadata_notice = None;
+                    }
+                    Err(_) => {
+                        m.metadata_notice = Some(
+                            "Could not save schema visibility; existing settings retained.".into(),
+                        );
+                    }
+                }
+                // Flattening uses the updated profiles while retaining all cached children.
                 cx.notify();
             });
         })
@@ -2863,6 +2933,166 @@ mod tests {
         cx.run_until_parked();
         assert!(repo.load().unwrap()[0].database.is_none());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[gpui::test]
+    fn schema_visibility_roundtrip_preserves_settings_credentials_and_catalog(
+        cx: &mut TestAppContext,
+    ) {
+        let sandbox = ExportSandbox::new();
+        let repo = SourceRepository::new(sandbox.0.join("sources.json"));
+        let mut profile = SourceProfile {
+            name: "Synthetic visibility fixture".into(),
+            database: Some("inventory".into()),
+            save_password: true,
+            ..Default::default()
+        };
+        profile.options.page_size = 37;
+        let other = SourceProfile::default();
+        let original = vec![profile.clone(), other];
+        repo.save(&original).unwrap();
+        let id = profile.id.clone();
+        let store = Arc::new(TestPasswordStore {
+            value: None,
+            deny: true,
+            reads: Default::default(),
+        });
+        let model = cx.new(|_| SourceModel::for_tests(original.clone()));
+        model.update(cx, |m, _| {
+            m.repository = Some(repo.clone());
+            m.secret_store = store.clone();
+            m.passwords
+                .insert(id.clone(), "synthetic-session-only".into());
+            m.tree
+                .databases
+                .insert(id.clone(), vec!["inventory".into(), "empty".into()]);
+            m.tree.expanded_sources.insert(id.clone());
+            m.selected_database = Some("inventory".into());
+        });
+        for selection in [
+            SchemaSelection::Selected(vec!["empty".into()]),
+            SchemaSelection::Selected(vec![]),
+            SchemaSelection::All,
+        ] {
+            model.update(cx, |m, cx| {
+                m.set_visible_schemas(id.clone(), selection.clone(), cx);
+                assert!(m.saving);
+                assert!(!m.form_open);
+            });
+            cx.run_until_parked();
+            let mut expected = original.clone();
+            expected[0].schemas = selection.clone();
+            assert_eq!(
+                serde_json::to_value(repo.load().unwrap()).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            model.read_with(cx, |m, _| {
+                assert_eq!(
+                    serde_json::to_value(&m.profiles).unwrap(),
+                    serde_json::to_value(&expected).unwrap()
+                );
+                assert!(!m.saving);
+                assert!(m.metadata_notice.is_none());
+                assert!(m.operation.is_none());
+                assert!(m.tree_operations.is_empty());
+                assert_eq!(m.passwords[&id], "synthetic-session-only");
+                assert_eq!(m.selected_database.as_deref(), Some("inventory"));
+                assert_eq!(m.tree.databases[&id].len(), 2);
+                let visible = m
+                    .tree
+                    .flatten(&m.profiles)
+                    .iter()
+                    .filter(|row| matches!(row.key, TreeKey::Database { .. }))
+                    .count();
+                assert_eq!(
+                    visible,
+                    match &selection {
+                        SchemaSelection::All => 2,
+                        SchemaSelection::Selected(names) => names.len(),
+                    }
+                );
+            });
+        }
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[gpui::test]
+    fn schema_visibility_guards_and_rejects_unmaterialized_names(cx: &mut TestAppContext) {
+        let sandbox = ExportSandbox::new();
+        let repo = SourceRepository::new(sandbox.0.join("sources.json"));
+        let profile = SourceProfile::default();
+        let id = profile.id.clone();
+        repo.save(std::slice::from_ref(&profile)).unwrap();
+        let before = std::fs::read(sandbox.0.join("sources.json")).unwrap();
+        let model = cx.new(|_| SourceModel::for_tests(vec![profile]));
+        model.update(cx, |m, cx| {
+            m.repository = Some(repo);
+            for guard in 0..3 {
+                m.saving = guard == 0;
+                m.form_open = guard == 1;
+                m.storage_ready = guard != 2;
+                m.set_visible_schemas(id.clone(), SchemaSelection::Selected(vec![]), cx);
+                assert_eq!(m.profiles[0].schemas, SchemaSelection::All);
+            }
+            m.storage_ready = true;
+            m.set_visible_schemas("missing-source".into(), SchemaSelection::All, cx);
+            m.set_visible_schemas(
+                id.clone(),
+                SchemaSelection::Selected(vec!["inventory".into()]),
+                cx,
+            );
+            assert!(!m.saving);
+            assert!(m.metadata_notice.is_some());
+            m.tree
+                .databases
+                .insert(id.clone(), vec!["inventory".into()]);
+            m.set_visible_schemas(id, SchemaSelection::Selected(vec!["Inventory".into()]), cx);
+            assert!(!m.saving);
+            assert_eq!(m.profiles[0].schemas, SchemaSelection::All);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read(sandbox.0.join("sources.json")).unwrap(),
+            before
+        );
+    }
+
+    #[gpui::test]
+    fn schema_visibility_storage_unavailable_and_save_failure_retain_settings(
+        cx: &mut TestAppContext,
+    ) {
+        let sandbox = ExportSandbox::new();
+        let profile = SourceProfile::default();
+        let id = profile.id.clone();
+        let model = cx.new(|_| SourceModel::for_tests(vec![profile.clone()]));
+        model.update(cx, |m, cx| {
+            m.set_visible_schemas(id.clone(), SchemaSelection::Selected(vec![]), cx);
+            assert!(!m.saving);
+            assert!(m.metadata_notice.as_ref().unwrap().contains("unavailable"));
+            // A regular file in place of the settings directory deterministically fails.
+            let blocker = sandbox.0.join("not-a-directory");
+            std::fs::write(&blocker, b"synthetic blocker").unwrap();
+            m.repository = Some(SourceRepository::new(blocker.join("sources.json")));
+            m.set_visible_schemas(id.clone(), SchemaSelection::Selected(vec![]), cx);
+            assert!(m.saving);
+            assert_eq!(m.profiles[0].schemas, SchemaSelection::All);
+        });
+        cx.run_until_parked();
+        model.read_with(cx, |m, _| {
+            assert!(!m.saving);
+            assert!(
+                m.metadata_notice
+                    .as_ref()
+                    .unwrap()
+                    .contains("Could not save")
+            );
+            assert_eq!(
+                serde_json::to_value(&m.profiles[0]).unwrap(),
+                serde_json::to_value(profile).unwrap()
+            );
+            assert!(!m.form_open);
+            assert!(m.operation.is_none());
+        });
     }
 
     #[gpui::test]

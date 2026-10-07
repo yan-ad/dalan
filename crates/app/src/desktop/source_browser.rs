@@ -3,14 +3,14 @@ use dalan_app::explorer_tree::{ExplorerTree, TreeKey, TreeRow};
 use dalan_drivers::DbEngine;
 use dalan_drivers::{SchemaSelection, SourceProfile};
 use gpui::{
-    Context, Div, Entity, Hsla, KeyBinding, Stateful, Subscription, Window, actions, div,
-    prelude::*, px, rgb,
+    Context, Entity, Hsla, KeyBinding, Subscription, Window, actions, div, prelude::*, px, rgb,
 };
 
 use gpui::component::{
     Disableable, Selectable, Sizable,
     button::{Button as KitButton, ButtonVariants},
-    menu::{DropdownMenu, PopupMenuItem},
+    menu::{ContextMenuExt, PopupMenuItem},
+    popover::Popover,
 };
 
 actions!(table_browser, [ApplyTableConditions]);
@@ -39,7 +39,7 @@ pub(super) struct SourceExplorer {
     active_key: Option<TreeKey>,
     tree_focus: gpui::FocusHandle,
     scroll: gpui::UniformListScrollHandle,
-    menu_source: Option<String>,
+    schema_picker: Option<(String, Entity<super::schema_picker::SchemaPicker>)>,
     #[cfg(test)]
     last_rendered_row_count: usize,
     #[cfg(test)]
@@ -276,6 +276,39 @@ fn tree_row_id(key: &TreeKey) -> String {
 }
 
 /// Snapshot state is not a persistent connection/online indicator.
+/// Counter counts databases in the loaded catalog, not tables in a snapshot.
+fn schema_counter(profile: &SourceProfile, databases: Option<&Vec<String>>) -> Option<String> {
+    let databases = databases?;
+    let total = databases.len();
+    Some(match &profile.schemas {
+        SchemaSelection::All => total.to_string(),
+        SchemaSelection::Selected(names) => format!(
+            "{} of {total}",
+            databases.iter().filter(|name| names.contains(name)).count()
+        ),
+    })
+}
+
+/// Blend tint into an opaque theme surface; never make the window transparent.
+fn source_row_background(
+    tint: Option<Hsla>,
+    selected: bool,
+    background: Hsla,
+    selection: Hsla,
+    hover: Hsla,
+) -> (Hsla, Hsla) {
+    match tint {
+        Some(color) => (
+            background.blend(color.opacity(if selected { 0.28 } else { 0.10 })),
+            background.blend(color.opacity(if selected { 0.34 } else { 0.18 })),
+        ),
+        None => (
+            if selected { selection } else { background },
+            if selected { selection } else { hover },
+        ),
+    }
+}
+
 fn cached_status(loading: bool, offline: bool, failed: bool) -> Option<&'static str> {
     if loading {
         Some("Refreshing…")
@@ -337,15 +370,8 @@ impl SourceExplorer {
             {
                 this.projection_rebuilds += 1;
             }
-            let model = model.read(cx);
+            let _ = model;
             this.search_index = None;
-            if this
-                .menu_source
-                .as_ref()
-                .is_some_and(|id| !model.profiles.iter().any(|profile| &profile.id == id))
-            {
-                this.menu_source = None;
-            }
             this.refresh_search_rows(cx);
             cx.notify();
         });
@@ -363,7 +389,7 @@ impl SourceExplorer {
             active_key: None,
             tree_focus: cx.focus_handle().tab_stop(true).tab_index(20),
             scroll: gpui::UniformListScrollHandle::new(),
-            menu_source: None,
+            schema_picker: None,
             #[cfg(test)]
             last_rendered_row_count: 0,
             #[cfg(test)]
@@ -572,7 +598,7 @@ impl SourceExplorer {
         cx.notify();
     }
 
-    fn render_row(&mut self, row: TreeRow, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_row(&mut self, row: TreeRow, cx: &mut Context<Self>) -> gpui::AnyElement {
         let palette = colors(cx);
         let model = self.model.read(cx);
         let selected = self.active_key.as_ref().map_or_else(
@@ -630,7 +656,7 @@ impl SourceExplorer {
         if source_row && let Some(profile) = profile {
             tooltip.push_str(&format!("\n{}", profile.engine.display_name()));
         }
-        if let Some(count) = row.count {
+        if !source_row && let Some(count) = row.count {
             tooltip.push_str(&format!("\n{count} items"));
         }
         let glyph = match &row.key {
@@ -642,7 +668,17 @@ impl SourceExplorer {
             TreeKey::Group { .. } => Icon::Folder,
             TreeKey::Table { .. } => Icon::Table,
         };
-        let color = source_color(profile.and_then(|p| p.color.as_deref()), palette.muted);
+        let tint = profile
+            .and_then(|p| p.color.as_deref())
+            .map(|hex| source_color(Some(hex), palette.muted));
+        let (background, hover) = source_row_background(
+            if source_row { tint } else { None },
+            selected,
+            palette.background,
+            palette.selection,
+            palette.hover,
+        );
+        let counter = profile.and_then(|p| schema_counter(p, model.tree.databases.get(&p.id)));
         let id = tree_row_id(&row.key);
         let debug_id = id.clone();
         let label_id = format!("tree-label-{id}");
@@ -664,8 +700,8 @@ impl SourceExplorer {
             .gap(px(3.))
             .overflow_hidden()
             .text_color(if view { palette.muted } else { palette.text })
-            .when(selected, |el| el.bg(palette.selection))
-            .hover(|style| style.bg(palette.hover))
+            .bg(background)
+            .hover(move |style| style.bg(hover))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.tree_focus.focus(window, cx)),
@@ -709,28 +745,17 @@ impl SourceExplorer {
                     }),
             );
         if let TreeKey::Source(source) = &row.key {
-            let marker = format!("color-indicator-{source}");
             let driver = format!("driver-glyph-{source}");
-            element = element
-                .child(
-                    div()
-                        .id(gpui::SharedString::from(marker.clone()))
-                        .debug_selector(move || marker.clone())
-                        .w(px(3.))
-                        .h(px(14.))
-                        .flex_shrink_0()
-                        .bg(color),
-                )
-                .child(
-                    div()
-                        .id(gpui::SharedString::from(driver.clone()))
-                        .debug_selector(move || driver.clone())
-                        .flex()
-                        .flex_shrink_0()
-                        .child(provider_icon(
-                            profile.expect("source row has profile").engine,
-                        )),
-                );
+            element = element.child(
+                div()
+                    .id(gpui::SharedString::from(driver.clone()))
+                    .debug_selector(move || driver.clone())
+                    .flex()
+                    .flex_shrink_0()
+                    .child(provider_icon(
+                        profile.expect("source row has profile").engine,
+                    )),
+            );
         } else {
             element = element.child(div().flex().flex_shrink_0().child(icon(
                 glyph,
@@ -745,12 +770,74 @@ impl SourceExplorer {
             div()
                 .id(gpui::SharedString::from(label_id.clone()))
                 .debug_selector(move || label_id.clone())
-                .flex_1()
-                .min_w(px(if source_row { 80. } else { 0. }))
+                .when(!source_row, |el| el.flex_1())
+                .flex_shrink_1()
+                .min_w(px(0.))
                 .text_color(if view { palette.muted } else { palette.text })
                 .text_ellipsis()
                 .child(row.label),
         );
+        if let (TreeKey::Source(source), Some(counter)) = (&row.key, counter) {
+            let counter_id = format!("source-schema-count-{source}");
+            let debug_id = counter_id.clone();
+            let owner = cx.entity().downgrade();
+            let content_owner = owner.clone();
+            let source = source.clone();
+            let disabled = model.saving || model.form_open;
+            element = element.child(
+                Popover::new(gpui::SharedString::from(format!("schema-popover-{source}")))
+                    .trigger(
+                        KitButton::new(gpui::SharedString::from(counter_id))
+                            .debug_selector(move || debug_id.clone())
+                            .label(counter)
+                            .small()
+                            .outline()
+                            .h(px(18.))
+                            .px_1()
+                            .flex_shrink_0()
+                            .disabled(disabled)
+                            .tooltip("Choose visible schemas / databases")
+                            .on_click(|_, _, cx| cx.stop_propagation()),
+                    )
+                    .on_open_change(move |open, _, app| {
+                        let _ = owner.update(app, |this, cx| {
+                            if *open {
+                                let model = this.model.read(cx);
+                                if model.saving || model.form_open {
+                                    return;
+                                }
+                                if let (Some(profile), Some(catalog)) = (
+                                    model.profiles.iter().find(|p| p.id == source).cloned(),
+                                    model.tree.databases.get(&source).cloned(),
+                                ) {
+                                    let model = this.model.clone();
+                                    let picker = cx.new(|cx| {
+                                        super::schema_picker::SchemaPicker::new(
+                                            model, profile, catalog, cx,
+                                        )
+                                    });
+                                    this.schema_picker = Some((source.clone(), picker));
+                                }
+                            } else if let Some((_, picker)) = this.schema_picker.take() {
+                                picker.update(cx, |picker, cx| picker.finish(cx));
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .content(move |_, _, cx| {
+                        div().children(content_owner.upgrade().and_then(|owner| {
+                            owner
+                                .read(cx)
+                                .schema_picker
+                                .as_ref()
+                                .map(|(_, picker)| picker.clone())
+                        }))
+                    }),
+            );
+        }
+        if source_row {
+            element = element.child(div().flex_1());
+        }
         if let Some(status) = status_label {
             let status_id = format!("cached-status-{}", row.key.source());
             tooltip.push_str(&format!("\n{status}"));
@@ -802,75 +889,53 @@ impl SourceExplorer {
         }
         if let TreeKey::Source(source) = &row.key {
             let source = source.clone();
-            let action_id = gpui::SharedString::from(format!("source-actions-{source}"));
-            let debug_id = action_id.clone();
             let view = cx.entity().downgrade();
-            let menu_view = view.clone();
-            let open_source = source.clone();
-            element = element.child(
-                KitButton::new(action_id)
-                    .debug_selector(move || debug_id.clone().into())
-                    .small()
-                    .ghost()
-                    .tab_index(20)
-                    .w(px(18.))
-                    .h(px(18.))
-                    .p(px(0.))
-                    .flex_shrink_0()
-                    .child(icon(Icon::Manage, palette.muted))
-                    .tooltip("Source actions")
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .dropdown_menu(move |mut menu, _, cx| {
-                        // Capture the row's source, not the currently selected source.
-                        // The Kit popover owns positioning, focus and dismissal, even
-                        // while the tree's uniform list recycles its visible rows.
-                        let disabled = menu_view.upgrade().is_none_or(|view| {
-                            let model = view.read(cx).model.read(cx);
-                            model.busy || model.saving
-                        });
-                        for (index, label) in ["Manage", "Copy", "Remove"].into_iter().enumerate() {
-                            let view = menu_view.clone();
-                            let source = source.clone();
-                            menu = menu.item(
-                                PopupMenuItem::element(move |_, _| {
-                                    let selector = match index {
-                                        0 => "source-action-manage",
-                                        1 => "source-action-copy",
-                                        _ => "source-action-remove",
-                                    };
-                                    div().debug_selector(move || selector.into()).child(label)
-                                })
-                                .disabled(disabled)
-                                .on_click(move |_, _, cx| {
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.model.update(cx, |model, cx| {
-                                            if model.busy || model.saving {
-                                                return;
-                                            }
-                                            match index {
-                                                0 => model.manage_source(source.clone(), cx),
-                                                1 => model.copy_source(source.clone(), cx),
-                                                _ => {
-                                                    model.request_delete_source(source.clone(), cx)
-                                                }
-                                            }
-                                        });
-                                    });
-                                }),
-                            );
-                        }
-                        menu
-                    })
-                    .on_open_change(move |open, _, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            this.menu_source = open.then(|| open_source.clone());
-                            cx.notify();
-                        });
-                    }),
-            );
+            return element
+                .tooltip(move |_, cx| cx.new(|_| TreeTooltip(tooltip.clone())).into())
+                .context_menu(move |mut menu, _, cx| {
+                    // Capture the clicked row, never the unrelated active source.
+                    let disabled = view.upgrade().is_none_or(|view| {
+                        let model = view.read(cx).model.read(cx);
+                        model.busy
+                            || model.saving
+                            || model.form_open
+                            || !model.profiles.iter().any(|p| p.id == source)
+                    });
+                    for (index, label) in ["Manage", "Copy", "Remove"].into_iter().enumerate() {
+                        let view = view.clone();
+                        let source = source.clone();
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, _| {
+                                let selector = match index {
+                                    0 => "source-action-manage",
+                                    1 => "source-action-copy",
+                                    _ => "source-action-remove",
+                                };
+                                div().debug_selector(move || selector.into()).child(label)
+                            })
+                            .disabled(disabled)
+                            .on_click(move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.model.update(cx, |model, cx| {
+                                        if model.busy || model.saving || model.form_open {
+                                            return;
+                                        }
+                                        match index {
+                                            0 => model.manage_source(source.clone(), cx),
+                                            1 => model.copy_source(source.clone(), cx),
+                                            _ => model.request_delete_source(source.clone(), cx),
+                                        }
+                                    })
+                                });
+                            }),
+                        );
+                    }
+                    menu
+                })
+                .into_any_element();
         }
         element = element.tooltip(move |_, cx| cx.new(|_| TreeTooltip(tooltip.clone())).into());
-        element
+        element.into_any_element()
     }
 }
 
@@ -1099,7 +1164,7 @@ impl Render for SourceExplorer {
             .debug_selector(|| "source-explorer".into())
             .track_focus(&self.tree_focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.menu_source.is_none() && this.tree_focus.is_focused(window) {
+                if this.tree_focus.is_focused(window) {
                     this.keyboard(event, cx);
                 }
             }))
@@ -1124,7 +1189,7 @@ impl Render for SourceExplorer {
                     .items_center()
                     .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                         if event.keystroke.key == "escape"
-                            && this.menu_source.is_none()
+                            && this.schema_picker.is_none()
                             && !this.search_query.is_empty()
                         {
                             this.search.update(cx, |input, cx| input.set_value("", cx));
@@ -1997,11 +2062,31 @@ mod tests {
     ) -> (Entity<T>, &mut VisualTestContext) {
         // Kit globals must exist before constructing inputs or popup controls.
         cx.update(gpui::init);
+        cx.update(|cx| cx.set_reduce_motion(true));
         cx.update(crate::desktop::bind_keys);
         let view = cx.new(build);
         let (_, visual) =
             cx.add_window_view(|window, cx| gpui::base::Root::new(view.clone(), window, cx));
         (view, visual)
+    }
+
+    fn context_click(cx: &mut VisualTestContext, source: &str) {
+        let bounds = cx
+            .debug_bounds(Box::leak(
+                tree_row_id(&TreeKey::Source(source.into())).into_boxed_str(),
+            ))
+            .unwrap();
+        cx.simulate_mouse_down(
+            bounds.center(),
+            gpui::MouseButton::Right,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            bounds.center(),
+            gpui::MouseButton::Right,
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
     }
 
     fn click(cx: &mut VisualTestContext, id: &str) {
@@ -2580,12 +2665,12 @@ mod tests {
         cx.refresh().unwrap();
         cx.run_until_parked();
         assert!(cx.debug_bounds("confirm-delete").is_none());
-        click(cx, &format!("source-actions-{id}"));
+        context_click(cx, &id);
         click(cx, "source-action-remove");
         assert!(model.read_with(cx, |model, _| model.delete_confirm));
         click(cx, "cancel-delete");
         assert!(!model.read_with(cx, |model, _| model.delete_confirm));
-        click(cx, &format!("source-actions-{id}"));
+        context_click(cx, &id);
         click(cx, "source-action-remove");
         click(cx, "confirm-delete");
         model.read_with(cx, |model, _| {
@@ -2595,7 +2680,7 @@ mod tests {
             assert!(!model.busy);
         });
         click(cx, "cancel-delete");
-        click(cx, &format!("source-actions-{id}"));
+        context_click(cx, &id);
         click(cx, "source-action-manage");
         assert_eq!(
             model.read_with(cx, |model, _| model
@@ -2647,12 +2732,7 @@ mod tests {
             assert!(bounds.left() >= previous);
             previous = bounds.right();
         }
-        for id in [
-            "driver-glyph-mysql-fixture",
-            "driver-glyph-maria-fixture",
-            "color-indicator-mysql-fixture",
-            "color-indicator-maria-fixture",
-        ] {
+        for id in ["driver-glyph-mysql-fixture", "driver-glyph-maria-fixture"] {
             assert!(cx.debug_bounds(id).is_some(), "missing {id}");
         }
         for id in [
@@ -2673,7 +2753,7 @@ mod tests {
             assert!(!m.delete_confirm);
             assert!(!m.busy);
         });
-        click(cx, "source-actions-maria-fixture");
+        context_click(cx, "maria-fixture");
         cx.simulate_keystrokes("down");
         cx.run_until_parked();
         press(cx, "enter");
@@ -2710,9 +2790,9 @@ mod tests {
             model.explorer_source = Some("11111111-1111-4111-8111-111111111111".into());
             model
         });
-        let (explorer, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
+        let (_, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
         cx.refresh().unwrap();
-        click(cx, "source-actions-22222222-2222-4222-8222-222222222222");
+        context_click(cx, "22222222-2222-4222-8222-222222222222");
         model.read_with(cx, |model, _| {
             assert_eq!(
                 model.explorer_source.as_deref(),
@@ -2734,11 +2814,11 @@ mod tests {
             assert_ne!(copy.id, "22222222-2222-4222-8222-222222222222");
             assert_eq!(model.profiles.len(), 2);
         });
-        explorer.read_with(cx, |view, _| assert!(view.menu_source.is_none()));
-        click(cx, "source-actions-22222222-2222-4222-8222-222222222222");
+        assert!(cx.debug_bounds("source-action-copy").is_none());
+        context_click(cx, "22222222-2222-4222-8222-222222222222");
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
-        explorer.read_with(cx, |view, _| assert!(view.menu_source.is_none()));
+        assert!(cx.debug_bounds("source-action-copy").is_none());
     }
 
     #[gpui::test]
@@ -2897,6 +2977,128 @@ mod tests {
         });
     }
 
+    #[test]
+    fn schema_counts_use_loaded_database_visibility_and_row_tints_are_opaque() {
+        let mut p = SourceProfile::default();
+        let catalog = vec!["one".into(), "two".into(), "three".into()];
+        assert_eq!(schema_counter(&p, None), None);
+        assert_eq!(schema_counter(&p, Some(&catalog)).as_deref(), Some("3"));
+        p.schemas = SchemaSelection::Selected(vec!["two".into(), "missing".into()]);
+        assert_eq!(
+            schema_counter(&p, Some(&catalog)).as_deref(),
+            Some("1 of 3")
+        );
+        p.schemas = SchemaSelection::Selected(vec![]);
+        assert_eq!(
+            schema_counter(&p, Some(&catalog)).as_deref(),
+            Some("0 of 3")
+        );
+        for bg in [rgb(0xffffff).into(), rgb(0x191919).into()] {
+            let color: Hsla = rgb(0xee9296).into();
+            let (idle, hovered) = source_row_background(Some(color), false, bg, bg, bg);
+            let (active, active_hovered) = source_row_background(Some(color), true, bg, bg, bg);
+            assert_eq!(idle.a, 1.0);
+            assert_eq!(active.a, 1.0);
+            assert_ne!(idle, bg);
+            assert_ne!(idle, hovered);
+            assert_ne!(idle, active);
+            assert_ne!(active, active_hovered);
+        }
+    }
+
+    #[gpui::test]
+    fn schema_counter_opens_cached_picker_escape_cancels_and_outside_applies_without_settings(
+        cx: &mut TestAppContext,
+    ) {
+        let profile = SourceProfile {
+            database: Some("one".into()),
+            ..Default::default()
+        };
+        let id = profile.id.clone();
+        let model = cx.new(|_| {
+            let mut m = SourceModel::for_tests(vec![profile.clone()]);
+            m.tree
+                .databases
+                .insert(id.clone(), vec!["one".into(), "two".into(), "three".into()]);
+            m.tree.expanded_sources.insert(id.clone());
+            m
+        });
+        let (explorer, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
+        cx.simulate_resize(gpui::size(px(600.), px(700.)));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds(Box::leak(format!("source-actions-{id}").into_boxed_str()))
+                .is_none()
+        );
+        assert!(
+            cx.debug_bounds(Box::leak(format!("color-indicator-{id}").into_boxed_str()))
+                .is_none()
+        );
+        let counter_id = format!("source-schema-count-{id}");
+        click(cx, &counter_id);
+        assert!(cx.debug_bounds("schema-picker").is_some());
+        model.read_with(cx, |m, _| {
+            assert!(m.tree.expanded_sources.contains(&id));
+            assert!(m.explorer_source.is_none());
+            assert!(m.selected_source.is_none());
+        });
+        click(cx, "schema-picker-item-1");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("schema-picker").is_none());
+        assert!(explorer.read_with(cx, |e, _| e.schema_picker.is_none()));
+        model.read_with(cx, |m, _| {
+            assert_eq!(m.profiles[0], profile);
+            assert!(m.metadata_notice.is_none());
+            assert!(!m.form_open && !m.busy);
+            assert!(m.tree.loading.is_empty());
+            assert!(m.selected_database.is_none());
+        });
+        click(cx, &counter_id);
+        click(cx, "schema-picker-item-1");
+        // No repository in this fixture: dismissal must attempt a guarded save,
+        // not optimistically alter settings or open a configuration window.
+        cx.simulate_click(gpui::point(px(570.), px(650.)), Modifiers::default());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("schema-picker").is_none());
+        model.read_with(cx, |m, _| {
+            assert!(
+                m.metadata_notice
+                    .as_deref()
+                    .unwrap()
+                    .contains("storage is unavailable")
+            );
+            assert_eq!(m.profiles[0], profile);
+            assert!(!m.form_open && !m.busy);
+            assert!(m.tree.loading.is_empty());
+        });
+        model.update(cx, |m, cx| {
+            m.metadata_notice = None;
+            cx.notify();
+        });
+        click(cx, &counter_id);
+        click(cx, "schema-picker-all");
+        press(cx, "enter");
+        assert!(cx.debug_bounds("schema-picker").is_none());
+        assert!(model.read_with(cx, |m, _| m.metadata_notice.is_some()));
+        model.update(cx, |m, cx| {
+            m.metadata_notice = None;
+            cx.notify();
+        });
+        click(cx, &counter_id);
+        click(cx, "schema-picker-item-1");
+        model.update(cx, |m, cx| {
+            m.profiles[0].name = "Changed while popup open".into();
+            cx.notify();
+        });
+        press(cx, "enter");
+        model.read_with(cx, |m, _| {
+            assert!(m.metadata_notice.is_none());
+            assert_eq!(m.profiles[0].schemas, SchemaSelection::All);
+        });
+    }
+
     #[gpui::test]
     fn source_row_manage_and_remove_are_guarded(cx: &mut TestAppContext) {
         let profile = SourceProfile {
@@ -2910,12 +3112,16 @@ mod tests {
         });
         let (_, cx) = kit_window(cx, |cx| SourceExplorer::new(model.clone(), cx));
         cx.refresh().unwrap();
-        click(cx, &format!("source-actions-{}", profile.id));
+        context_click(cx, &profile.id);
         click(cx, "source-action-manage");
         model.read_with(cx, |m, _| {
             assert_eq!(m.form_profile.as_ref(), Some(&profile))
         });
-        click(cx, &format!("source-actions-{}", profile.id));
+        model.update(cx, |m, cx| {
+            m.close_form(cx);
+        });
+        cx.run_until_parked();
+        context_click(cx, &profile.id);
         click(cx, "source-action-remove");
         assert!(model.read_with(cx, |m, _| m.delete_confirm));
         click(cx, "cancel-delete");
@@ -2927,7 +3133,7 @@ mod tests {
                 cx.notify();
             });
             click(cx, "refresh-source");
-            click(cx, &format!("source-actions-{}", profile.id));
+            context_click(cx, &profile.id);
             for id in [
                 "source-action-manage",
                 "source-action-copy",
